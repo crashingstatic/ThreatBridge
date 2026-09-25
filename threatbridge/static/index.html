@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ThreatBridge</title>
+  <link rel="icon" href="data:,">
+  <!-- The id stops Cytoscape injecting an inline <style> (blocked by our CSP). -->
+  <link rel="stylesheet" id="__________cytoscape_stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header id="toolbar">
+    <strong class="brand">ThreatBridge</strong>
+    <label>Host / IOC IP <input id="ip" placeholder="10.0.0.5" autocomplete="off" spellcheck="false"></label>
+    <label>Anchor time (UTC) <input id="ts" placeholder="2024-05-01T12:00:00Z (blank = now)" spellcheck="false"></label>
+    <label>Direction
+      <select id="direction">
+        <option value="in">Inbound: who connected to the host (past)</option>
+        <option value="out">Outbound: who the host connected to (future)</option>
+      </select>
+    </label>
+    <label>Window <input id="window" size="5" value="24h"></label>
+    <label>Peers
+      <select id="order">
+        <option value="top">Top (most connections)</option>
+        <option value="bottom">Bottom (rarest)</option>
+      </select>
+    </label>
+    <label>N <input id="limit" size="4" value="50"></label>
+    <button id="go" type="button">Map</button>
+    <button id="fit" type="button">Fit</button>
+    <button id="clear" type="button">Clear</button>
+    <span id="status" role="status"></span>
+  </header>
+  <main>
+    <div id="cy"></div>
+    <aside id="details">
+      <h2>Details</h2>
+      <div id="detail-body"><p class="hint">Left-click a host to expand it in the selected direction.
+        Right-click a connection to create a Security Onion filter for those two hosts.</p></div>
+      <section id="excludes">
+        <h2>Shared exclude list</h2>
+        <p class="hint">IPs/CIDRs hidden from every analyst's maps (top and bottom).</p>
+        <form id="exclude-form">
+          <input id="exclude-input" placeholder="10.0.0.53 or 10.0.0.0/24" spellcheck="false" autocomplete="off">
+          <button type="submit">Add</button>
+        </form>
+        <ul id="exclude-list"></ul>
+      </section>
+      <div class="legend">
+        <span><span class="sw root"></span> IOC host</span>
+        <span><span class="sw in"></span> inbound (past)</span>
+        <span><span class="sw out"></span> outbound (future)</span>
+      </div>
+    </aside>
+  </main>
+  <ul id="menu" class="menu" hidden></ul>
+  <script src="/static/vendor/cytoscape.min.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

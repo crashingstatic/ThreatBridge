@@ -1,0 +1,16 @@
+[
+  {
+    "name": "ThreatBridge: inbound (past)",
+    "description": "Map hosts that connected TO this IP before this event",
+    "icon": "fa-diagram-project",
+    "target": "_blank",
+    "links": ["https://THREATBRIDGE_HOST:5443/?ip={value}&ts={:soc_timestamp}&dir=in"]
+  },
+  {
+    "name": "ThreatBridge: outbound (future)",
+    "description": "Map hosts this IP connected TO after this event",
+    "icon": "fa-diagram-project",
+    "target": "_blank",
+    "links": ["https://THREATBRIDGE_HOST:5443/?ip={value}&ts={:soc_timestamp}&dir=out"]
+  }
+]

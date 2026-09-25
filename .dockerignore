@@ -1,0 +1,8 @@
+.git
+certs
+legacy
+tests
+*.pyc
+__pycache__
+exclude.json*
+deploy/threatbridge.env
