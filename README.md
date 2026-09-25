@@ -81,6 +81,20 @@ python -m pytest
 TB_BACKEND=demo python -m threatbridge --port 5055   # fake data, plain HTTP, localhost only
 ```
 
+### CI
+
+`.github/workflows/ci.yml` runs on every push and pull request:
+
+| Job | Checks |
+|---|---|
+| Unit tests | pytest on Python 3.11 and 3.12 |
+| Shellcheck | `scripts/`, `deploy/`, `tests/` shell scripts |
+| Security scan | `pip-audit` (known-vulnerable dependencies), `bandit -ll` (medium+ Python security issues) |
+| Docker build + mTLS | Generates a throwaway PKI, builds and starts the container with `deploy/run.sh` (demo backend), then `tests/mtls_check.sh`. No cert and foreign-CA certs must be refused, a valid cert accepted, and writes without the CSRF header rejected. |
+| UI smoke test | Headless Chromium (`tests/ui_smoke.mjs`). Loads the map as a SOC action would, expands a hop, right-clicks an edge, checks the SOC pivot URL, round-trips the exclude list, and fails on any console/CSP error. Screenshots are uploaded as an artifact. |
+
+CI cannot reach a real Security Onion, so the items under *Things to verify on your install* still need a manual check.
+
 Layout: `threatbridge/query.py` holds the input validation and the Elasticsearch and SOC query builders. `backends.py` holds the Elasticsearch backend (and a demo backend), `app.py` the HTTP API, and `static/` the Cytoscape.js UI (vendored, so it works air-gapped).
 
 ## Legacy

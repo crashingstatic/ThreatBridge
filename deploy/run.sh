@@ -4,6 +4,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 SO_CA="${SO_CA:-/etc/pki/ca.crt}"   # verify this path on your manager
+# The container runs as uid 10001; make-certs.sh writes the key 0600, so hand
+# the key to that uid (still unreadable to other host users).
+chown 10001 certs/server.key
 docker build -t threatbridge:latest .
 docker rm -f threatbridge 2>/dev/null || true
 docker run -d --name threatbridge --restart unless-stopped --network host \
