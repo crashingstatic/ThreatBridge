@@ -23,6 +23,7 @@ case "$cmd" in
       -subj "/CN=ThreatBridge CA" -out "$DIR/ca.crt" \
       -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
       -addext "keyUsage=critical,keyCertSign,cRLSign"
+    chmod 644 "$DIR/ca.crt"   # public; keys stay 0600 (umask 077)
     echo "CA written to $DIR/ca.crt"
     ;;
   server)
@@ -34,6 +35,7 @@ case "$cmd" in
       -CAcreateserial -sha256 -days "$DAYS_LEAF" -out "$DIR/server.crt" \
       -extfile <(printf "subjectAltName=%s\nextendedKeyUsage=serverAuth\nkeyUsage=critical,digitalSignature\n" "$san")
     rm -f "$DIR/server.csr"
+    chmod 644 "$DIR/server.crt"
     echo "Server cert written to $DIR/server.crt (SAN: $san)"
     ;;
   client)
@@ -49,6 +51,7 @@ case "$cmd" in
     openssl pkcs12 -export -inkey "$DIR/$name.key" -in "$DIR/$name.crt" -certfile "$DIR/ca.crt" \
       -name "ThreatBridge - $name" -out "$DIR/$name.p12" "${passout[@]}"
     rm -f "$DIR/$name.csr" "$DIR/$name.key"
+    chmod 644 "$DIR/$name.crt"
     echo "Give $DIR/$name.p12 (and ca.crt, to trust the server) to $name."
     ;;
   *) die "usage: $0 {ca|server <dns-name> [ip ...]|client <name>}" ;;

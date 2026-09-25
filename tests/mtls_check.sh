@@ -11,24 +11,33 @@ openssl pkcs12 -in "$DIR/$CLIENT.p12" -passin env:P12_PASS -nodes -out "$WORK/cl
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 \
   -subj /CN=rogue -keyout "$WORK/rogue.key" -out "$WORK/rogue.crt" 2>/dev/null
 
+# The server must be up and accept a valid cert before rejections mean anything
+# (a stopped server would otherwise "reject" everything).
 echo "waiting for $BASE ..."
+body=""
 for _ in $(seq 1 30); do
-  "${CURL[@]}" --cert "$WORK/client.pem" "$BASE/healthz" >/dev/null 2>&1 && break
+  body="$("${CURL[@]}" --cert "$WORK/client.pem" "$BASE/healthz" 2>/dev/null)" && break
   sleep 1
 done
+if [[ "$body" == *'"status":"ok"'* ]]; then
+  echo "ok: valid client certificate -> $body"
+else
+  echo "FAIL: server not reachable with a valid client certificate"; exit 1
+fi
+
+# A rejection must happen in TLS: curl exit 35 (handshake) or 56 (alert on read),
+# not 7 (connection refused) or 0 (accepted).
+expect_tls_reject() {
+  local what="$1"; shift
+  local rc=0
+  "${CURL[@]}" "$@" "$BASE/healthz" >/dev/null 2>&1 || rc=$?
+  if [[ $rc == 35 || $rc == 56 ]]; then echo "ok: $what -> rejected in TLS (curl $rc)"
+  else echo "FAIL: $what -> curl exit $rc (expected TLS rejection 35/56)"; fail=1; fi
+}
 
 fail=0
-if "${CURL[@]}" "$BASE/healthz" >/dev/null 2>&1; then
-  echo "FAIL: request without a client certificate was accepted"; fail=1
-else echo "ok: no client certificate -> rejected"; fi
-
-if "${CURL[@]}" --cert "$WORK/rogue.crt" --key "$WORK/rogue.key" "$BASE/healthz" >/dev/null 2>&1; then
-  echo "FAIL: certificate from a foreign CA was accepted"; fail=1
-else echo "ok: foreign-CA certificate -> rejected"; fi
-
-if body="$("${CURL[@]}" --cert "$WORK/client.pem" "$BASE/healthz")" && [[ "$body" == *'"status":"ok"'* ]]; then
-  echo "ok: valid client certificate -> $body"
-else echo "FAIL: valid client certificate was not accepted"; fail=1; fi
+expect_tls_reject "no client certificate"
+expect_tls_reject "foreign-CA certificate" --cert "$WORK/rogue.crt" --key "$WORK/rogue.key"
 
 code="$("${CURL[@]}" --cert "$WORK/client.pem" -o /dev/null -w '%{http_code}' \
   -X POST -H 'Content-Type: application/json' -d '{"entry":"10.0.0.9"}' "$BASE/api/excludes")"
