@@ -73,6 +73,10 @@ Deployment on a live Security Onion install has **not been tested**. These point
 | `TB_EXCLUDE_FILE` | `/data/exclude.json` (container) | |
 | `TB_TLS_CERT` / `TB_TLS_KEY` / `TB_TLS_CLIENT_CA` | `/certs/…` | mTLS (gunicorn) |
 
+## Requirements
+
+Requirement IDs, current status and design decisions: [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md).
+
 ## Development
 
 ```bash
