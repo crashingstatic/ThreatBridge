@@ -1,6 +1,6 @@
 # Requirements and status
 
-Status as of commit `1e4baba`. **Done**, **Partial**, **Missing**, **Unverified**,
+Status last updated 2026-10-19. **Done**, **Partial**, **Missing**, **Unverified**,
 **TODO** (deferred by decision), **Out of scope** (by decision).
 
 ## Decisions
@@ -10,17 +10,19 @@ Status as of commit `1e4baba`. **Done**, **Partial**, **Missing**, **Unverified*
 | D1 | One shared core with several data sources: PCAP files, NetFlow files, and Security Onion (Elasticsearch). |
 | D2 | Post-mortem tool. No live capture or live collectors. |
 | D3 | Left-click an edge: highlight the threat line. Right-click an edge: menu with the SOC Dashboards pivot (and PCAP export, once D5 is lifted). |
-| D4 | Open: graph storage, NetworkX `MultiDiGraph` (one edge per flow) vs `DiGraph` (one edge per host pair) plus a SQLite flow table. |
+| D4 | Graph storage: NetworkX `MultiDiGraph`, one edge per flow, the `Flow` stored as an edge attribute. (`DiGraph` per host pair plus a SQLite flow table was benchmarked and declined.) |
 | D5 | PCAP export (ATK-2, EXT-2) deferred. |
+| D6 | File inputs: tcpdump captures (classic pcap) and nfcapd files read with nfdump (tested with 1.7.3). |
+| D7 | Proposed, to confirm: a flow is one connection, oriented initiator -> responder like a Zeek conn record. Idle timeouts are 5 min for TCP and 1 min for UDP/ICMP, and the two halves of a NetFlow connection are merged. Details in the README, "Post-mortem mode". |
 
 ## Data ingestion
 
 | ID | Requirement | Status | Notes |
 |---|---|---|---|
-| ING-1 | SHALL ingest PCAP files and parse network conversations | Missing | Security Onion's Zeek parses PCAP; ThreatBridge only reads the resulting conn records. |
-| ING-2 | SHALL ingest NetFlow data formats | Missing | File input only (D2). Input format not yet chosen. |
-| ING-3 | SHALL process multiple PCAP files from a specified directory | Missing | |
-| ING-4 | SHALL extract source/destination IP addresses, ports, timestamps, and protocol information | Partial | IPs, first/last seen, top 5 destination ports per peer. No source port or protocol. |
+| ING-1 | SHALL ingest PCAP files and parse network conversations | Done | `sources/pcap.py` (D6, D7). pcapng not supported. |
+| ING-2 | SHALL ingest NetFlow data formats | Done | `sources/netflow.py`: nfcapd files via nfdump (D6). |
+| ING-3 | SHALL process multiple PCAP files from a specified directory | Done | Recursive; rotated captures are read in capture order. |
+| ING-4 | SHALL extract source/destination IP addresses, ports, timestamps, and protocol information | Done | File sources: all of them, plus packets and bytes. The Security Onion source has no source port or protocol. |
 | ING-S1 | SHOULD support real-time ingestion of live network captures | Out of scope | D2 |
 | ING-S2 | SHOULD integrate with Security Onion sensor data extraction mechanisms | Partial | Reads Zeek conn records from Security Onion's Elasticsearch. |
 | ING-S3 | SHOULD support additional network data formats (sFlow, IPFIX) | Missing | |
@@ -29,13 +31,13 @@ Status as of commit `1e4baba`. **Done**, **Partial**, **Missing**, **Unverified*
 
 | ID | Requirement | Status | Notes |
 |---|---|---|---|
-| GRA-1 | SHALL construct a directed graph representing network conversations between hosts | Done | Built one hop at a time from what the analyst expands. |
+| GRA-1 | SHALL construct a directed graph representing network conversations between hosts | Done | Files: whole dataset in a `MultiDiGraph`. Security Onion: built one hop at a time as the analyst expands. |
 | GRA-2 | SHALL display nodes representing network hosts and edges representing communications | Done | |
 | GRA-3 | SHALL maintain temporal ordering of network conversations | Partial | Hops are time-chained (first/last seen); individual flows are not ordered. |
 | GRA-4 | SHALL provide interactive graph visualization with clickable nodes and edges | Done | |
 | GRA-S1 | SHOULD provide multiple graph layout algorithms | Missing | One layout (breadthfirst). |
 | GRA-S2 | SHOULD support graph filtering by time ranges, protocols, or traffic volume | Partial | Per-hop time window only. |
-| GRA-S3 | SHOULD display connection metadata (packet counts, byte volumes, duration) | Partial | Connection count, ports, first/last seen. No packets or bytes. |
+| GRA-S3 | SHOULD display connection metadata (packet counts, byte volumes, duration) | Partial | Connection count, ports, first/last seen. File flows carry packets and bytes, but the UI doesn't show them yet. |
 
 ## Attack path analysis
 
@@ -77,8 +79,8 @@ Status as of commit `1e4baba`. **Done**, **Partial**, **Missing**, **Unverified*
 
 | ID | Requirement | Status | Notes |
 |---|---|---|---|
-| PRF-1 | SHALL process PCAP files containing at least 1 million network flows | Unverified | |
-| PRF-2 | SHALL complete initial graph construction within 5 minutes for datasets under 100MB | Unverified | No bulk build in the current design. |
+| PRF-1 | SHALL process PCAP files containing at least 1 million network flows | Done | 1.25M flows; `TB_PERF=1 pytest tests/test_perf.py`. |
+| PRF-2 | SHALL complete initial graph construction within 5 minutes for datasets under 100MB | Done | 93 MB pcap of minimum-size packets: 42 s, about 1 GB RAM (one test machine). |
 | PRF-3 | SHALL keep user interaction responsive during graph traversal | Unverified | |
 | PRF-S1 | SHOULD support distributed processing for large datasets | Partial | Security Onion source only: Elasticsearch does the aggregation. |
 | PRF-S2 | SHOULD support incremental graph updates for continuous monitoring | Missing | Possibly out of scope under D2; not decided. |

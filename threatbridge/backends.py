@@ -6,13 +6,19 @@ where each peer is {"peer", "count", "first_seen", "last_seen", "ports"}
 """
 import hashlib
 import ipaddress
+import logging
 import random
+import time
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 import requests
 
+from . import sources
+from .graph import build_graph, host_flows, time_span
 from .query import es_details_body, es_scan_body, es_top_body, fmt_time
 
+log = logging.getLogger(__name__)
 SCAN_PAGE = 1000
 
 
@@ -127,7 +133,70 @@ class DemoBackend:
         return {"peers": peers[:limit], "distinct_peers": len(peers), "truncated": False}
 
 
+def _utc(epoch):
+    return datetime.fromtimestamp(epoch, timezone.utc)
+
+
+class CaseBackend:
+    """Post-mortem: flows read from tcpdump and nfdump files into an in-memory graph."""
+
+    def __init__(self, cfg, graph=None):
+        if graph is None:
+            t = time.monotonic()
+            graph = build_graph(sources.load(cfg.case_paths))
+            log.info("case loaded: %d flows between %d hosts in %.1fs",
+                     graph.number_of_edges(), graph.number_of_nodes(), time.monotonic() - t)
+        self.graph = graph
+        span = time_span(graph)
+        self.span = (_utc(span[0]), _utc(span[1])) if span else None
+
+    def summary(self):
+        return {
+            "flows": self.graph.number_of_edges(),
+            "hosts": self.graph.number_of_nodes(),
+            "start": fmt_time(self.span[0]) if self.span else None,
+            "end": fmt_time(self.span[1]) if self.span else None,
+        }
+
+    def neighbors(self, ip, direction, start, end, limit, order, exclude):
+        nets = [ipaddress.ip_network(e) for e in exclude]
+        excluded, peers = {}, {}
+        for f in host_flows(self.graph, ip, direction, start.timestamp(), end.timestamp()):
+            peer = f.src if direction == "in" else f.dst
+            if peer == ip:
+                continue
+            if peer not in excluded:
+                addr = ipaddress.ip_address(peer)
+                excluded[peer] = any(addr in n for n in nets)
+            if excluded[peer]:
+                continue
+            p = peers.get(peer)
+            if p is None:
+                p = peers[peer] = {"count": 0, "first": f.start, "last": f.start, "ports": Counter()}
+            p["count"] += 1
+            p["first"] = min(p["first"], f.start)
+            p["last"] = max(p["last"], f.start)
+            if f.proto in ("tcp", "udp"):
+                p["ports"][f.dport] += 1
+        sign = -1 if order == "top" else 1
+        ranked = sorted(peers.items(), key=lambda kv: (sign * kv[1]["count"], kv[0]))[:limit]
+        return {
+            "peers": [{
+                "peer": peer,
+                "count": p["count"],
+                "first_seen": fmt_time(_utc(p["first"])),
+                "last_seen": fmt_time(_utc(p["last"])),
+                "ports": [port for port, _ in sorted(p["ports"].items(),
+                                                     key=lambda kv: (-kv[1], kv[0]))[:5]],
+            } for peer, p in ranked],
+            "distinct_peers": len(peers),
+            "truncated": False,
+        }
+
+
 def make_backend(cfg):
+    if cfg.backend == "case":
+        return CaseBackend(cfg)
     if cfg.backend == "demo":
         return DemoBackend(cfg)
     if cfg.backend == "elastic":

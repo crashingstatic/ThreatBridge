@@ -9,7 +9,7 @@ Click any host to expand it. Hops are *time-chained*: an outbound peer's next ho
 
 **Right-click a connection (edge)** → *Filter SOC Dashboards*. This opens SOC Dashboards filtered to every conversation between those two hosts, in either direction, **up to the IOC time**.
 
-Data source: Zeek `conn` records in Elasticsearch (`event.dataset` = `conn` / `zeek.conn`).
+Data sources: Zeek `conn` records in Security Onion's Elasticsearch (`event.dataset` = `conn` / `zeek.conn`), or, for post-mortem work, tcpdump captures and nfdump (nfcapd) files. See [Post-mortem mode](#post-mortem-mode-pcap-and-netflow-files).
 
 ## Features
 
@@ -20,6 +20,31 @@ Data source: Zeek `conn` records in Elasticsearch (`event.dataset` = `conn` / `z
 | Exclude list | Shared across all analysts and editable in the UI (side panel, or right-click a host). Takes IPs or CIDRs. Applied to both Top and Bottom. Stored in `/data/exclude.json`. No audit trail. |
 | Time window | 24h per hop by default. Adjustable on the map, up to `TB_MAX_WINDOW` (30d). |
 | Auth | **Mutual TLS.** Connections without a client cert signed by the ThreatBridge CA fail at the TLS handshake. |
+
+## Post-mortem mode (PCAP and NetFlow files)
+
+```bash
+pip install -r requirements.txt
+python -m threatbridge --case /cases/incident-42/      # files or directories, in any mix
+# browse to http://127.0.0.1:5055/
+```
+
+- **Inputs.** tcpdump captures in classic pcap format, and nfcapd files.
+  - Supported pcap link types: Ethernet, Linux `any` (SLL/SLL2), raw IP and loopback, with µs or ns timestamps.
+  - pcapng is not supported; convert it with `editcap -F pcap in.pcapng out.pcap`.
+  - Directories are searched recursively; other files are skipped.
+  - nfcapd files are read with the `nfdump` binary (tested with 1.7.3). Set `TB_NFDUMP` if it is not on `PATH`.
+- **One edge per connection,** from initiator to responder, like a Zeek conn record.
+  - A TCP connection ends at a RST, at a new SYN after a FIN, or after 5 minutes idle. UDP and ICMP end after 1 minute idle.
+  - Rotated captures (`tcpdump -C` / `-G`) are read in capture order, so a connection that spans files stays one flow.
+- **NetFlow records are one-way, so the two halves are merged.** The half that started first is the initiator.
+  - Sometimes timing can't tell: both halves start in the same millisecond, or one half is missing.
+  - Then a well-known port (<1024) talking to an ephemeral port marks the responder.
+- **Default anchor.** With no anchor time, the map looks back from the end of the data (inbound) or forward from its start (outbound).
+- **SOC pivots** are hidden in this mode.
+- **Everything is held in memory.** A 93 MB capture of 1.25M flows took 42 s and about 1 GB of RAM in testing.
+- **Don't load overlapping evidence.** A pcap and NetFlow of the same traffic are counted twice.
+- **The command above serves plain HTTP on 127.0.0.1.** To share the map, run it under gunicorn with mutual TLS, as for Security Onion. Use `TB_BACKEND=case TB_CASE_PATHS=/cases/incident-42 TB_WORKERS=1`; each worker loads its own copy of the data.
 
 ## Deploy on the Security Onion manager
 
@@ -60,6 +85,9 @@ Deployment on a live Security Onion install has **not been tested**. These point
 
 | Var | Default | |
 |---|---|---|
+| `TB_BACKEND` | `elastic` | `elastic` (Security Onion), `case` (files), `demo` |
+| `TB_CASE_PATHS` | – | `case` backend: files/directories, separated by `:` |
+| `TB_NFDUMP` | `nfdump` | nfdump binary for nfcapd files |
 | `TB_ES_URL` / `TB_ES_USER` / `TB_ES_PASS` | `https://localhost:9200` | Elasticsearch |
 | `TB_ES_CA` / `TB_ES_VERIFY` | – / `true` | TLS verification for Elasticsearch |
 | `TB_ES_INDEX` | `logs-*` | |
@@ -83,7 +111,10 @@ Requirement IDs, current status and design decisions: [docs/REQUIREMENTS.md](doc
 pip install -r requirements.txt pytest
 python -m pytest
 TB_BACKEND=demo python -m threatbridge --port 5055   # fake data, plain HTTP, localhost only
+TB_PERF=1 python -m pytest -s tests/test_perf.py    # PRF-1/PRF-2: 1.25M flows, ~1 minute
 ```
+
+The nfcapd test needs `nfdump` installed (`apt install nfdump`); without it, it is skipped locally.
 
 ### CI
 
@@ -91,7 +122,7 @@ TB_BACKEND=demo python -m threatbridge --port 5055   # fake data, plain HTTP, lo
 
 | Job | Checks |
 |---|---|
-| Unit tests | pytest on Python 3.11 and 3.12 |
+| Unit tests | pytest on Python 3.11 and 3.12, including reading a real nfcapd file (nfdump from apt) |
 | Shellcheck | `scripts/`, `deploy/`, `tests/` shell scripts |
 | Security scan | `pip-audit` (known-vulnerable dependencies), `bandit -ll` (medium+ Python security issues) |
 | Docker build + mTLS | Generates a throwaway PKI, builds and starts the container with `deploy/run.sh` (demo backend), then `tests/mtls_check.sh`. No cert and foreign-CA certs must be refused, a valid cert accepted, and writes without the CSRF header rejected. |
@@ -99,7 +130,17 @@ TB_BACKEND=demo python -m threatbridge --port 5055   # fake data, plain HTTP, lo
 
 CI cannot reach a real Security Onion, so the items under *Things to verify on your install* still need a manual check.
 
-Layout: `threatbridge/query.py` holds the input validation and the Elasticsearch and SOC query builders. `backends.py` holds the Elasticsearch backend (and a demo backend), `app.py` the HTTP API, and `static/` the Cytoscape.js UI (vendored, so it works air-gapped).
+Layout:
+
+| Path | Contents |
+|---|---|
+| `threatbridge/query.py` | Input validation, Elasticsearch and SOC query builders |
+| `threatbridge/model.py` | The `Flow` record shared by the file readers |
+| `threatbridge/sources/` | pcap and nfcapd readers |
+| `threatbridge/graph.py` | The NetworkX `MultiDiGraph`, one edge per flow |
+| `threatbridge/backends.py` | The data backends behind the map: Elasticsearch, case (files) and demo |
+| `threatbridge/app.py` | The HTTP API |
+| `threatbridge/static/` | The Cytoscape.js UI, vendored so it works air-gapped |
 
 ## Legacy
 

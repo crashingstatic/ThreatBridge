@@ -6,6 +6,7 @@
   const statusEl = $("status");
   const menu = $("menu");
   let iocTime = null; // anchor of the root (IOC) event; upper bound for SOC pivots
+  let cfg = {};       // /api/config
   const COLORS = { root: "#e5484d", in: "#3e9bff", out: "#f5a524", node: "#9aa7bd" };
 
   const cy = cytoscape({
@@ -126,7 +127,7 @@
 
   async function expandRoot(ip, ts, direction) {
     // Normalise IP/anchor server-side; the root anchor is the IOC time used for pivots.
-    const params = new URLSearchParams({ ip });
+    const params = new URLSearchParams({ ip, direction });
     if (ts) params.set("ts", ts);
     const r = await getJSON(`/api/resolve?${params}`);
     iocTime = r.anchor;
@@ -210,6 +211,7 @@
     const [a, b, until] = [e.data("source"), e.data("target"), iocTime];
     edgeDetails(e);
     const oe = evt.originalEvent;
+    if (cfg.soc_pivots === false) return;
     showMenu(oe.clientX, oe.clientY, [
       { title: `${a} ↔ ${b}` },
       { label: `Filter SOC Dashboards: all conversations up to IOC time`, action: () => openPivot(a, b, until) },
@@ -226,7 +228,8 @@
       { label: "Expand inbound: who connected to it (past)", action: () => expand(n.id(), "in") },
       { label: "Expand outbound: who it connected to (future)", action: () => expand(n.id(), "out") },
       "-",
-      { label: "Open host in SOC dashboard", action: () => openPivot(n.id(), null, null) },
+      ...(cfg.soc_pivots === false ? [] :
+        [{ label: "Open host in SOC dashboard", action: () => openPivot(n.id(), null, null) }]),
       { label: "Remove from map", action: () => { if (!n.data("root")) { n.remove(); } } },
       { label: "Add to shared exclude list", action: () => addExclude(n.id()) },
     ]);
@@ -293,9 +296,14 @@
   // ---- bootstrap from URL (Security Onion action link) ----------------------
   (async function init() {
     try {
-      const cfg = await getJSON("/api/config");
+      cfg = await getJSON("/api/config");
       $("window").value = cfg.default_window;
       $("limit").value = cfg.default_limit;
+      if (cfg.case) {
+        $("ts").placeholder = "blank = end of data (inbound) / start (outbound)";
+        setStatus(`Case: ${cfg.case.flows} flows between ${cfg.case.hosts} hosts, ` +
+                  `${cfg.case.start} → ${cfg.case.end}`);
+      }
     } catch (_) { /* keep HTML defaults */ }
     getJSON("/api/excludes").then((r) => renderExcludes(r.entries)).catch(() => {});
     const q = new URLSearchParams(location.search);

@@ -27,6 +27,8 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           cache: pip
+      - name: Install nfdump (nfcapd integration test)
+        run: sudo apt-get update -q && sudo apt-get install -y -q nfdump
       - run: pip install -r requirements.txt pytest
       - run: python -m pytest -q
 

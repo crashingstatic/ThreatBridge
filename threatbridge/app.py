@@ -7,6 +7,7 @@ from flask import Flask, jsonify, request, send_from_directory
 from .backends import BackendError, make_backend
 from .config import Config
 from .excludes import ExcludeStore
+from .model import SourceError
 from .query import (DIRECTIONS, ORDERS, ValidationError, fmt_time, parse_direction, parse_ip,
                     parse_order, parse_time, parse_window, soc_host_query, soc_pivot_query,
                     soc_url, time_range)
@@ -63,15 +64,27 @@ def create_app(cfg=None, backend=None, excludes=None):
 
     @app.get("/api/config")
     def api_config():
+        summary = getattr(backend, "summary", None)
         return jsonify(default_window=cfg.default_window, max_window=cfg.max_window,
                        default_limit=cfg.default_limit, max_limit=cfg.max_limit,
                        directions=DIRECTIONS, orders=ORDERS, backend=cfg.backend,
-                       rare_scan_cap=cfg.rare_scan_cap)
+                       rare_scan_cap=cfg.rare_scan_cap,
+                       soc_pivots=cfg.backend != "case",
+                       case=summary() if summary else None)
 
     @app.get("/api/resolve")
     def api_resolve():
-        return jsonify(ip=parse_ip(request.args.get("ip")),
-                       anchor=fmt_time(parse_time(request.args.get("ts"))))
+        ip = parse_ip(request.args.get("ip"))
+        ts = request.args.get("ts")
+        span = getattr(backend, "span", None)
+        if span and not (ts or "").strip():
+            # Evidence is in the past, so "now" is no use: look back from the end of the
+            # data (inbound) or forward from its start (outbound).
+            direction = parse_direction(request.args.get("direction", "in"))
+            anchor = span[1] if direction == "in" else span[0]
+        else:
+            anchor = parse_time(ts)
+        return jsonify(ip=ip, anchor=fmt_time(anchor))
 
     @app.get("/api/neighbors")
     def api_neighbors():
@@ -133,12 +146,20 @@ def main():
     p.add_argument("--host", default=os.environ.get("TB_HOST", "127.0.0.1"))
     p.add_argument("--port", type=int, default=int(os.environ.get("TB_PORT", "5055")))
     p.add_argument("--demo", action="store_true", help="use the fake demo backend")
+    p.add_argument("--case", nargs="+", metavar="PATH",
+                   help="post-mortem mode: tcpdump pcap and nfdump nfcapd files or directories")
     a = p.parse_args()
     logging.basicConfig(level=logging.INFO)
     cfg = Config.from_env()
     if a.demo:
         cfg.backend = "demo"
-    create_app(cfg).run(host=a.host, port=a.port)
+    if a.case:
+        cfg.backend, cfg.case_paths = "case", a.case
+    try:
+        app = create_app(cfg)
+    except SourceError as e:
+        p.exit(2, f"error: {e}\n")
+    app.run(host=a.host, port=a.port)
 
 
 if __name__ == "__main__":

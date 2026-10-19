@@ -1,3 +1,5 @@
 flask>=3.0,<4
 requests>=2.31,<3
 gunicorn>=22,<24
+dpkt>=1.9.8,<2
+networkx>=3.2,<4
