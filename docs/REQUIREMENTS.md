@@ -1,6 +1,6 @@
 # Requirements and status
 
-Status last updated 2026-10-19. **Done**, **Partial**, **Missing**, **Unverified**,
+Status last updated 2026-10-20. **Done**, **Partial**, **Missing**, **Unverified**,
 **TODO** (deferred by decision), **Out of scope** (by decision).
 
 ## Decisions
@@ -13,7 +13,8 @@ Status last updated 2026-10-19. **Done**, **Partial**, **Missing**, **Unverified
 | D4 | Graph storage: NetworkX `MultiDiGraph`, one edge per flow, the `Flow` stored as an edge attribute. (`DiGraph` per host pair plus a SQLite flow table was benchmarked and declined.) |
 | D5 | PCAP export (ATK-2, EXT-2) deferred. |
 | D6 | File inputs: tcpdump captures (classic pcap) and nfcapd files read with nfdump (tested with 1.7.3). |
-| D7 | Proposed, to confirm: a flow is one connection, oriented initiator -> responder like a Zeek conn record. Idle timeouts are 5 min for TCP and 1 min for UDP/ICMP, and the two halves of a NetFlow connection are merged. Details in the README, "Post-mortem mode". |
+| D7 | A flow is one connection, oriented initiator -> responder like a Zeek conn record. Idle timeouts are 5 min for TCP and 1 min for UDP/ICMP, and the two halves of a NetFlow connection are merged. Details in the README, "Post-mortem mode". |
+| D8 | Attack paths and threat lines follow time order: a hop must start after the previous one, and within the map's Window of it. Limits: 6 hops, 300 hosts per threat-line direction. Post-mortem (case) backend only. |
 
 ## Data ingestion
 
@@ -43,10 +44,10 @@ Status last updated 2026-10-19. **Done**, **Partial**, **Missing**, **Unverified
 
 | ID | Requirement | Status | Notes |
 |---|---|---|---|
-| ATK-1 | SHALL perform graph traversal to identify potential attack paths between compromised hosts | Missing | Manual expansion from a single IOC host. |
+| ATK-1 | SHALL perform graph traversal to identify potential attack paths between compromised hosts | Done | Case backend: paths between hosts marked compromised, recomputed on every change (D8). |
 | ATK-2 | SHALL generate filtered PCAP output containing only conversations along identified attack paths | TODO | D5 |
-| ATK-3 | SHALL support bidirectional path analysis (predecessors and successors) | Done | Inbound (past) and outbound (future) expansion. |
-| ATK-4 | SHALL allow analysts to mark hosts as compromised and update path calculations | Missing | |
+| ATK-3 | SHALL support bidirectional path analysis (predecessors and successors) | Done | Inbound (past) and outbound (future) expansion; threat lines go both ways. |
+| ATK-4 | SHALL allow analysts to mark hosts as compromised and update path calculations | Done | Mark/unmark from the host menu or side panel, with a time or time unknown; shared list in `compromised.json`. |
 | ATK-S1 | SHOULD highlight suspicious communication patterns from external networks | Missing | |
 | ATK-S2 | SHOULD rank attack paths by likelihood or risk scoring | Missing | |
 | ATK-S3 | SHOULD support manual annotation of attack techniques along paths | Missing | |
@@ -55,12 +56,12 @@ Status last updated 2026-10-19. **Done**, **Partial**, **Missing**, **Unverified
 
 | ID | Requirement | Status | Notes |
 |---|---|---|---|
-| INT-1 | SHALL highlight complete threat lines when an analyst clicks on a graph edge | Missing | See D3. |
-| INT-2 | SHALL show temporal relationships (earlier and later communications) relative to selected edges | Partial | Details panel shows first/last seen; nothing highlighted. |
-| INT-3 | SHALL allow iterative refinement of attack path analysis based on analyst feedback | Partial | Expand, remove node, exclude. |
-| INT-4 | SHALL update graph visualization in real-time as new compromise indicators are added | Missing | |
+| INT-1 | SHALL highlight complete threat lines when an analyst clicks on a graph edge | Done | Case backend: left-click a connection (D3, D8). |
+| INT-2 | SHALL show temporal relationships (earlier and later communications) relative to selected edges | Done | Case backend: the threat line colours earlier hosts violet and later hosts teal. |
+| INT-3 | SHALL allow iterative refinement of attack path analysis based on analyst feedback | Done | Expand, remove, exclude, mark/unmark compromised; paths are recomputed after each change. |
+| INT-4 | SHALL update graph visualization in real-time as new compromise indicators are added | Done | Case backend: attack paths are redrawn as soon as a host is marked or unmarked. |
 | INT-S1 | SHOULD provide undo/redo for analysis iterations | Missing | |
-| INT-S2 | SHOULD save and restore analysis sessions | Missing | The URL keeps only the root IP and time. |
+| INT-S2 | SHOULD save and restore analysis sessions | Partial | Exclude and compromised lists persist; the URL keeps the root IP and time. The map layout is not saved. |
 | INT-S3 | SHOULD export analysis results in standard formats (JSON, XML, CSV) | Missing | |
 
 ## Filtering and whitelisting
@@ -69,7 +70,7 @@ Status last updated 2026-10-19. **Done**, **Partial**, **Missing**, **Unverified
 |---|---|---|---|
 | FIL-1 | SHALL accept a list of IP addresses to exclude from graph analysis | Done | Shared list. Adding an IP removes it from the map; a CIDR applies from the next expansion. |
 | FIL-2 | SHALL provide domain name whitelisting with real-time DNS resolution | Missing | |
-| FIL-3 | SHALL exclude whitelisted communications from attack path calculations | Partial | Applied to every neighbour query; no path calculation exists yet. |
+| FIL-3 | SHALL exclude whitelisted communications from attack path calculations | Done | Excluded hosts are never crossed by threat lines or attack paths. |
 | FIL-S1 | SHOULD support CIDR notation | Done | |
 | FIL-S2 | SHOULD keep whitelist configuration across sessions | Done | `exclude.json` |
 | FIL-S3 | SHOULD suggest whitelist entries for common legitimate traffic | Missing | |
@@ -81,7 +82,7 @@ Status last updated 2026-10-19. **Done**, **Partial**, **Missing**, **Unverified
 |---|---|---|---|
 | PRF-1 | SHALL process PCAP files containing at least 1 million network flows | Done | 1.25M flows; `TB_PERF=1 pytest tests/test_perf.py`. |
 | PRF-2 | SHALL complete initial graph construction within 5 minutes for datasets under 100MB | Done | 93 MB pcap of minimum-size packets: 42 s, about 1 GB RAM (one test machine). |
-| PRF-3 | SHALL keep user interaction responsive during graph traversal | Unverified | |
+| PRF-3 | SHALL keep user interaction responsive during graph traversal | Partial | Requests are asynchronous. Measured: threat line 0.45 s and paths among 10 busy hosts 4.4 s (975k flows). The paths figure is slow. |
 | PRF-S1 | SHOULD support distributed processing for large datasets | Partial | Security Onion source only: Elasticsearch does the aggregation. |
 | PRF-S2 | SHOULD support incremental graph updates for continuous monitoring | Missing | Possibly out of scope under D2; not decided. |
 | PRF-S3 | SHOULD show progress for long-running operations | Partial | Status line during queries. |

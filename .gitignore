@@ -365,5 +365,7 @@ FodyWeavers.xsd
 certs/
 exclude.json
 exclude.json.lock
+compromised.json
+compromised.json.lock
 deploy/threatbridge.env
 node_modules/

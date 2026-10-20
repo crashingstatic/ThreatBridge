@@ -127,7 +127,8 @@ def test_rarest_truncates_at_cap():
 
 @pytest.fixture
 def client(tmp_path):
-    cfg = Config(backend="demo", soc_url="https://so")
+    cfg = Config(backend="demo", soc_url="https://so",
+                 compromised_file=str(tmp_path / "compromised.json"))
     app = create_app(cfg, DemoBackend(cfg), ExcludeStore(str(tmp_path / "ex.json")))
     return app.test_client()
 

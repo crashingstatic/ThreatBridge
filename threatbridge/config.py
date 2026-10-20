@@ -63,6 +63,12 @@ class Config:
 
     # Shared exclude list (IPs/CIDRs never shown as peers), editable in the UI.
     exclude_file: str = "exclude.json"
+    # Hosts marked as compromised, editable in the UI.
+    compromised_file: str = "compromised.json"
+
+    # Threat lines and attack paths (case backend): hop limit and size cap per search.
+    threat_hops: int = 6
+    threat_max_hosts: int = 300
 
     @classmethod
     def from_env(cls):
@@ -91,4 +97,7 @@ class Config:
             max_limit=int(_env("TB_MAX_LIMIT", cls.max_limit)),
             rare_scan_cap=int(_env("TB_RARE_SCAN_CAP", cls.rare_scan_cap)),
             exclude_file=_env("TB_EXCLUDE_FILE", cls.exclude_file),
+            compromised_file=_env("TB_COMPROMISED_FILE", cls.compromised_file),
+            threat_hops=int(_env("TB_THREAT_HOPS", cls.threat_hops)),
+            threat_max_hosts=int(_env("TB_THREAT_MAX_HOSTS", cls.threat_max_hosts)),
         )

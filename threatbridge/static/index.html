@@ -37,20 +37,40 @@
     <aside id="details">
       <h2>Details</h2>
       <div id="detail-body"><p class="hint">Left-click a host to expand it in the selected direction.
-        Right-click a connection to create a Security Onion filter for those two hosts.</p></div>
+        Left-click a connection to trace its threat line (PCAP/NetFlow cases).
+        Right-click a host or connection for more, such as marking a host compromised or a
+        Security Onion filter for two hosts.</p></div>
+      <section id="compromised-section">
+        <h2>Compromised hosts</h2>
+        <form id="compromised-form" class="entry-form">
+          <input id="compromised-ip" placeholder="10.0.0.5" spellcheck="false" autocomplete="off">
+          <input id="compromised-time" placeholder="time UTC (blank = unknown)" spellcheck="false" autocomplete="off">
+          <button type="submit">Mark</button>
+        </form>
+        <ul id="compromised-list" class="entries"></ul>
+      </section>
+      <section id="paths">
+        <h2>Attack paths</h2>
+        <p class="hint">Time-consistent paths between compromised hosts, recomputed on every change.</p>
+        <ul id="path-list" class="entries"></ul>
+      </section>
       <section id="excludes">
         <h2>Shared exclude list</h2>
         <p class="hint">IPs/CIDRs hidden from every analyst's maps (top and bottom).</p>
-        <form id="exclude-form">
+        <form id="exclude-form" class="entry-form">
           <input id="exclude-input" placeholder="10.0.0.53 or 10.0.0.0/24" spellcheck="false" autocomplete="off">
           <button type="submit">Add</button>
         </form>
-        <ul id="exclude-list"></ul>
+        <ul id="exclude-list" class="entries"></ul>
       </section>
       <div class="legend">
         <span><span class="sw root"></span> IOC host</span>
         <span><span class="sw in"></span> inbound (past)</span>
         <span><span class="sw out"></span> outbound (future)</span>
+        <span><span class="sw compromised"></span> compromised</span>
+        <span><span class="sw attack"></span> attack path</span>
+        <span><span class="sw up"></span> threat line: earlier</span>
+        <span><span class="sw down"></span> threat line: later</span>
       </div>
     </aside>
   </main>

@@ -7,7 +7,9 @@
   const menu = $("menu");
   let iocTime = null; // anchor of the root (IOC) event; upper bound for SOC pivots
   let cfg = {};       // /api/config
-  const COLORS = { root: "#e5484d", in: "#3e9bff", out: "#f5a524", node: "#9aa7bd" };
+  let compromised = new Map(); // ip -> {time, note}
+  const COLORS = { root: "#e5484d", in: "#3e9bff", out: "#f5a524", node: "#9aa7bd",
+                   up: "#a78bfa", down: "#2dd4bf", attack: "#ff4d5e", compromised: "#b4232a" };
 
   const cy = cytoscape({
     container: $("cy"),
@@ -27,6 +29,20 @@
           "text-background-opacity": 0.8, "text-background-padding": 1 } },
       { selector: "edge[direction = 'in']", style: { "line-color": COLORS.in, "target-arrow-color": COLORS.in } },
       { selector: "edge[direction = 'out']", style: { "line-color": COLORS.out, "target-arrow-color": COLORS.out } },
+      { selector: "node[?compromised]", style: {
+          "background-color": COLORS.compromised, "border-width": 3, "border-color": "#ff8a8a" } },
+      // Attack paths between compromised hosts, and the threat line through a clicked edge.
+      { selector: "edge.attack", style: {
+          "line-color": COLORS.attack, "target-arrow-color": COLORS.attack, width: 6, "z-index": 10 } },
+      { selector: "edge.up", style: {
+          "line-color": COLORS.up, "target-arrow-color": COLORS.up, width: 5, "z-index": 11 } },
+      { selector: "edge.down", style: {
+          "line-color": COLORS.down, "target-arrow-color": COLORS.down, width: 5, "z-index": 11 } },
+      { selector: "edge.line-selected", style: {
+          "line-color": "#ffffff", "target-arrow-color": "#ffffff", width: 6, "z-index": 12 } },
+      { selector: "node.up", style: { "border-width": 4, "border-color": COLORS.up } },
+      { selector: "node.down", style: { "border-width": 4, "border-color": COLORS.down } },
+      { selector: ".faded", style: { opacity: 0.15 } },
       { selector: ":selected", style: { "overlay-color": "#fff", "overlay-opacity": 0.15 } },
     ],
   });
@@ -62,9 +78,34 @@
   function addNode(ip, anchor, extra) {
     let n = cy.getElementById(ip);
     if (n.empty()) {
-      n = cy.add({ group: "nodes", data: Object.assign({ id: ip, anchor: anchor }, extra || {}) });
+      n = cy.add({ group: "nodes", data: Object.assign(
+        { id: ip, anchor: anchor, compromised: compromised.has(ip) }, extra || {}) });
     }
     return n;
+  }
+
+  function edgeData(src, dst, direction, count, ports, first, last) {
+    return {
+      id: `${src}->${dst}`, source: src, target: dst, direction, count, ports,
+      first_seen: first, last_seen: last, logCount: Math.log10(count + 1),
+      label: `${count}${ports.length ? " · " + ports.join(",") : ""}`,
+    };
+  }
+
+  // Add an edge unless the map already shows it (keep the data from the expansion).
+  function mergeEdge(src, dst, direction, count, ports, first, last) {
+    const e = cy.getElementById(`${src}->${dst}`);
+    if (e.nonempty()) return e;
+    return cy.add({ group: "edges", data: edgeData(src, dst, direction, count, ports, first, last) });
+  }
+
+  function clearHighlight() {
+    cy.elements().removeClass("up down line-selected faded");
+  }
+
+  function focus(elements) {
+    clearHighlight();
+    cy.elements().not(elements).addClass("faded");
   }
 
   // direction "in": peer -> host, anchored in the past; "out": host -> peer, anchored in the future.
@@ -91,14 +132,8 @@
         addNode(p.peer, peerAnchor, { depth });
         const src = direction === "in" ? p.peer : res.ip;
         const dst = direction === "in" ? res.ip : p.peer;
-        const id = `${src}->${dst}`;
-        const data = {
-          id, source: src, target: dst, direction, count: p.count, ports: p.ports,
-          first_seen: p.first_seen, last_seen: p.last_seen,
-          logCount: Math.log10(p.count + 1),
-          label: `${p.count}${p.ports.length ? " · " + p.ports.join(",") : ""}`,
-        };
-        const e = cy.getElementById(id);
+        const data = edgeData(src, dst, direction, p.count, p.ports, p.first_seen, p.last_seen);
+        const e = cy.getElementById(data.id);
         if (e.nonempty()) e.data(data); else cy.add({ group: "edges", data });
       }
     });
@@ -122,6 +157,7 @@
       const q = new URLSearchParams({ ip: res.ip, ts: iocTime, dir: $("direction").value,
                                       window: $("window").value.trim(), order: $("order").value });
       history.replaceState(null, "", `?${q}`);
+      await refreshPaths(true);
     } catch (err) { setStatus(err.message, true); }
   }
 
@@ -147,9 +183,19 @@
     body.append(dl);
   }
 
+  let detailsFor = null; // host shown in the details panel
+
+  function refreshDetails(ip) {
+    const n = cy.getElementById(ip);
+    if (detailsFor === ip && n.nonempty()) nodeDetails(n);
+  }
+
   function nodeDetails(n) {
+    detailsFor = n.id();
     showDetails([
       ["Host", n.id()], ["Anchor", n.data("anchor")], ["IOC root", n.data("root") ? "yes" : "no"],
+      ["Compromised", compromised.has(n.id())
+        ? (compromised.get(n.id()).time || "yes, time unknown") : "no"],
       ["Hops from IOC", n.data("depth")],
       ["Inbound expanded", n.data("expandedIn") ? "yes" : "no"],
       ["Outbound expanded", n.data("expandedOut") ? "yes" : "no"],
@@ -158,6 +204,7 @@
   }
 
   function edgeDetails(e) {
+    detailsFor = null;
     showDetails([
       ["Source", e.data("source")], ["Destination", e.data("target")],
       ["Direction", e.data("direction") === "in" ? "inbound (past)" : "outbound (future)"],
@@ -230,17 +277,34 @@
       "-",
       ...(cfg.soc_pivots === false ? [] :
         [{ label: "Open host in SOC dashboard", action: () => openPivot(n.id(), null, null) }]),
+      ...compromiseItems(n),
       { label: "Remove from map", action: () => { if (!n.data("root")) { n.remove(); } } },
       { label: "Add to shared exclude list", action: () => addExclude(n.id()) },
     ]);
   });
 
+  function compromiseItems(n) {
+    if (compromised.has(n.id())) {
+      return [{ label: "Unmark compromised", action: () => unmarkCompromised(n.id()) }];
+    }
+    const items = [];
+    if (n.data("anchor")) {
+      items.push({ label: `Mark compromised at ${n.data("anchor")}`,
+                   action: () => markCompromised(n.id(), n.data("anchor")) });
+    }
+    items.push({ label: "Mark compromised (time unknown)", action: () => markCompromised(n.id(), "") });
+    return items;
+  }
+
   cy.on("tap", "node", (evt) => {
     nodeDetails(evt.target);
     expand(evt.target.id(), $("direction").value).catch((e) => setStatus(e.message, true));
   });
-  cy.on("tap", "edge", (evt) => edgeDetails(evt.target));
-  cy.on("tap", (evt) => { if (evt.target === cy) hideMenu(); });
+  cy.on("tap", "edge", (evt) => {
+    edgeDetails(evt.target);
+    if (cfg.analysis) showThreatLine(evt.target).catch((e) => setStatus(e.message, true));
+  });
+  cy.on("tap", (evt) => { if (evt.target === cy) { hideMenu(); clearHighlight(); } });
   cy.on("cxttap", (evt) => { if (evt.target === cy) hideMenu(); });
   document.addEventListener("click", (e) => { if (!menu.contains(e.target)) hideMenu(); });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") hideMenu(); });
@@ -276,6 +340,7 @@
     const n = cy.getElementById(entry);
     if (n.nonempty() && !n.data("root")) n.remove();
     setStatus(`Excluded ${entry} for everyone; re-expand hosts to apply CIDRs`);
+    await refreshPaths();
   }
 
   async function removeExclude(entry) {
@@ -283,6 +348,7 @@
                                               body: JSON.stringify({ entry }) });
     renderExcludes(r.entries);
     setStatus(`Removed ${entry} from exclude list`);
+    await refreshPaths();
   }
 
   $("exclude-form").addEventListener("submit", (e) => {
@@ -292,6 +358,138 @@
     addExclude(v).then(() => { $("exclude-input").value = ""; })
       .catch((err) => setStatus(err.message, true));
   });
+
+  // ---- threat line through a clicked edge (PCAP/NetFlow cases) ---------------
+  // Earlier hosts that could have led to the edge's source, and later hosts its target
+  // could have reached, following time order with at most `window` between hops.
+  async function showThreatLine(e) {
+    const [a, b] = [e.data("source"), e.data("target")];
+    const params = new URLSearchParams({ a, b, from: e.data("first_seen"),
+                                         to: e.data("last_seen"), window: $("window").value.trim() });
+    setStatus(`Tracing the threat line through ${a} → ${b}…`);
+    const r = await getJSON(`/api/threatline?${params}`);
+    let line = cy.collection();
+    cy.batch(() => {
+      for (const n of r.nodes) line = line.union(addNode(n.id, n.time, {}));
+      for (const ed of r.edges) {
+        const el = mergeEdge(ed.source, ed.target, ed.role === "up" ? "in" : "out",
+                             ed.count, ed.ports, ed.first_seen, ed.last_seen);
+        line = line.union(el);
+      }
+    });
+    relayout();
+    focus(line);
+    cy.batch(() => {
+      for (const n of r.nodes) {
+        if (n.role === "up" || n.role === "both") cy.getElementById(n.id).addClass("up");
+        if (n.role === "down" || n.role === "both") cy.getElementById(n.id).addClass("down");
+      }
+      for (const ed of r.edges) {
+        cy.getElementById(`${ed.source}->${ed.target}`)
+          .addClass(ed.role === "selected" ? "line-selected" : ed.role);
+      }
+    });
+    const up = r.nodes.filter((n) => n.role === "up" || n.role === "both").length;
+    const down = r.nodes.filter((n) => n.role === "down" || n.role === "both").length;
+    let msg = `Threat line through ${a} → ${b}: ${up} earlier host(s) (violet), ` +
+              `${down} later host(s) (teal); ≤ ${cfg.threat_hops} hops, ≤ ${$("window").value.trim()} ` +
+              "between hops. Click the background to clear.";
+    if (r.truncated) msg += " WARNING: stopped at the host limit; the line is incomplete.";
+    setStatus(msg, false, r.truncated);
+  }
+
+  // ---- compromised hosts and the attack paths between them ------------------
+  function renderCompromised(hosts) {
+    compromised = new Map(hosts.map((h) => [h.ip, h]));
+    cy.nodes().forEach((n) => { n.data("compromised", compromised.has(n.id())); });
+    const ul = $("compromised-list");
+    ul.replaceChildren();
+    for (const h of hosts) {
+      const li = document.createElement("li");
+      const span = document.createElement("span");
+      span.textContent = `${h.ip} @ ${h.time || "time unknown"}`;
+      const btn = document.createElement("button"); btn.type = "button"; btn.textContent = "Remove";
+      btn.addEventListener("click", () => unmarkCompromised(h.ip).catch((e) => setStatus(e.message, true)));
+      li.append(span, btn);
+      ul.append(li);
+    }
+  }
+
+  async function markCompromised(ip, time) {
+    const r = await getJSON("/api/compromised", { method: "POST", headers: WRITE_HEADERS,
+                                                 body: JSON.stringify({ ip, time }) });
+    renderCompromised(r.hosts);
+    refreshDetails(ip);
+    setStatus(`Marked ${ip} compromised${time ? " at " + time : " (time unknown)"}`);
+    await refreshPaths();
+  }
+
+  async function unmarkCompromised(ip) {
+    const r = await getJSON("/api/compromised", { method: "DELETE", headers: WRITE_HEADERS,
+                                                 body: JSON.stringify({ ip }) });
+    renderCompromised(r.hosts);
+    refreshDetails(ip);
+    setStatus(`Unmarked ${ip}`);
+    await refreshPaths();
+  }
+
+  $("compromised-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const ip = $("compromised-ip").value.trim();
+    if (!ip) return;
+    markCompromised(ip, $("compromised-time").value.trim())
+      .then(() => { $("compromised-ip").value = ""; $("compromised-time").value = ""; })
+      .catch((err) => setStatus(err.message, true));
+  });
+
+  function pathElements(p) {
+    let els = cy.collection();
+    for (const h of p.hops) {
+      els = els.union(cy.getElementById(h.source)).union(cy.getElementById(h.target))
+        .union(cy.getElementById(`${h.source}->${h.target}`));
+    }
+    return els;
+  }
+
+  // Re-run after every change to compromised hosts or excludes; draws the paths in red.
+  async function refreshPaths(quiet) {
+    if (!cfg.analysis) return;
+    const params = new URLSearchParams({ window: $("window").value.trim() });
+    const r = await getJSON(`/api/paths?${params}`);
+    cy.batch(() => {
+      cy.edges().removeClass("attack");
+      for (const p of r.paths) {
+        for (const h of p.hops) {
+          addNode(h.source, h.start, {});
+          addNode(h.target, h.start, {});
+          const ports = h.proto === "tcp" || h.proto === "udp" ? [h.dport] : [];
+          mergeEdge(h.source, h.target, "out", 1, ports, h.start, h.start).addClass("attack");
+        }
+      }
+    });
+    if (r.paths.length) relayout();
+    const ul = $("path-list");
+    ul.replaceChildren();
+    for (const p of r.paths) {
+      const li = document.createElement("li");
+      const hosts = [p.hops[0].source, ...p.hops.map((h) => h.target)];
+      li.textContent = `${hosts.join(" → ")} (${p.hops[0].start} → ${p.hops[p.hops.length - 1].start})`;
+      li.className = "path";
+      li.addEventListener("click", () => {
+        focus(pathElements(p));
+        setStatus(`Attack path ${p.from} → ${p.to}, ${p.hops.length} hop(s). Click the background to clear.`);
+      });
+      ul.append(li);
+    }
+    if (!r.paths.length) {
+      const li = document.createElement("li");
+      li.className = "hint";
+      li.textContent = compromised.size < 2 ? "Mark at least two hosts as compromised."
+                                            : "No time-consistent path between the marked hosts.";
+      ul.append(li);
+    }
+    if (!quiet) setStatus(`${r.paths.length} attack path(s) between ${compromised.size} compromised host(s)`);
+  }
 
   // ---- bootstrap from URL (Security Onion action link) ----------------------
   (async function init() {
@@ -306,6 +504,8 @@
       }
     } catch (_) { /* keep HTML defaults */ }
     getJSON("/api/excludes").then((r) => renderExcludes(r.entries)).catch(() => {});
+    $("paths").hidden = !cfg.analysis;
+    try { renderCompromised((await getJSON("/api/compromised")).hosts); } catch (_) { /* none */ }
     const q = new URLSearchParams(location.search);
     if (q.get("ip")) $("ip").value = q.get("ip");
     if (q.get("ts")) $("ts").value = q.get("ts");
@@ -315,5 +515,6 @@
     const order = q.get("order");
     if (order === "top" || order === "bottom") $("order").value = order;
     if (q.get("ip")) start();
+    else refreshPaths(true).catch((e) => setStatus(e.message, true));
   })();
 })();

@@ -73,7 +73,7 @@ def test_summary(backend):
 
 @pytest.fixture
 def client(tmp_path, backend):
-    cfg = Config(backend="case")
+    cfg = Config(backend="case", compromised_file=str(tmp_path / "compromised.json"))
     app = create_app(cfg, backend, ExcludeStore(str(tmp_path / "ex.json")))
     return app.test_client()
 
@@ -98,7 +98,8 @@ def test_api_neighbors_from_pcap_directory(tmp_path):
         (T, tcp("10.0.0.5", H, 50000, 445, SYN)), (T + 0.001, tcp(H, "10.0.0.5", 445, 50000, SYN | ACK)),
         (T + 10, udp(H, "10.0.0.53", 40000, 53, b"q")),
     ])
-    cfg = Config(backend="case", case_paths=[str(d)], exclude_file=str(tmp_path / "ex.json"))
+    cfg = Config(backend="case", case_paths=[str(d)], exclude_file=str(tmp_path / "ex.json"),
+                 compromised_file=str(tmp_path / "compromised.json"))
     client = create_app(cfg).test_client()
     res = client.get(f"/api/neighbors?ip={H}&direction=in&ts=2024-05-01T13:00:00Z&window=24h").get_json()
     assert [(p["peer"], p["count"], p["ports"]) for p in res["peers"]] == [("10.0.0.5", 1, [445])]
@@ -110,3 +111,96 @@ def test_case_window_math_matches_flow_starts(backend):
     # A flow starting exactly at the window edge is included (same as the Elasticsearch range).
     res = backend.neighbors(H, "in", utc(T + 10), utc(T + 10), 10, "top", [])
     assert [p["peer"] for p in res["peers"]] == ["10.0.0.1"]
+
+
+# ---- compromised hosts, threat lines, attack paths ---------------------------------------
+
+WRITE = {"X-ThreatBridge": "1"}
+CHAIN = [flow("203.0.113.66", "10.0.0.5", 443, T), flow("10.0.0.5", H, 445, T + 600),
+         flow(H, "10.0.0.20", 3389, T + 1200), flow(H, "10.0.0.20", 3389, T + 1300),
+         flow("10.0.0.20", "10.0.0.30", 22, T - 600)]   # before the chain: not on it
+
+
+@pytest.fixture
+def chain_client(tmp_path):
+    cfg = Config(backend="case", compromised_file=str(tmp_path / "compromised.json"))
+    app = create_app(cfg, CaseBackend(cfg, graph=build_graph(CHAIN)),
+                     ExcludeStore(str(tmp_path / "ex.json")))
+    return app.test_client()
+
+
+def test_compromised_hosts_crud(chain_client):
+    c = chain_client
+    assert c.get("/api/compromised").get_json() == {"hosts": []}
+    assert c.post("/api/compromised", json={"ip": H}).status_code == 403      # CSRF header
+    r = c.post("/api/compromised", json={"ip": H, "time": "2024-05-01T12:10:00Z", "note": "EDR"},
+               headers=WRITE).get_json()
+    assert r["hosts"] == [{"ip": H, "time": "2024-05-01T12:10:00.000Z", "note": "EDR"}]
+    r = c.post("/api/compromised", json={"ip": H, "time": ""}, headers=WRITE).get_json()
+    assert r["hosts"] == [{"ip": H, "time": None, "note": ""}]               # re-mark replaces
+    assert c.post("/api/compromised", json={"ip": "nope"}, headers=WRITE).status_code == 400
+    assert c.post("/api/compromised", json={"ip": H, "time": "soon"}, headers=WRITE).status_code == 400
+    r = c.delete("/api/compromised", json={"ip": H}, headers=WRITE).get_json()
+    assert r["hosts"] == []
+
+
+def test_threatline_api(chain_client):
+    r = chain_client.get(f"/api/threatline?a=10.0.0.5&b={H}&from=2024-05-01T12:10:00Z").get_json()
+    roles = {n["id"]: n["role"] for n in r["nodes"]}
+    assert roles == {"10.0.0.5": "selected", H: "selected", "203.0.113.66": "up", "10.0.0.20": "down"}
+    edges = {(e["source"], e["target"]): e for e in r["edges"]}
+    assert set(edges) == {("10.0.0.5", H), ("203.0.113.66", "10.0.0.5"), (H, "10.0.0.20")}
+    assert edges[(H, "10.0.0.20")]["count"] == 2 and edges[(H, "10.0.0.20")]["ports"] == [3389]
+    assert edges[(H, "10.0.0.20")]["role"] == "down" and not r["truncated"]
+    # Excluded hosts are not traversed.
+    chain_client.post("/api/excludes", json={"entry": "10.0.0.20"}, headers=WRITE)
+    r = chain_client.get(f"/api/threatline?a=10.0.0.5&b={H}&from=2024-05-01T12:10:00Z").get_json()
+    assert "10.0.0.20" not in {n["id"] for n in r["nodes"]}
+
+
+@pytest.mark.parametrize("query,status", [
+    (f"a=10.0.0.5&b={H}", 400),                                       # no from
+    (f"a=10.0.0.5&b={H}&from=2024-05-01T15:00:00Z", 400),             # no flows then
+    (f"a=10.0.0.5&b={H}&from=2024-05-01T12:10:00Z&hops=0", 400),
+    (f"a=10.0.0.5&b={H}&from=2024-05-01T12:10:00Z&window=90d", 400),
+])
+def test_threatline_validation(chain_client, query, status):
+    assert chain_client.get(f"/api/threatline?{query}").status_code == status
+
+
+def test_attack_paths_update_with_marked_hosts(chain_client):
+    c = chain_client
+    assert c.get("/api/paths").get_json() == {"paths": []}
+    c.post("/api/compromised", json={"ip": "203.0.113.66"}, headers=WRITE)
+    c.post("/api/compromised", json={"ip": "10.0.0.20", "time": "2024-05-01T13:00:00Z"}, headers=WRITE)
+    [p] = c.get("/api/paths").get_json()["paths"]
+    assert (p["from"], p["to"]) == ("203.0.113.66", "10.0.0.20")
+    assert [(h["source"], h["target"], h["dport"]) for h in p["hops"]] == [
+        ("203.0.113.66", "10.0.0.5", 443), ("10.0.0.5", H, 445), (H, "10.0.0.20", 3389)]
+    assert p["hops"][2]["start"] == "2024-05-01T12:20:00.000Z"     # earliest arrival
+    # Marked compromised before the chain reached it: no path any more.
+    c.post("/api/compromised", json={"ip": "10.0.0.20", "time": "2024-05-01T12:15:00Z"}, headers=WRITE)
+    assert c.get("/api/paths").get_json() == {"paths": []}
+
+
+def test_analysis_needs_case_backend(tmp_path):
+    from threatbridge.backends import DemoBackend
+    cfg = Config(backend="demo", compromised_file=str(tmp_path / "c.json"))
+    c = create_app(cfg, DemoBackend(cfg), ExcludeStore(str(tmp_path / "ex.json"))).test_client()
+    assert c.get("/api/config").get_json()["analysis"] is False
+    assert c.get("/api/paths").status_code == 501
+    assert c.get(f"/api/threatline?a=10.0.0.5&b={H}&from=2024-05-01T12:10:00Z").status_code == 501
+
+
+def test_submillisecond_times_survive_the_round_trip(tmp_path):
+    # The UI only ever sees times rounded down to the millisecond.
+    t = T + 0.000731
+    g = build_graph([flow("10.0.0.5", H, 445, t), flow(H, "10.0.0.20", 3389, t + 0.25)])
+    cfg = Config(backend="case", compromised_file=str(tmp_path / "c.json"))
+    c = create_app(cfg, CaseBackend(cfg, graph=g), ExcludeStore(str(tmp_path / "ex.json"))).test_client()
+    r = c.get(f"/api/threatline?a=10.0.0.5&b={H}&from=2024-05-01T12:00:00.000Z"
+              "&to=2024-05-01T12:00:00.000Z")
+    assert r.status_code == 200 and {n["id"] for n in r.get_json()["nodes"]} == {"10.0.0.5", H, "10.0.0.20"}
+    c.post("/api/compromised", json={"ip": "10.0.0.5", "time": "2024-05-01T12:00:00.000Z"}, headers=WRITE)
+    c.post("/api/compromised", json={"ip": "10.0.0.20", "time": "2024-05-01T12:00:00.250Z"}, headers=WRITE)
+    assert len(c.get("/api/paths").get_json()["paths"]) == 1

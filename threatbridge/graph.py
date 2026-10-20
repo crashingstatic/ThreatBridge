@@ -31,3 +31,11 @@ def host_flows(g, host, direction, start=None, end=None):
     for _, _, f in edges:
         if (start is None or f.start >= start) and (end is None or f.start <= end):
             yield f
+
+
+def edge_flows(g, src, dst, lo=None, hi=None):
+    """Flows src -> dst that started within [lo, hi]."""
+    for data in (g.get_edge_data(src, dst) or {}).values():
+        f = data["flow"]
+        if (lo is None or f.start >= lo) and (hi is None or f.start <= hi):
+            yield f

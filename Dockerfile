@@ -9,6 +9,7 @@ COPY gunicorn.conf.py .
 COPY threatbridge ./threatbridge
 
 ENV TB_EXCLUDE_FILE=/data/exclude.json \
+    TB_COMPROMISED_FILE=/data/compromised.json \
     TB_PORT=5443 \
     PYTHONUNBUFFERED=1
 USER threatbridge

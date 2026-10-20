@@ -79,7 +79,7 @@ jobs:
         run: sudo docker logs threatbridge || true
 
   ui:
-    name: UI smoke test (headless Chromium)
+    name: UI tests (headless Chromium)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -97,11 +97,19 @@ jobs:
       - name: Start demo server
         run: |
           TB_BACKEND=demo TB_SOC_URL=https://so.example \
-          TB_EXCLUDE_FILE="$RUNNER_TEMP/exclude.json" \
+          TB_EXCLUDE_FILE="$RUNNER_TEMP/exclude.json" TB_COMPROMISED_FILE="$RUNNER_TEMP/compromised.json" \
             nohup python -m threatbridge --port 5055 > "$RUNNER_TEMP/server.log" 2>&1 &
           for _ in $(seq 1 30); do curl -sf http://127.0.0.1:5055/healthz && exit 0; sleep 1; done
           cat "$RUNNER_TEMP/server.log"; exit 1
       - run: mkdir -p "$RUNNER_TEMP/shots" && node tests/ui_smoke.mjs "$RUNNER_TEMP/shots"
+      - name: Start case-mode server (generated attack-chain pcap)
+        run: |
+          python tests/make_case.py "$RUNNER_TEMP/case"
+          TB_EXCLUDE_FILE="$RUNNER_TEMP/case-exclude.json" TB_COMPROMISED_FILE="$RUNNER_TEMP/case-compromised.json" \
+            nohup python -m threatbridge --port 5056 --case "$RUNNER_TEMP/case" > "$RUNNER_TEMP/case-server.log" 2>&1 &
+          for _ in $(seq 1 30); do curl -sf http://127.0.0.1:5056/healthz && exit 0; sleep 1; done
+          cat "$RUNNER_TEMP/case-server.log"; exit 1
+      - run: TB_URL=http://127.0.0.1:5056 node tests/ui_case.mjs "$RUNNER_TEMP/shots"
       - name: Upload screenshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -109,6 +117,6 @@ jobs:
           name: ui-screenshots
           path: ${{ runner.temp }}/shots
           if-no-files-found: ignore
-      - name: Server log
+      - name: Server logs
         if: failure()
-        run: cat "$RUNNER_TEMP/server.log"
+        run: cat "$RUNNER_TEMP/server.log" "$RUNNER_TEMP/case-server.log" || true

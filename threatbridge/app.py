@@ -5,6 +5,7 @@ import os
 from flask import Flask, jsonify, request, send_from_directory
 
 from .backends import BackendError, make_backend
+from .compromised import CompromisedStore
 from .config import Config
 from .excludes import ExcludeStore
 from .model import SourceError
@@ -14,14 +15,40 @@ from .query import (DIRECTIONS, ORDERS, ValidationError, fmt_time, parse_directi
 
 log = logging.getLogger("threatbridge")
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+MAX_HOPS = 20
 
 
-def create_app(cfg=None, backend=None, excludes=None):
+class NotSupported(Exception):
+    pass
+
+
+def create_app(cfg=None, backend=None, excludes=None, compromised=None):
     # Authentication is mutual TLS, enforced by gunicorn (see gunicorn.conf.py).
     cfg = cfg or Config.from_env()
     backend = backend or make_backend(cfg)
     excludes = excludes or ExcludeStore(cfg.exclude_file)
+    compromised = compromised or CompromisedStore(cfg.compromised_file)
     max_window = parse_window(cfg.max_window)
+
+    def window_arg(value):
+        window = parse_window(value or cfg.default_window)
+        if window > max_window:
+            raise ValidationError(f"window exceeds maximum of {cfg.max_window}")
+        return window
+
+    def hops_arg(value):
+        try:
+            hops = int(value) if value not in (None, "") else cfg.threat_hops
+        except ValueError:
+            raise ValidationError("hops must be an integer")
+        if not 1 <= hops <= MAX_HOPS:
+            raise ValidationError(f"hops must be between 1 and {MAX_HOPS}")
+        return hops
+
+    def require(method):
+        if not hasattr(backend, method):
+            raise NotSupported(f"not available with the {cfg.backend} backend; "
+                               "load PCAP/NetFlow files with --case")
 
     app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/static")
     app.config["TB"] = cfg
@@ -49,6 +76,10 @@ def create_app(cfg=None, backend=None, excludes=None):
     def _bad_request(e):
         return jsonify(error=str(e)), 400
 
+    @app.errorhandler(NotSupported)
+    def _not_supported(e):
+        return jsonify(error=str(e)), 501
+
     @app.errorhandler(BackendError)
     def _backend_error(e):
         log.warning("backend error: %s", e)
@@ -70,6 +101,7 @@ def create_app(cfg=None, backend=None, excludes=None):
                        directions=DIRECTIONS, orders=ORDERS, backend=cfg.backend,
                        rare_scan_cap=cfg.rare_scan_cap,
                        soc_pivots=cfg.backend != "case",
+                       analysis=hasattr(backend, "threat_line"), threat_hops=cfg.threat_hops,
                        case=summary() if summary else None)
 
     @app.get("/api/resolve")
@@ -92,9 +124,7 @@ def create_app(cfg=None, backend=None, excludes=None):
         ip = parse_ip(args.get("ip"))
         direction = parse_direction(args.get("direction", "in"))
         anchor = parse_time(args.get("ts"))
-        window = parse_window(args.get("window", cfg.default_window))
-        if window > max_window:
-            raise ValidationError(f"window exceeds maximum of {cfg.max_window}")
+        window = window_arg(args.get("window"))
         try:
             limit = int(args.get("limit", cfg.default_limit))
         except ValueError:
@@ -124,6 +154,47 @@ def create_app(cfg=None, backend=None, excludes=None):
         entries = excludes.remove(body.get("entry"))
         log.info("exclude removed: %s", body.get("entry"))
         return jsonify(entries=entries)
+
+    @app.get("/api/compromised")
+    def api_compromised():
+        return jsonify(hosts=compromised.list())
+
+    @app.post("/api/compromised")
+    def api_compromised_mark():
+        body = request.get_json(silent=True) or {}
+        hosts = compromised.mark(body.get("ip"), body.get("time"), body.get("note"))
+        log.info("marked compromised: %s at %s", body.get("ip"), body.get("time") or "unknown time")
+        return jsonify(hosts=hosts)
+
+    @app.delete("/api/compromised")
+    def api_compromised_unmark():
+        body = request.get_json(silent=True) or {}
+        hosts = compromised.unmark(body.get("ip"))
+        log.info("unmarked compromised: %s", body.get("ip"))
+        return jsonify(hosts=hosts)
+
+    @app.get("/api/threatline")
+    def api_threatline():
+        require("threat_line")
+        args = request.args
+        a, b = parse_ip(args.get("a")), parse_ip(args.get("b"))
+        if not args.get("from"):
+            raise ValidationError("from (start of the conversation) is required")
+        first = parse_time(args["from"])
+        last = parse_time(args.get("to") or args["from"])
+        if last < first:
+            raise ValidationError("to is before from")
+        res = backend.threat_line(a, b, first, last, window_arg(args.get("window")),
+                                  hops_arg(args.get("hops")), excludes.list(),
+                                  cfg.threat_max_hosts)
+        return jsonify(a=a, b=b, **res)
+
+    @app.get("/api/paths")
+    def api_paths():
+        require("attack_paths")
+        res = backend.attack_paths(compromised.times(), window_arg(request.args.get("window")),
+                                   hops_arg(request.args.get("hops")), excludes.list())
+        return jsonify(**res)
 
     @app.get("/api/pivot")
     def api_pivot():
