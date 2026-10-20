@@ -39,6 +39,23 @@ def udp(src, dst, sport, dport, payload=b""):
     return _ip(src, dst, 17, dg)
 
 
+def dns_answer(qname, answers, rcode=0):
+    """A DNS response payload. answers: [(name, "A"|"AAAA"|"CNAME", value)]."""
+    msg = dpkt.dns.DNS(id=7, qr=dpkt.dns.DNS_R, rcode=rcode)
+    msg.qd = [dpkt.dns.DNS.Q(name=qname, type=dpkt.dns.DNS_A, cls=dpkt.dns.DNS_IN)]
+    msg.an = []
+    for name, rtype, value in answers:
+        rr = dpkt.dns.DNS.RR(name=name, cls=dpkt.dns.DNS_IN, ttl=60)
+        if rtype == "A":
+            rr.type, rr.ip = dpkt.dns.DNS_A, socket.inet_aton(value)
+        elif rtype == "AAAA":
+            rr.type, rr.ip6 = dpkt.dns.DNS_AAAA, socket.inet_pton(socket.AF_INET6, value)
+        else:
+            rr.type, rr.cname = dpkt.dns.DNS_CNAME, value
+        msg.an.append(rr)
+    return bytes(msg)
+
+
 def icmp_echo(src, dst, reply=False):
     msg = dpkt.icmp.ICMP(type=0 if reply else 8, code=0,
                          data=dpkt.icmp.ICMP.Echo(id=1, seq=1, data=b"ping"))

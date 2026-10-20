@@ -121,7 +121,44 @@ def _first_timestamp(path):
     return float("inf")
 
 
-def _read_one(path, tracker):
+def _name(n):
+    return n.rstrip(".").lower()
+
+
+def record_dns(payload, ts, dns):
+    """Add the A/AAAA answers of a DNS response to `dns`: {name: {ip: [first, last]}}.
+
+    Every name in the response (the question and each CNAME on the way) maps to every
+    address in its answer section."""
+    try:
+        msg = dpkt.dns.DNS(payload)
+    except (dpkt.Error, IndexError, struct.error, UnicodeDecodeError):
+        return
+    if msg.qr != dpkt.dns.DNS_R or msg.rcode != dpkt.dns.DNS_RCODE_NOERR:
+        return
+    names, ips = {_name(q.name) for q in msg.qd}, set()
+    for rr in msg.an:
+        if rr.type == dpkt.dns.DNS_A and len(rr.rdata) == 4:
+            ips.add(socket.inet_ntop(socket.AF_INET, rr.rdata))
+        elif rr.type == dpkt.dns.DNS_AAAA and len(rr.rdata) == 16:
+            ips.add(socket.inet_ntop(socket.AF_INET6, rr.rdata))
+        elif rr.type == dpkt.dns.DNS_CNAME:
+            names.add(_name(rr.cname))
+        else:
+            continue
+        names.add(_name(rr.name))
+    names.discard("")
+    for name in names:
+        seen = dns.setdefault(name, {})
+        for ip in ips:
+            if ip in seen:
+                seen[ip][0] = min(seen[ip][0], ts)
+                seen[ip][1] = max(seen[ip][1], ts)
+            else:
+                seen[ip] = [ts, ts]
+
+
+def _read_one(path, tracker, dns):
     packets = skipped = 0
     with open(path, "rb") as fh:
         reader = _open(fh, path)
@@ -152,16 +189,19 @@ def _read_one(path, tracker):
                 sport, dport, flags = t.sport, t.dport, t.flags
             elif isinstance(t, dpkt.udp.UDP):
                 sport, dport, flags = t.sport, t.dport, 0
+                if sport == 53 and dns is not None:
+                    record_dns(t.data, ts, dns)
             else:
                 sport = dport = flags = 0
             tracker.add(ts, src, dst, proto, sport, dport, nbytes, flags, path)
     log.info("%s: %d packets, %d undecodable", path, packets, skipped)
 
 
-def read_pcaps(paths):
+def read_pcaps(paths, dns=None):
     """Flows from tcpdump captures. Files are read in capture order, so a connection that
-    spans rotated files (tcpdump -C / -G) comes out as one flow."""
+    spans rotated files (tcpdump -C / -G) comes out as one flow. If `dns` is a dict, DNS
+    answers seen over UDP are added to it (see record_dns)."""
     tracker = FlowTracker()
     for path in sorted(paths, key=_first_timestamp):
-        _read_one(path, tracker)
+        _read_one(path, tracker, dns)
     return tracker.finish()

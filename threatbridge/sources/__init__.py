@@ -45,8 +45,11 @@ def _files(paths):
             raise SourceError(f"{path}: no such file or directory")
 
 
-def load(paths):
-    """Read every pcap and nfcapd file under `paths`; flows sorted by start time."""
+def load(paths, dns=None):
+    """Read every pcap and nfcapd file under `paths`; flows sorted by start time.
+
+    If `dns` is a dict, it is filled with the DNS answers seen in the pcaps:
+    {name: {ip: [first seen, last seen]}}. NetFlow carries no DNS content."""
     found = {"pcap": [], "nfcapd": []}
     for path, explicit in _files(paths):
         k = kind(path)
@@ -60,7 +63,7 @@ def load(paths):
         raise SourceError("no pcap or nfcapd files found in: " + ", ".join(paths))
     flows = []
     if found["pcap"]:
-        flows.extend(read_pcaps(found["pcap"]))
+        flows.extend(read_pcaps(found["pcap"], dns))
     if found["nfcapd"]:
         flows.extend(read_nfcapd(found["nfcapd"]))
     flows.sort(key=lambda f: (f.start, f.src, f.dst, f.sport, f.dport))

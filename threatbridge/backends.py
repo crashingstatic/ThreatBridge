@@ -143,12 +143,15 @@ def _utc(epoch):
 class CaseBackend:
     """Post-mortem: flows read from tcpdump and nfdump files into an in-memory graph."""
 
-    def __init__(self, cfg, graph=None):
+    def __init__(self, cfg, graph=None, dns=None):
+        # dns: names seen in DNS answers in the pcaps, {name: {ip: [first, last]}}
+        self.dns = {} if dns is None else dns
         if graph is None:
             t = time.monotonic()
-            graph = build_graph(sources.load(cfg.case_paths))
-            log.info("case loaded: %d flows between %d hosts in %.1fs",
-                     graph.number_of_edges(), graph.number_of_nodes(), time.monotonic() - t)
+            graph = build_graph(sources.load(cfg.case_paths, dns=self.dns))
+            log.info("case loaded: %d flows between %d hosts, %d names in DNS answers, in %.1fs",
+                     graph.number_of_edges(), graph.number_of_nodes(), len(self.dns),
+                     time.monotonic() - t)
         self.graph = graph
         span = time_span(graph)
         self.span = (_utc(span[0]), _utc(span[1])) if span else None
@@ -159,6 +162,7 @@ class CaseBackend:
             "hosts": self.graph.number_of_nodes(),
             "start": fmt_time(self.span[0]) if self.span else None,
             "end": fmt_time(self.span[1]) if self.span else None,
+            "dns_names": len(self.dns),
         }
 
     def neighbors(self, ip, direction, start, end, limit, order, exclude):

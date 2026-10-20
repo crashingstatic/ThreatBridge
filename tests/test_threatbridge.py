@@ -151,7 +151,7 @@ def test_excludes_shared_and_applied(client):
     # Writes without the custom header are rejected (CSRF guard).
     assert client.post("/api/excludes", json={"entry": victim}).status_code == 403
     h = {"X-ThreatBridge": "1"}
-    assert client.post("/api/excludes", json={"entry": "bad"}, headers=h).status_code == 400
+    assert client.post("/api/excludes", json={"entry": "not valid!"}, headers=h).status_code == 400
     assert client.post("/api/excludes", json={"entry": victim}, headers=h).get_json()["entries"] == [victim]
     after = client.get("/api/neighbors?ip=10.0.0.5&ts=2024-05-01T12:00:00Z").get_json()["peers"]
     assert victim not in {p["peer"] for p in after}

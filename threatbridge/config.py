@@ -61,10 +61,15 @@ class Config:
     # Bottom-N (rarest peers) scans every distinct peer exactly, up to this many.
     rare_scan_cap: int = 10000
 
-    # Shared exclude list (IPs/CIDRs never shown as peers), editable in the UI.
+    # Shared exclude list (IPs, CIDRs, domain names), editable in the UI.
     exclude_file: str = "exclude.json"
     # Hosts marked as compromised, editable in the UI.
     compromised_file: str = "compromised.json"
+    # Domain names on the exclude list are also looked up live (system resolver), cached for
+    # dns_ttl seconds. Answers seen in the capture are always used.
+    live_dns: bool = True
+    dns_ttl: int = 300
+    dns_timeout: float = 2.0
 
     # Threat lines and attack paths (case backend): hop limit and size cap per search.
     threat_hops: int = 6
@@ -98,6 +103,9 @@ class Config:
             rare_scan_cap=int(_env("TB_RARE_SCAN_CAP", cls.rare_scan_cap)),
             exclude_file=_env("TB_EXCLUDE_FILE", cls.exclude_file),
             compromised_file=_env("TB_COMPROMISED_FILE", cls.compromised_file),
+            live_dns=_env_bool("TB_LIVE_DNS", True),
+            dns_ttl=int(_env("TB_DNS_TTL", cls.dns_ttl)),
+            dns_timeout=float(_env("TB_DNS_TIMEOUT", cls.dns_timeout)),
             threat_hops=int(_env("TB_THREAT_HOPS", cls.threat_hops)),
             threat_max_hosts=int(_env("TB_THREAT_MAX_HOSTS", cls.threat_max_hosts)),
         )

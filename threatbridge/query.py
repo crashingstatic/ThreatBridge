@@ -91,6 +91,34 @@ def parse_network(value):
     return str(net.network_address) if net.num_addresses == 1 else str(net)
 
 
+_LABEL = r"(?!-)[a-z0-9_-]{1,63}(?<!-)"
+_DOMAIN_RE = re.compile(rf"^(\*\.)?(?:{_LABEL}\.)*{_LABEL}$")
+
+
+def parse_exclude(value):
+    """An exclude entry: IP, CIDR, or domain name (optionally "*.suffix"); canonical string."""
+    try:
+        return parse_network(value)
+    except ValidationError:
+        pass
+    raw = (value or "").strip()
+    name = raw.lower().rstrip(".")
+    if len(name) > 253 or not _DOMAIN_RE.match(name) or name.rsplit(".", 1)[-1].isdigit():
+        raise ValidationError(f"invalid IP, CIDR or domain name: {raw!r}")
+    if name.startswith("*.") and "." not in name[2:]:
+        raise ValidationError("a wildcard needs at least two labels, e.g. *.example.com")
+    return name
+
+
+def is_domain(entry):
+    """True for a domain-name exclude entry, False for an IP/CIDR."""
+    try:
+        ipaddress.ip_network(entry, strict=False)
+        return False
+    except ValueError:
+        return True
+
+
 def peer_fields(cfg, direction):
     """(field matching the host, field holding the peer)."""
     return (cfg.f_dst, cfg.f_src) if direction == "in" else (cfg.f_src, cfg.f_dst)

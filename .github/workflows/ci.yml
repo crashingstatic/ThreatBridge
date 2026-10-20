@@ -105,7 +105,8 @@ jobs:
       - name: Start case-mode server (generated attack-chain pcap)
         run: |
           python tests/make_case.py "$RUNNER_TEMP/case"
-          TB_EXCLUDE_FILE="$RUNNER_TEMP/case-exclude.json" TB_COMPROMISED_FILE="$RUNNER_TEMP/case-compromised.json" \
+          TB_LIVE_DNS=false TB_EXCLUDE_FILE="$RUNNER_TEMP/case-exclude.json" \
+          TB_COMPROMISED_FILE="$RUNNER_TEMP/case-compromised.json" \
             nohup python -m threatbridge --port 5056 --case "$RUNNER_TEMP/case" > "$RUNNER_TEMP/case-server.log" 2>&1 &
           for _ in $(seq 1 30); do curl -sf http://127.0.0.1:5056/healthz && exit 0; sleep 1; done
           cat "$RUNNER_TEMP/case-server.log"; exit 1

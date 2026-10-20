@@ -68,7 +68,7 @@ def test_neighbors_order_limit_exclude_and_self(backend):
 
 def test_summary(backend):
     assert backend.summary() == {"flows": 9, "hosts": 7, "start": "2024-05-01T12:00:10.000Z",
-                                 "end": "2024-05-01T13:23:21.000Z"}
+                                 "end": "2024-05-01T13:23:21.000Z", "dns_names": 0}
 
 
 @pytest.fixture

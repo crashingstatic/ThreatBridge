@@ -318,12 +318,31 @@
   }
 
   // ---- shared exclude list -------------------------------------------------
-  function renderExcludes(entries) {
+  // What a domain entry stands for: DNS answers seen in the capture, and a live lookup.
+  function resolutionText(r) {
+    const list = (ips) => (ips.length > 4 ? `${ips.slice(0, 4).join(", ")} +${ips.length - 4} more`
+                                          : ips.join(", "));
+    const parts = [];
+    if (r.capture.length) parts.push(`capture: ${list(r.capture)}`);
+    if (r.dns.length) parts.push(`DNS: ${list(r.dns)}`);
+    if (r.error) parts.push(r.error);
+    if (!r.capture.length && !r.dns.length && !r.error) parts.push("no addresses found");
+    return parts.join(" · ");
+  }
+
+  function renderExcludes(r) {
     const ul = $("exclude-list");
     ul.replaceChildren();
-    for (const entry of entries) {
+    for (const entry of r.entries) {
       const li = document.createElement("li");
       const span = document.createElement("span"); span.textContent = entry;
+      const resolved = (r.resolved || {})[entry];
+      if (resolved) {
+        const small = document.createElement("small");
+        small.className = "resolved";
+        small.textContent = resolutionText(resolved);
+        span.append(small);
+      }
       const btn = document.createElement("button"); btn.type = "button"; btn.textContent = "Remove";
       btn.addEventListener("click", () => removeExclude(entry).catch((e) => setStatus(e.message, true)));
       li.append(span, btn);
@@ -336,19 +355,26 @@
   async function addExclude(entry) {
     const r = await getJSON("/api/excludes", { method: "POST", headers: WRITE_HEADERS,
                                               body: JSON.stringify({ entry }) });
-    renderExcludes(r.entries);
-    const n = cy.getElementById(entry);
-    if (n.nonempty() && !n.data("root")) n.remove();
-    setStatus(`Excluded ${entry} for everyone; re-expand hosts to apply CIDRs`);
-    await refreshPaths();
+    renderExcludes(r);
+    const added = r.entry;   // canonical form, e.g. lower-cased domain
+    const resolved = (r.resolved || {})[added];
+    const hosts = resolved ? [...resolved.capture, ...resolved.dns] : [added];
+    for (const ip of hosts) {
+      const n = cy.getElementById(ip);
+      if (n.nonempty() && !n.data("root")) n.remove();
+    }
+    setStatus(resolved
+      ? `Excluded ${added} (${hosts.length} address(es)) for everyone`
+      : `Excluded ${added} for everyone; re-expand hosts to apply CIDRs`);
+    await refreshPaths(true);
   }
 
   async function removeExclude(entry) {
     const r = await getJSON("/api/excludes", { method: "DELETE", headers: WRITE_HEADERS,
                                               body: JSON.stringify({ entry }) });
-    renderExcludes(r.entries);
+    renderExcludes(r);
     setStatus(`Removed ${entry} from exclude list`);
-    await refreshPaths();
+    await refreshPaths(true);
   }
 
   $("exclude-form").addEventListener("submit", (e) => {
@@ -503,7 +529,7 @@
                   `${cfg.case.start} → ${cfg.case.end}`);
       }
     } catch (_) { /* keep HTML defaults */ }
-    getJSON("/api/excludes").then((r) => renderExcludes(r.entries)).catch(() => {});
+    getJSON("/api/excludes").then(renderExcludes).catch(() => {});
     $("paths").hidden = !cfg.analysis;
     try { renderCompromised((await getJSON("/api/compromised")).hosts); } catch (_) { /* none */ }
     const q = new URLSearchParams(location.search);

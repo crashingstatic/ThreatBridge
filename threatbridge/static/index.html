@@ -56,9 +56,12 @@
       </section>
       <section id="excludes">
         <h2>Shared exclude list</h2>
-        <p class="hint">IPs/CIDRs hidden from every analyst's maps (top and bottom).</p>
+        <p class="hint">IPs, CIDRs and domain names hidden from every analyst's maps and never
+          crossed by threat lines or attack paths. A domain stands for the addresses it had in the
+          capture's DNS answers and in a live lookup; <code>*.example.com</code> matches capture
+          answers only.</p>
         <form id="exclude-form" class="entry-form">
-          <input id="exclude-input" placeholder="10.0.0.53 or 10.0.0.0/24" spellcheck="false" autocomplete="off">
+          <input id="exclude-input" placeholder="10.0.0.53, 10.0.0.0/24 or updates.example.com" spellcheck="false" autocomplete="off">
           <button type="submit">Add</button>
         </form>
         <ul id="exclude-list" class="entries"></ul>

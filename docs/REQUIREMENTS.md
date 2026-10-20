@@ -15,6 +15,7 @@ Status last updated 2026-10-20. **Done**, **Partial**, **Missing**, **Unverified
 | D6 | File inputs: tcpdump captures (classic pcap) and nfcapd files read with nfdump (tested with 1.7.3). |
 | D7 | A flow is one connection, oriented initiator -> responder like a Zeek conn record. Idle timeouts are 5 min for TCP and 1 min for UDP/ICMP, and the two halves of a NetFlow connection are merged. Details in the README, "Post-mortem mode". |
 | D8 | Attack paths and threat lines follow time order: a hop must start after the previous one, and within the map's Window of it. Limits: 6 hops, 300 hosts per threat-line direction. Post-mortem (case) backend only. |
+| D9 | Domain names on the exclude list resolve from DNS answers in the capture first, then live DNS, and the two are combined. |
 
 ## Data ingestion
 
@@ -68,8 +69,8 @@ Status last updated 2026-10-20. **Done**, **Partial**, **Missing**, **Unverified
 
 | ID | Requirement | Status | Notes |
 |---|---|---|---|
-| FIL-1 | SHALL accept a list of IP addresses to exclude from graph analysis | Done | Shared list. Adding an IP removes it from the map; a CIDR applies from the next expansion. |
-| FIL-2 | SHALL provide domain name whitelisting with real-time DNS resolution | Missing | |
+| FIL-1 | SHALL accept a list of IP addresses to exclude from graph analysis | Done | Shared list of IPs, CIDRs and domain names. Hosts it names are removed from the map; a CIDR applies from the next expansion. |
+| FIL-2 | SHALL provide domain name whitelisting with real-time DNS resolution | Done | A domain stands for its addresses from the capture's DNS answers plus a live lookup (cached 5 min, can be switched off). `*.suffix` matches capture answers. Security Onion mode uses the live lookup only. |
 | FIL-3 | SHALL exclude whitelisted communications from attack path calculations | Done | Excluded hosts are never crossed by threat lines or attack paths. |
 | FIL-S1 | SHOULD support CIDR notation | Done | |
 | FIL-S2 | SHOULD keep whitelist configuration across sessions | Done | `exclude.json` |

@@ -17,7 +17,7 @@ Data sources: Zeek `conn` records in Security Onion's Elasticsearch (`event.data
 |---|---|
 | Launch from SOC | Two SOC actions on an IP value: *inbound (past)* and *outbound (future)*. You can switch direction on the map. |
 | Peer selection | **Top N** (most connections) or **Bottom N** (rarest). Default N = 50. Bottom N is **exact**: it counts every distinct peer, up to 10,000 (`TB_RARE_SCAN_CAP`). Beyond that the map shows a warning that the list may be incomplete. |
-| Exclude list | Shared across all analysts and editable in the UI (side panel, or right-click a host). Takes IPs or CIDRs. Applied to both Top and Bottom. Stored in `/data/exclude.json`. No audit trail. |
+| Exclude list | Shared across all analysts and editable in the UI (side panel, or right-click a host). Takes IPs, CIDRs or domain names (see [Domain names](#domain-names-on-the-exclude-list)). Applied to both Top and Bottom. Stored in `/data/exclude.json`. No audit trail. |
 | Time window | 24h per hop by default. Adjustable on the map, up to `TB_MAX_WINDOW` (30d). |
 | Auth | **Mutual TLS.** Connections without a client cert signed by the ThreatBridge CA fail at the TLS handshake. |
 
@@ -42,6 +42,19 @@ python -m threatbridge --case /cases/incident-42/      # files or directories, i
   - Then a well-known port (<1024) talking to an ephemeral port marks the responder.
 - **Default anchor.** With no anchor time, the map looks back from the end of the data (inbound) or forward from its start (outbound).
 - **SOC pivots** are hidden in this mode.
+
+### Domain names on the exclude list
+
+Enter a name such as `updates.example.com` and it stands for every address it resolved to.
+
+- **Capture answers:** what the name pointed to during the incident, taken from the DNS answers in the pcaps (UDP port 53). CNAME chains are followed: a name and its aliases share all addresses in the answer.
+- **Live lookup:** done through the system resolver and cached for 5 minutes (`TB_DNS_TTL`, `TB_DNS_TIMEOUT`).
+  - A name behind a CDN may resolve differently now than during the incident, which is why the capture answers come first.
+  - Set `TB_LIVE_DNS=false` on an isolated analysis machine; otherwise each lookup waits for its timeout (2 s).
+- **Wildcards:** `*.example.com` matches subdomains in the capture answers only, since a live lookup can't expand a wildcard.
+- **Where to see it:** the side panel shows what each name resolved to and from which source. Hosts at those addresses leave the map.
+- **Caution:** excluding a name excludes its addresses for all traffic. On shared hosting or a CDN that can hide unrelated hosts, attacker infrastructure included.
+- **Security Onion mode** uses the live lookup only.
 
 ### Threat lines, compromised hosts and attack paths
 
@@ -122,6 +135,7 @@ Deployment on a live Security Onion install has **not been tested**. These point
 | `TB_LIMIT` / `TB_MAX_LIMIT` | `50` / `200` | |
 | `TB_RARE_SCAN_CAP` | `10000` | exact Bottom-N scan limit |
 | `TB_EXCLUDE_FILE` | `/data/exclude.json` (container) | |
+| `TB_LIVE_DNS` / `TB_DNS_TTL` / `TB_DNS_TIMEOUT` | `true` / `300` / `2` | live lookups of domain names on the exclude list |
 | `TB_COMPROMISED_FILE` | `/data/compromised.json` (container) | hosts marked compromised |
 | `TB_THREAT_HOPS` / `TB_THREAT_MAX_HOSTS` | `6` / `300` | threat line and attack path limits |
 | `TB_TLS_CERT` / `TB_TLS_KEY` / `TB_TLS_CLIENT_CA` | `/certs/…` | mTLS (gunicorn) |
@@ -165,6 +179,7 @@ Layout:
 | `threatbridge/graph.py` | The NetworkX `MultiDiGraph`, one edge per flow |
 | `threatbridge/analysis.py` | Time-ordered searches: threat lines and attack paths |
 | `threatbridge/excludes.py`, `compromised.py` | Shared lists, stored as JSON files |
+| `threatbridge/domains.py` | Domain names on the exclude list, resolved from the capture and live DNS |
 | `threatbridge/backends.py` | The data backends behind the map: Elasticsearch, case (files) and demo |
 | `threatbridge/app.py` | The HTTP API |
 | `threatbridge/static/` | The Cytoscape.js UI, vendored so it works air-gapped |

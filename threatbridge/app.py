@@ -7,11 +7,12 @@ from flask import Flask, jsonify, request, send_from_directory
 from .backends import BackendError, make_backend
 from .compromised import CompromisedStore
 from .config import Config
+from .domains import DomainResolver
 from .excludes import ExcludeStore
 from .model import SourceError
-from .query import (DIRECTIONS, ORDERS, ValidationError, fmt_time, parse_direction, parse_ip,
-                    parse_order, parse_time, parse_window, soc_host_query, soc_pivot_query,
-                    soc_url, time_range)
+from .query import (DIRECTIONS, ORDERS, ValidationError, fmt_time, parse_direction,
+                    parse_exclude, parse_ip, parse_order, parse_time, parse_window,
+                    soc_host_query, soc_pivot_query, soc_url, time_range)
 
 log = logging.getLogger("threatbridge")
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
@@ -22,12 +23,21 @@ class NotSupported(Exception):
     pass
 
 
-def create_app(cfg=None, backend=None, excludes=None, compromised=None):
+def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver=None):
     # Authentication is mutual TLS, enforced by gunicorn (see gunicorn.conf.py).
     cfg = cfg or Config.from_env()
     backend = backend or make_backend(cfg)
     excludes = excludes or ExcludeStore(cfg.exclude_file)
     compromised = compromised or CompromisedStore(cfg.compromised_file)
+    resolver = resolver or DomainResolver(getattr(backend, "dns", None), live=cfg.live_dns,
+                                          ttl=cfg.dns_ttl, timeout=cfg.dns_timeout)
+
+    def exclusions():
+        """The exclude list as IPs/CIDRs: domain names replaced by their addresses."""
+        return resolver.expand(excludes.list())
+
+    def excludes_body(entries, **extra):
+        return jsonify(entries=entries, resolved=resolver.describe(entries), **extra)
     max_window = parse_window(cfg.max_window)
 
     def window_arg(value):
@@ -102,6 +112,7 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None):
                        rare_scan_cap=cfg.rare_scan_cap,
                        soc_pivots=cfg.backend != "case",
                        analysis=hasattr(backend, "threat_line"), threat_hops=cfg.threat_hops,
+                       live_dns=cfg.live_dns,
                        case=summary() if summary else None)
 
     @app.get("/api/resolve")
@@ -133,27 +144,28 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None):
         order = parse_order(args.get("order"))
 
         start, end = time_range(anchor, direction, window)
-        res = backend.neighbors(ip, direction, start, end, limit, order, excludes.list())
+        res = backend.neighbors(ip, direction, start, end, limit, order, exclusions())
         return jsonify(ip=ip, direction=direction, order=order, anchor=fmt_time(anchor),
                        start=fmt_time(start), end=fmt_time(end), **res)
 
     @app.get("/api/excludes")
     def api_excludes():
-        return jsonify(entries=excludes.list())
+        return excludes_body(excludes.list())
 
     @app.post("/api/excludes")
     def api_excludes_add():
         body = request.get_json(silent=True) or {}
-        entries = excludes.add(body.get("entry"))
-        log.info("exclude added: %s", body.get("entry"))
-        return jsonify(entries=entries)
+        entry = parse_exclude(body.get("entry"))
+        entries = excludes.add(entry)
+        log.info("exclude added: %s", entry)
+        return excludes_body(entries, entry=entry)
 
     @app.delete("/api/excludes")
     def api_excludes_remove():
         body = request.get_json(silent=True) or {}
         entries = excludes.remove(body.get("entry"))
         log.info("exclude removed: %s", body.get("entry"))
-        return jsonify(entries=entries)
+        return excludes_body(entries)
 
     @app.get("/api/compromised")
     def api_compromised():
@@ -185,7 +197,7 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None):
         if last < first:
             raise ValidationError("to is before from")
         res = backend.threat_line(a, b, first, last, window_arg(args.get("window")),
-                                  hops_arg(args.get("hops")), excludes.list(),
+                                  hops_arg(args.get("hops")), exclusions(),
                                   cfg.threat_max_hosts)
         return jsonify(a=a, b=b, **res)
 
@@ -193,7 +205,7 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None):
     def api_paths():
         require("attack_paths")
         res = backend.attack_paths(compromised.times(), window_arg(request.args.get("window")),
-                                   hops_arg(request.args.get("hops")), excludes.list())
+                                   hops_arg(request.args.get("hops")), exclusions())
         return jsonify(**res)
 
     @app.get("/api/pivot")

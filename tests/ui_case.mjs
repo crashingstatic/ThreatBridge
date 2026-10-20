@@ -70,6 +70,17 @@ try {
   await page.waitForFunction(() => !document.querySelector("#path-list li.path"));
   assert.equal(await cyEval(() => window.threatbridge.cy.edges(".attack").length), 0);
 
+  // Exclude a domain: it resolves to 10.0.0.77 from the capture's DNS answers.
+  assert.ok(await cyEval(() => window.threatbridge.cy.getElementById("10.0.0.77").nonempty()));
+  await page.fill("#exclude-input", "Updates.Example.com");
+  await page.press("#exclude-input", "Enter");
+  await page.waitForFunction(() => document.querySelector("#exclude-list li"));
+  assert.match(await page.textContent("#exclude-list li"), /^updates\.example\.comcapture: 10\.0\.0\.77/);
+  assert.ok(await cyEval(() => window.threatbridge.cy.getElementById("10.0.0.77").empty()));
+  await shot("domain-exclude");
+  await page.locator("#exclude-list li button").click();
+  await page.waitForFunction(() => !document.querySelector("#exclude-list li"));
+
   assert.deepEqual(errors, [], "browser console errors");
   console.log("Case-mode UI test passed");
 } finally {

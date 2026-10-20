@@ -36,6 +36,8 @@ main { display: flex; flex: 1; min-height: 300px; }
 .entries li { display: flex; justify-content: space-between; align-items: center; gap: 6px; padding: 3px 0;
   border-bottom: 1px solid var(--line); word-break: break-all; }
 .entries button { padding: 1px 8px; }
+.entries .resolved { display: block; color: var(--muted); font-size: 11px; }
+.hint code { color: var(--text); }
 .entries li.path { cursor: pointer; }
 .entries li.path:hover { background: #2b3a55; }
 .legend { margin-top: 16px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px 14px; }
