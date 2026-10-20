@@ -7,16 +7,18 @@ where each peer is {"peer", "count", "first_seen", "last_seen", "ports"}
 import hashlib
 import ipaddress
 import logging
+import os
 import random
+import tempfile
 import time
-from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 import requests
 
 from . import analysis, sources
-from .graph import build_graph, edge_flows, host_flows, time_span
+from .graph import build_graph, count_between, first_between
 from .query import ValidationError, es_details_body, es_scan_body, es_top_body, fmt_time
+from .store import FlowStore, NotAStore
 
 log = logging.getLogger(__name__)
 SCAN_PAGE = 1000
@@ -141,24 +143,52 @@ def _utc(epoch):
 
 
 class CaseBackend:
-    """Post-mortem: flows read from tcpdump and nfdump files into an in-memory graph."""
+    """Post-mortem: flows read from tcpdump and nfdump files.
 
-    def __init__(self, cfg, graph=None, dns=None):
-        # dns: names seen in DNS answers in the pcaps, {name: {ip: [first, last]}}
-        self.dns = {} if dns is None else dns
-        if graph is None:
-            t = time.monotonic()
-            graph = build_graph(sources.load(cfg.case_paths, dns=self.dns))
-            log.info("case loaded: %d flows between %d hosts, %d names in DNS answers, in %.1fs",
-                     graph.number_of_edges(), graph.number_of_nodes(), len(self.dns),
-                     time.monotonic() - t)
-        self.graph = graph
-        span = time_span(graph)
-        self.span = (_utc(span[0]), _utc(span[1])) if span else None
+    The flows go into a SQLite store (store.py) and a DiGraph of host pairs and flow start
+    times (graph.py). With `cfg.case_db` set, the store is kept in that file and reused when
+    the evidence files are unchanged; otherwise it lives in a temporary directory.
+    """
+
+    def __init__(self, cfg, flows=None, dns=None):
+        self._tmp = None
+        path = cfg.case_db
+        if not path:
+            self._tmp = tempfile.TemporaryDirectory(prefix="threatbridge-")
+            path = os.path.join(self._tmp.name, "case.db")
+        self.store = FlowStore(path)
+        t = time.monotonic()
+        if flows is not None:   # given directly (tests, scripts)
+            self.dns = dns or {}
+            self.store.write(flows, self.dns, [])
+            self.graph = build_graph((f.src, f.dst, f.start) for f in flows)
+        else:
+            self._load(cfg.case_paths)
+        self.flow_count, first, last = self.store.stats()
+        self.span = (_utc(first), _utc(last)) if self.flow_count else None
+        log.info("case ready: %d flows, %d hosts, %d host pairs, %d names in DNS answers, in %.1fs",
+                 self.flow_count, self.graph.number_of_nodes(), self.graph.number_of_edges(),
+                 len(self.dns), time.monotonic() - t)
+
+    def _load(self, paths):
+        found = sources.find(paths)
+        evidence = sources.manifest(found)
+        if self.store.matches(evidence):
+            log.info("reusing %s: the evidence files are unchanged", self.store.path)
+            self.dns = self.store.dns()
+        else:
+            self.dns = {}
+            flows = sources.read(found, self.dns)
+            try:
+                self.store.write(flows, self.dns, evidence)
+            except NotAStore as e:
+                raise sources.SourceError(str(e))
+            del flows
+        self.graph = build_graph(self.store.pairs())
 
     def summary(self):
         return {
-            "flows": self.graph.number_of_edges(),
+            "flows": self.flow_count,
             "hosts": self.graph.number_of_nodes(),
             "start": fmt_time(self.span[0]) if self.span else None,
             "end": fmt_time(self.span[1]) if self.span else None,
@@ -166,45 +196,42 @@ class CaseBackend:
         }
 
     def neighbors(self, ip, direction, start, end, limit, order, exclude):
-        excluded, peers = _Excluded(exclude), {}
+        excluded = _Excluded(exclude)
         lo, hi = start.timestamp() - TIME_SLACK, end.timestamp() + TIME_SLACK
-        for f in host_flows(self.graph, ip, direction, lo, hi):
-            peer = f.src if direction == "in" else f.dst
-            if peer == ip or peer in excluded:
-                continue
-            p = peers.get(peer)
-            if p is None:
-                p = peers[peer] = {"count": 0, "first": f.start, "last": f.start, "ports": Counter()}
-            p["count"] += 1
-            p["first"] = min(p["first"], f.start)
-            p["last"] = max(p["last"], f.start)
-            if f.proto in ("tcp", "udp"):
-                p["ports"][f.dport] += 1
+        # Counts and times come from the graph's per-pair start times; only the ports of
+        # the peers shown need the flows themselves.
+        adjacency = {} if ip not in self.graph else (
+            self.graph.pred[ip] if direction == "in" else self.graph.succ[ip])
+        peers = {}
+        for peer, edge in adjacency.items():
+            if peer != ip and peer not in excluded:
+                n, first, last = count_between(edge["times"], lo, hi)
+                if n:
+                    peers[peer] = (n, first, last)
         sign = -1 if order == "top" else 1
-        ranked = sorted(peers.items(), key=lambda kv: (sign * kv[1]["count"], kv[0]))[:limit]
+        ranked = sorted(peers.items(), key=lambda kv: (sign * kv[1][0], kv[0]))[:limit]
+        ports = self.store.ports(ip, direction, [peer for peer, _ in ranked], lo, hi)
         return {
-            "peers": [{"peer": peer, "count": p["count"], "first_seen": fmt_time(_utc(p["first"])),
-                       "last_seen": fmt_time(_utc(p["last"])), "ports": _top_ports(p["ports"])}
-                      for peer, p in ranked],
+            "peers": [{"peer": peer, "count": n, "first_seen": fmt_time(_utc(first)),
+                       "last_seen": fmt_time(_utc(last)), "ports": _top_ports(ports[peer])}
+                      for peer, (n, first, last) in ranked],
             "distinct_peers": len(peers),
             "truncated": False,
         }
 
     def _edge(self, src, dst, lo, hi, role):
-        flows = list(edge_flows(self.graph, src, dst, lo, hi))
-        return {
-            "source": src, "target": dst, "role": role, "count": len(flows),
-            "first_seen": fmt_time(_utc(min(f.start for f in flows))),
-            "last_seen": fmt_time(_utc(max(f.start for f in flows))),
-            "ports": _top_ports(Counter(f.dport for f in flows if f.proto in ("tcp", "udp"))),
-        }
+        n, first, last, ports = self.store.edge(src, dst, lo, hi)
+        return {"source": src, "target": dst, "role": role, "count": n,
+                "first_seen": fmt_time(_utc(first)), "last_seen": fmt_time(_utc(last)),
+                "ports": _top_ports(ports)}
 
     def threat_line(self, a, b, first, last, window, max_hops, exclude, max_hosts):
         """Hosts and hops time-consistent with the conversation a -> b (see analysis.py)."""
         first = first.timestamp() - TIME_SLACK
         last = last.timestamp() + TIME_SLACK
         window = window.total_seconds()
-        if not any(edge_flows(self.graph, a, b, first, last)):
+        if not self.graph.has_edge(a, b) or \
+                first_between(self.graph[a][b]["times"], first, last) is None:
             raise ValidationError(f"no flows from {a} to {b} in that time range")
         up, down = analysis.threat_line(self.graph, a, b, first, last, window, max_hops,
                                         _Excluded(exclude), max_hosts)
@@ -229,12 +256,14 @@ class CaseBackend:
         start = self.span[0].timestamp() if self.span else None
         found = analysis.attack_paths(self.graph, compromised, window.total_seconds(), max_hops,
                                       _Excluded(exclude), start, slack=TIME_SLACK)
-        return {"paths": [{
-            "from": a, "to": b,
-            "hops": [{"source": f.src, "target": f.dst, "start": fmt_time(_utc(f.start)),
-                      "sport": f.sport, "dport": f.dport, "proto": f.proto,
-                      "packets": f.packets, "bytes": f.bytes} for f in flows],
-        } for a, b, flows in found]}
+        paths = []
+        for a, b, hops in found:
+            flows = [self.store.flow_at(h.src, h.dst, h.start) for h in hops]
+            paths.append({"from": a, "to": b, "hops": [{
+                "source": f.src, "target": f.dst, "start": fmt_time(_utc(f.start)),
+                "sport": f.sport, "dport": f.dport, "proto": f.proto,
+                "packets": f.packets, "bytes": f.bytes} for f in flows]})
+        return {"paths": paths}
 
 
 class _Excluded:
@@ -252,8 +281,9 @@ class _Excluded:
         return hit
 
 
-def _top_ports(counter, n=5):
-    return [port for port, _ in sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))[:n]]
+def _top_ports(counts, n=5):
+    """The n most used ports from {port: count}."""
+    return [port for port, _ in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:n]]
 
 
 def make_backend(cfg):

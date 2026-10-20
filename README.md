@@ -26,6 +26,7 @@ Data sources: Zeek `conn` records in Security Onion's Elasticsearch (`event.data
 ```bash
 pip install -r requirements.txt
 python -m threatbridge --case /cases/incident-42/      # files or directories, in any mix
+# --db /work/incident-42.db keeps the parsed flows and reuses them while the evidence is unchanged
 # browse to http://127.0.0.1:5055/
 ```
 
@@ -76,9 +77,15 @@ All three follow one rule: a hop A → B counts only if it starts after the atta
   - With A's time unknown, its first hop may happen at any point in the data.
   - Click a path in the side panel to focus on it.
 - **Timing in testing:** 975k flows between 2,910 hosts, with one host pair holding 106k of them.
-  - A threat line through that busiest connection took 0.45 s.
-  - Paths among 10 very busy compromised hosts took 4.4 s.
-- **Everything is held in memory.** A 93 MB capture of 1.25M flows took 42 s and about 1 GB of RAM in testing.
+  - A threat line through that busiest connection took 0.05 s.
+  - Paths among 10 very busy compromised hosts took 0.26 s.
+  - Expanding the busiest host took 0.26 s.
+- **Storage.** The flows go into a SQLite file. The map and searches use a graph holding one edge per host pair, with the start times of that pair's flows.
+  - Without `--db` (`TB_CASE_DB`) the file is temporary. With it, the case reopens without re-reading the evidence until a file is added or changed.
+  - Nothing is written to the evidence directories. Keep the `--db` file with your working files.
+- **Memory and time in testing:**
+  - Typical traffic: 975k flows between 2,910 hosts take about 75 MB once loaded.
+  - Worst case: every flow between a different pair of hosts. A 93 MB capture of 1.25M minimum-size packets took 58 s to build, 24 s to reopen with `--db`, and about 1 GB of RAM.
 - **Don't load overlapping evidence.** A pcap and NetFlow of the same traffic are counted twice.
 - **The command above serves plain HTTP on 127.0.0.1.** To share the map, run it under gunicorn with mutual TLS, as for Security Onion. Use `TB_BACKEND=case TB_CASE_PATHS=/cases/incident-42 TB_WORKERS=1`; each worker loads its own copy of the data.
 
@@ -123,6 +130,7 @@ Deployment on a live Security Onion install has **not been tested**. These point
 |---|---|---|
 | `TB_BACKEND` | `elastic` | `elastic` (Security Onion), `case` (files), `demo` |
 | `TB_CASE_PATHS` | – | `case` backend: files/directories, separated by `:` |
+| `TB_CASE_DB` | – (temporary) | `case` backend: SQLite file for the flows, reused while the evidence is unchanged |
 | `TB_NFDUMP` | `nfdump` | nfdump binary for nfcapd files |
 | `TB_ES_URL` / `TB_ES_USER` / `TB_ES_PASS` | `https://localhost:9200` | Elasticsearch |
 | `TB_ES_CA` / `TB_ES_VERIFY` | – / `true` | TLS verification for Elasticsearch |
@@ -176,7 +184,8 @@ Layout:
 | `threatbridge/query.py` | Input validation, Elasticsearch and SOC query builders |
 | `threatbridge/model.py` | The `Flow` record shared by the file readers |
 | `threatbridge/sources/` | pcap and nfcapd readers |
-| `threatbridge/graph.py` | The NetworkX `MultiDiGraph`, one edge per flow |
+| `threatbridge/store.py` | The flows, in SQLite: counts, ports and details behind each edge |
+| `threatbridge/graph.py` | The NetworkX `DiGraph`: one edge per host pair, with that pair's flow start times |
 | `threatbridge/analysis.py` | Time-ordered searches: threat lines and attack paths |
 | `threatbridge/excludes.py`, `compromised.py` | Shared lists, stored as JSON files |
 | `threatbridge/domains.py` | Domain names on the exclude list, resolved from the capture and live DNS |

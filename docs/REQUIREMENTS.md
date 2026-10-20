@@ -10,7 +10,7 @@ Status last updated 2026-10-20. **Done**, **Partial**, **Missing**, **Unverified
 | D1 | One shared core with several data sources: PCAP files, NetFlow files, and Security Onion (Elasticsearch). |
 | D2 | Post-mortem tool. No live capture or live collectors. |
 | D3 | Left-click an edge: highlight the threat line. Right-click an edge: menu with the SOC Dashboards pivot (and PCAP export, once D5 is lifted). |
-| D4 | Graph storage: NetworkX `MultiDiGraph`, one edge per flow, the `Flow` stored as an edge attribute. (`DiGraph` per host pair plus a SQLite flow table was benchmarked and declined.) |
+| D4 | Graph storage: NetworkX `DiGraph`, one edge per host pair, carrying the sorted start times of its flows; the flows themselves in SQLite. Changed from `MultiDiGraph` (one edge per flow) on 2026-10-20 for PRF-3: same results, 27x faster attack paths. |
 | D5 | PCAP export (ATK-2, EXT-2) deferred. |
 | D6 | File inputs: tcpdump captures (classic pcap) and nfcapd files read with nfdump (tested with 1.7.3). |
 | D7 | A flow is one connection, oriented initiator -> responder like a Zeek conn record. Idle timeouts are 5 min for TCP and 1 min for UDP/ICMP, and the two halves of a NetFlow connection are merged. Details in the README, "Post-mortem mode". |
@@ -62,7 +62,7 @@ Status last updated 2026-10-20. **Done**, **Partial**, **Missing**, **Unverified
 | INT-3 | SHALL allow iterative refinement of attack path analysis based on analyst feedback | Done | Expand, remove, exclude, mark/unmark compromised; paths are recomputed after each change. |
 | INT-4 | SHALL update graph visualization in real-time as new compromise indicators are added | Done | Case backend: attack paths are redrawn as soon as a host is marked or unmarked. |
 | INT-S1 | SHOULD provide undo/redo for analysis iterations | Missing | |
-| INT-S2 | SHOULD save and restore analysis sessions | Partial | Exclude and compromised lists persist; the URL keeps the root IP and time. The map layout is not saved. |
+| INT-S2 | SHOULD save and restore analysis sessions | Partial | Exclude and compromised lists persist; `--db` keeps the parsed case; the URL keeps the root IP and time. The map layout is not saved. |
 | INT-S3 | SHOULD export analysis results in standard formats (JSON, XML, CSV) | Missing | |
 
 ## Filtering and whitelisting
@@ -82,8 +82,8 @@ Status last updated 2026-10-20. **Done**, **Partial**, **Missing**, **Unverified
 | ID | Requirement | Status | Notes |
 |---|---|---|---|
 | PRF-1 | SHALL process PCAP files containing at least 1 million network flows | Done | 1.25M flows; `TB_PERF=1 pytest tests/test_perf.py`. |
-| PRF-2 | SHALL complete initial graph construction within 5 minutes for datasets under 100MB | Done | 93 MB pcap of minimum-size packets: 42 s, about 1 GB RAM (one test machine). |
-| PRF-3 | SHALL keep user interaction responsive during graph traversal | Partial | Requests are asynchronous. Measured: threat line 0.45 s and paths among 10 busy hosts 4.4 s (975k flows). The paths figure is slow. |
+| PRF-2 | SHALL complete initial graph construction within 5 minutes for datasets under 100MB | Done | Worst case, 93 MB pcap of 1.25M minimum-size packets: built in 58 s, reopened from `--db` in 24 s (one test machine). |
+| PRF-3 | SHALL keep user interaction responsive during graph traversal | Done | 975k flows: threat line 0.05 s, attack paths among 10 busy hosts 0.26 s, expanding the busiest host 0.26 s. Requests are asynchronous. |
 | PRF-S1 | SHOULD support distributed processing for large datasets | Partial | Security Onion source only: Elasticsearch does the aggregation. |
 | PRF-S2 | SHOULD support incremental graph updates for continuous monitoring | Missing | Possibly out of scope under D2; not decided. |
 | PRF-S3 | SHOULD show progress for long-running operations | Partial | Status line during queries. |

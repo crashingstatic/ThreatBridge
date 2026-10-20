@@ -6,7 +6,7 @@ from ..model import SourceError
 from .netflow import read_nfcapd
 from .pcap import read_pcaps
 
-__all__ = ["SourceError", "kind", "load"]
+__all__ = ["SourceError", "find", "kind", "load", "manifest", "read"]
 
 log = logging.getLogger(__name__)
 
@@ -45,11 +45,8 @@ def _files(paths):
             raise SourceError(f"{path}: no such file or directory")
 
 
-def load(paths, dns=None):
-    """Read every pcap and nfcapd file under `paths`; flows sorted by start time.
-
-    If `dns` is a dict, it is filled with the DNS answers seen in the pcaps:
-    {name: {ip: [first seen, last seen]}}. NetFlow carries no DNS content."""
+def find(paths):
+    """{"pcap": [...], "nfcapd": [...]}: the evidence files under `paths`."""
     found = {"pcap": [], "nfcapd": []}
     for path, explicit in _files(paths):
         k = kind(path)
@@ -61,6 +58,23 @@ def load(paths, dns=None):
             log.info("skipping %s: not a pcap or nfcapd file", path)
     if not found["pcap"] and not found["nfcapd"]:
         raise SourceError("no pcap or nfcapd files found in: " + ", ".join(paths))
+    return found
+
+
+def manifest(found):
+    """[(absolute path, size, mtime_ns)] for the files in `found`: what a case was built from."""
+    out = []
+    for path in found["pcap"] + found["nfcapd"]:
+        st = os.stat(path)
+        out.append((os.path.abspath(path), st.st_size, st.st_mtime_ns))
+    return out
+
+
+def read(found, dns=None):
+    """Flows from the files in `found`, sorted by start time.
+
+    If `dns` is a dict, it is filled with the DNS answers seen in the pcaps:
+    {name: {ip: [first seen, last seen]}}. NetFlow carries no DNS content."""
     flows = []
     if found["pcap"]:
         flows.extend(read_pcaps(found["pcap"], dns))
@@ -68,3 +82,8 @@ def load(paths, dns=None):
         flows.extend(read_nfcapd(found["nfcapd"]))
     flows.sort(key=lambda f: (f.start, f.src, f.dst, f.sport, f.dport))
     return flows
+
+
+def load(paths, dns=None):
+    """Read every pcap and nfcapd file under `paths` (see find() and read())."""
+    return read(find(paths), dns)

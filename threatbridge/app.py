@@ -231,6 +231,9 @@ def main():
     p.add_argument("--demo", action="store_true", help="use the fake demo backend")
     p.add_argument("--case", nargs="+", metavar="PATH",
                    help="post-mortem mode: tcpdump pcap and nfdump nfcapd files or directories")
+    p.add_argument("--db", metavar="FILE",
+                   help="keep the case's flows in this SQLite file and reuse it next time "
+                        "while the evidence is unchanged (default: temporary)")
     a = p.parse_args()
     logging.basicConfig(level=logging.INFO)
     cfg = Config.from_env()
@@ -238,6 +241,8 @@ def main():
         cfg.backend = "demo"
     if a.case:
         cfg.backend, cfg.case_paths = "case", a.case
+    if a.db:
+        cfg.case_db = a.db
     try:
         app = create_app(cfg)
     except SourceError as e:

@@ -28,6 +28,8 @@ class Config:
 
     # Post-mortem ("case") backend: tcpdump pcap / nfdump nfcapd files or directories.
     case_paths: list = field(default_factory=list)
+    # SQLite file for the case's flows, reused while the evidence is unchanged. None: temporary.
+    case_db: str = None
 
     # Elasticsearch (Security Onion 2.4 stores Zeek conn logs here)
     es_url: str = "https://localhost:9200"
@@ -80,6 +82,7 @@ class Config:
         return cls(
             backend=_env("TB_BACKEND", "elastic"),
             case_paths=[p for p in (_env("TB_CASE_PATHS") or "").split(os.pathsep) if p],
+            case_db=_env("TB_CASE_DB"),
             es_url=_env("TB_ES_URL", cls.es_url),
             es_user=_env("TB_ES_USER"),
             es_pass=_env("TB_ES_PASS"),

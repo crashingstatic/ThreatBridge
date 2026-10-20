@@ -8,7 +8,8 @@ from threatbridge.app import create_app
 from threatbridge.backends import CaseBackend
 from threatbridge.config import Config
 from threatbridge.excludes import ExcludeStore
-from threatbridge.graph import build_graph, host_flows
+from threatbridge.graph import build_graph
+from threatbridge.store import FlowStore
 from threatbridge.model import Flow
 
 T = 1_714_564_800.0
@@ -31,7 +32,7 @@ FLOWS = [
 
 @pytest.fixture
 def backend():
-    return CaseBackend(Config(backend="case"), graph=build_graph(FLOWS))
+    return CaseBackend(Config(backend="case"), flows=FLOWS)
 
 
 def utc(epoch):
@@ -39,11 +40,37 @@ def utc(epoch):
 
 
 def test_graph_keeps_every_flow():
-    g = build_graph(FLOWS)
-    assert g.number_of_edges() == len(FLOWS)
-    assert g.number_of_edges("10.0.0.1", H) == 3
-    assert [f.start for f in host_flows(g, H, "in", T + 15, T + 45)] == [T + 20, T + 30, T + 40]
-    assert list(host_flows(g, "10.9.9.9", "in")) == []
+    g = build_graph((f.src, f.dst, f.start) for f in FLOWS)
+    assert g.number_of_edges() == 7                            # host pairs
+    assert list(g["10.0.0.1"][H]["times"]) == [T + 10, T + 20, T + 30]
+
+
+def test_store_queries(tmp_path):
+    store = FlowStore(str(tmp_path / "case.db"))
+    store.write(FLOWS, {"x.example": {"10.0.0.1": [T, T + 1]}}, [("/e/cap.pcap", 10, 5)])
+    assert store.stats() == (9, T + 10, T + 5001)
+    assert store.ports(H, "in", ["10.0.0.1", "10.0.0.2", "10.0.0.3"], T + 15, T + 45) == {
+        "10.0.0.1": {445: 1, 3389: 1}, "10.0.0.2": {22: 1}, "10.0.0.3": {}}
+    assert store.ports(H, "out", ["10.0.0.20"], 0, T * 2) == {"10.0.0.20": {443: 1}}
+    assert store.ports("10.9.9.9", "in", [], 0, T * 2) == {}
+    assert store.edge("10.0.0.1", H, T, T + 25) == (2, T + 10, T + 20, {445: 2})
+    assert store.flow_at("10.0.0.2", H, T + 40) == FLOWS[3]
+    assert store.dns() == {"x.example": {"10.0.0.1": [T, T + 1]}}
+    assert store.matches([("/e/cap.pcap", 10, 5)])
+    assert not store.matches([("/e/cap.pcap", 10, 6)])                 # file changed
+    assert not FlowStore(str(tmp_path / "other.db")).matches([])      # never built
+    store.write(FLOWS[:1], {}, [])                                     # rebuild replaces
+    assert store.stats()[0] == 1
+
+
+def test_store_refuses_to_overwrite_other_databases(tmp_path):
+    import sqlite3
+    from threatbridge.store import NotAStore
+    path = str(tmp_path / "app.db")
+    sqlite3.connect(path).execute("CREATE TABLE users (name TEXT)").connection.commit()
+    with pytest.raises(NotAStore):
+        FlowStore(path).write(FLOWS, {}, [])
+    assert sqlite3.connect(path).execute("SELECT name FROM sqlite_master").fetchall() == [("users",)]
 
 
 def test_neighbors_inbound(backend):
@@ -124,7 +151,7 @@ CHAIN = [flow("203.0.113.66", "10.0.0.5", 443, T), flow("10.0.0.5", H, 445, T + 
 @pytest.fixture
 def chain_client(tmp_path):
     cfg = Config(backend="case", compromised_file=str(tmp_path / "compromised.json"))
-    app = create_app(cfg, CaseBackend(cfg, graph=build_graph(CHAIN)),
+    app = create_app(cfg, CaseBackend(cfg, flows=CHAIN),
                      ExcludeStore(str(tmp_path / "ex.json")))
     return app.test_client()
 
@@ -195,12 +222,31 @@ def test_analysis_needs_case_backend(tmp_path):
 def test_submillisecond_times_survive_the_round_trip(tmp_path):
     # The UI only ever sees times rounded down to the millisecond.
     t = T + 0.000731
-    g = build_graph([flow("10.0.0.5", H, 445, t), flow(H, "10.0.0.20", 3389, t + 0.25)])
+    flows = [flow("10.0.0.5", H, 445, t), flow(H, "10.0.0.20", 3389, t + 0.25)]
     cfg = Config(backend="case", compromised_file=str(tmp_path / "c.json"))
-    c = create_app(cfg, CaseBackend(cfg, graph=g), ExcludeStore(str(tmp_path / "ex.json"))).test_client()
+    c = create_app(cfg, CaseBackend(cfg, flows=flows), ExcludeStore(str(tmp_path / "ex.json"))).test_client()
     r = c.get(f"/api/threatline?a=10.0.0.5&b={H}&from=2024-05-01T12:00:00.000Z"
               "&to=2024-05-01T12:00:00.000Z")
     assert r.status_code == 200 and {n["id"] for n in r.get_json()["nodes"]} == {"10.0.0.5", H, "10.0.0.20"}
     c.post("/api/compromised", json={"ip": "10.0.0.5", "time": "2024-05-01T12:00:00.000Z"}, headers=WRITE)
     c.post("/api/compromised", json={"ip": "10.0.0.20", "time": "2024-05-01T12:00:00.250Z"}, headers=WRITE)
     assert len(c.get("/api/paths").get_json()["paths"]) == 1
+
+
+def test_case_db_is_reused_until_the_evidence_changes(tmp_path, monkeypatch):
+    from threatbridge import sources
+    d = tmp_path / "case"
+    d.mkdir()
+    write_pcap(d / "cap.pcap", [(T, tcp("10.0.0.5", H, 50000, 445, SYN)),
+                                (T + 0.001, tcp(H, "10.0.0.5", 445, 50000, SYN | ACK))])
+    cfg = Config(backend="case", case_paths=[str(d)], case_db=str(tmp_path / "case.db"))
+    assert CaseBackend(cfg).summary()["flows"] == 1
+
+    real_read = sources.read
+    monkeypatch.setattr(sources, "read", lambda *a, **k: pytest.fail("evidence re-read"))
+    again = CaseBackend(cfg)                                   # unchanged: reuse the file
+    assert again.summary()["flows"] == 1 and again.graph.has_edge("10.0.0.5", H)
+
+    monkeypatch.setattr(sources, "read", real_read)
+    write_pcap(d / "more.pcap", [(T + 5, udp(H, "10.0.0.53", 40000, 53, b"q"))])
+    assert CaseBackend(cfg).summary()["flows"] == 2           # new file: rebuilt

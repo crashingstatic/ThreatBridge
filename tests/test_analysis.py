@@ -2,7 +2,7 @@
 import pytest
 
 from threatbridge import analysis
-from threatbridge.graph import build_graph
+from threatbridge import graph
 from threatbridge.model import Flow
 
 H = 3600.0
@@ -12,6 +12,10 @@ W = DAY  # per-hop window used in most tests
 
 def f(src, dst, start, dport=445):
     return Flow(src, dst, 50000, dport, "tcp", start, start + 1, 2, 120, "x")
+
+
+def build_graph(flows):
+    return graph.build_graph((x.src, x.dst, x.start) for x in flows)
 
 
 # phish -> ws -> fs -> dc -> backup, with noise that breaks time order or the window.
