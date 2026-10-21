@@ -81,9 +81,11 @@ class Config:
     dns_ttl: int = 300
     dns_timeout: float = 2.0
 
-    # Threat lines and attack paths (case backend): hop limit and size cap per search.
+    # Threat lines and attack paths (case backend): hop limit, size cap per threat line, and
+    # how many paths to list per pair of hosts.
     threat_hops: int = 6
     threat_max_hosts: int = 300
+    max_paths: int = 500
 
     @classmethod
     def from_env(cls):
@@ -124,4 +126,5 @@ class Config:
             dns_timeout=float(_env("TB_DNS_TIMEOUT", cls.dns_timeout)),
             threat_hops=int(_env("TB_THREAT_HOPS", cls.threat_hops)),
             threat_max_hosts=int(_env("TB_THREAT_MAX_HOSTS", cls.threat_max_hosts)),
+            max_paths=int(_env("TB_MAX_PATHS", cls.max_paths)),
         )

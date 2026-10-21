@@ -53,7 +53,10 @@ def test_store_queries(tmp_path):
         "10.0.0.1": {445: 1, 3389: 1}, "10.0.0.2": {22: 1}, "10.0.0.3": {}}
     assert store.ports(H, "out", ["10.0.0.20"], 0, T * 2) == {"10.0.0.20": {443: 1}}
     assert store.ports("10.9.9.9", "in", [], 0, T * 2) == {}
-    assert store.edge("10.0.0.1", H, T, T + 25) == (2, T + 10, T + 20, {445: 2})
+    assert store.edge("10.0.0.1", H, [(T, T + 25)]) == (2, T + 10, T + 20, {445: 2})
+    assert store.edge("10.0.0.1", H, [(T, T + 15), (T + 25, T + 35)]) == (2, T + 10, T + 30,
+                                                                       {445: 1, 3389: 1})
+    assert store.edge("10.0.0.1", H, [(-float("inf"), float("inf"))])[0] == 3
     assert store.flow_at("10.0.0.2", H, T + 40) == FLOWS[3]
     assert store.dns() == {"x.example": {"10.0.0.1": [T, T + 1]}}
     assert store.matches([("/e/cap.pcap", 10, 5)])
@@ -256,17 +259,18 @@ def test_threatline_validation(chain_client, query, status):
 
 def test_attack_paths_update_with_marked_hosts(chain_client):
     c = chain_client
-    assert c.get("/api/paths").get_json() == {"paths": []}
+    assert c.get("/api/paths").get_json() == {"pairs": []}
     c.post("/api/compromised", json={"ip": "203.0.113.66"}, headers=WRITE)
     c.post("/api/compromised", json={"ip": "10.0.0.20", "time": "2024-05-01T13:00:00Z"}, headers=WRITE)
-    [p] = c.get("/api/paths").get_json()["paths"]
-    assert (p["from"], p["to"]) == ("203.0.113.66", "10.0.0.20")
+    [pair] = c.get("/api/paths").get_json()["pairs"]
+    assert (pair["from"], pair["to"], pair["truncated"]) == ("203.0.113.66", "10.0.0.20", False)
+    [p] = pair["paths"]
     assert [(h["source"], h["target"], h["dport"]) for h in p["hops"]] == [
         ("203.0.113.66", "10.0.0.5", 443), ("10.0.0.5", H, 445), (H, "10.0.0.20", 3389)]
     assert p["hops"][2]["start"] == "2024-05-01T12:20:00.000Z"     # earliest arrival
     # Marked compromised before the chain reached it: no path any more.
     c.post("/api/compromised", json={"ip": "10.0.0.20", "time": "2024-05-01T12:15:00Z"}, headers=WRITE)
-    assert c.get("/api/paths").get_json() == {"paths": []}
+    assert c.get("/api/paths").get_json() == {"pairs": []}
 
 
 def test_time_range_limits_threat_lines_and_attack_paths(chain_client):
@@ -282,9 +286,66 @@ def test_time_range_limits_threat_lines_and_attack_paths(chain_client):
 
     c.post("/api/compromised", json={"ip": "203.0.113.66"}, headers=WRITE)
     c.post("/api/compromised", json={"ip": "10.0.0.20", "time": "2024-05-01T13:00:00Z"}, headers=WRITE)
-    assert len(c.get("/api/paths").get_json()["paths"]) == 1
-    assert c.get("/api/paths?range_from=2024-05-01T12:05:00Z").get_json() == {"paths": []}
-    assert len(c.get("/api/paths?range_to=2024-05-01T12:20:00Z").get_json()["paths"]) == 1
+    assert len(c.get("/api/paths").get_json()["pairs"]) == 1
+    assert c.get("/api/paths?range_from=2024-05-01T12:05:00Z").get_json() == {"pairs": []}
+    assert len(c.get("/api/paths?range_to=2024-05-01T12:20:00Z").get_json()["pairs"]) == 1
+
+
+# 10.4.0.2 is compromised; 10.5.0.3, on another subnet, matches a different IOC. Ways across:
+# through the jump host 10.9.0.1, through the file server 10.4.0.9, or through both.
+A, B, JUMP, FS = "10.4.0.2", "10.5.0.3", "10.9.0.1", "10.4.0.9"
+LATERAL = [flow(A, JUMP, 445, T + 100), flow(JUMP, B, 3389, T + 200), flow(A, FS, 445, T + 50),
+           flow(FS, JUMP, 22, T + 80), flow(FS, B, 445, T + 5000),
+           flow(B, A, 445, T + 10),                     # B connecting to A: no hop A -> B
+           flow(JUMP, B, 3389, T - 100)]                # before A was reached
+
+
+@pytest.fixture
+def lateral(tmp_path):
+    def client(**cfg_args):
+        cfg = Config(backend="case", compromised_file=str(tmp_path / "c.json"), **cfg_args)
+        return create_app(cfg, CaseBackend(cfg, flows=LATERAL),
+                          ExcludeStore(str(tmp_path / "ex.json"))).test_client()
+    return client
+
+
+def route(path):
+    return [path["hops"][0]["source"]] + [h["target"] for h in path["hops"]]
+
+
+def test_every_path_between_two_hosts(lateral):
+    c = lateral()
+    r = c.get(f"/api/paths?src={A}&dst={B}").get_json()
+    assert (r["src"], r["dst"], r["truncated"]) == (A, B, False)
+    assert [route(p) for p in r["paths"]] == [[A, JUMP, B], [A, FS, B], [A, FS, JUMP, B]]
+    assert [(h["start"], h["dport"]) for h in r["paths"][2]["hops"]] == [
+        ("2024-05-01T12:00:50.000Z", 445), ("2024-05-01T12:01:20.000Z", 22),
+        ("2024-05-01T12:03:20.000Z", 3389)]
+    # B's IOC time: the path must reach it by then. A's: the first hop leaves after it.
+    r = c.get(f"/api/paths?src={A}&dst={B}&dst_time=2024-05-01T12:16:40Z").get_json()
+    assert [route(p) for p in r["paths"]] == [[A, JUMP, B], [A, FS, JUMP, B]]
+    r = c.get(f"/api/paths?src={A}&dst={B}&src_time=2024-05-01T12:01:00Z").get_json()
+    assert [route(p) for p in r["paths"]] == [[A, JUMP, B]]
+    # The other way round there is only B's own connection to A: hops follow who connected.
+    assert [route(p) for p in c.get(f"/api/paths?src={B}&dst={A}").get_json()["paths"]] == [[B, A]]
+    # Excluded hosts, the hop limit and the time range all apply.
+    c.post("/api/excludes", json={"entry": JUMP}, headers=WRITE)
+    assert [route(p) for p in c.get(f"/api/paths?src={A}&dst={B}").get_json()["paths"]] == [[A, FS, B]]
+    c.delete("/api/excludes", json={"entry": JUMP}, headers=WRITE)
+    assert len(c.get(f"/api/paths?src={A}&dst={B}&hops=2").get_json()["paths"]) == 2
+    r = c.get(f"/api/paths?src={A}&dst={B}&range_to=2024-05-01T12:05:00Z").get_json()
+    assert [route(p) for p in r["paths"]] == [[A, JUMP, B], [A, FS, JUMP, B]]
+
+
+def test_path_list_is_capped_shortest_first(lateral):
+    r = lateral(max_paths=1).get(f"/api/paths?src={A}&dst={B}").get_json()
+    assert [route(p) for p in r["paths"]] == [[A, JUMP, B]] and r["truncated"] is True
+
+
+@pytest.mark.parametrize("query", [f"src={A}&dst={A}", f"src={A}&dst=nope", f"src={A}",
+                                   f"src={A}&dst={B}&src_time=soon"])
+def test_paths_between_validation(lateral, query):
+    assert lateral().get(f"/api/paths?{query}").status_code == 400
 
 
 def test_analysis_needs_case_backend(tmp_path):
@@ -293,6 +354,7 @@ def test_analysis_needs_case_backend(tmp_path):
     c = create_app(cfg, DemoBackend(cfg), ExcludeStore(str(tmp_path / "ex.json"))).test_client()
     assert c.get("/api/config").get_json()["analysis"] is False
     assert c.get("/api/paths").status_code == 501
+    assert c.get(f"/api/paths?src=10.0.0.5&dst={H}").status_code == 501
     assert c.get(f"/api/threatline?a=10.0.0.5&b={H}&from=2024-05-01T12:10:00Z").status_code == 501
 
 
@@ -307,7 +369,7 @@ def test_submillisecond_times_survive_the_round_trip(tmp_path):
     assert r.status_code == 200 and {n["id"] for n in r.get_json()["nodes"]} == {"10.0.0.5", H, "10.0.0.20"}
     c.post("/api/compromised", json={"ip": "10.0.0.5", "time": "2024-05-01T12:00:00.000Z"}, headers=WRITE)
     c.post("/api/compromised", json={"ip": "10.0.0.20", "time": "2024-05-01T12:00:00.250Z"}, headers=WRITE)
-    assert len(c.get("/api/paths").get_json()["paths"]) == 1
+    assert len(c.get("/api/paths").get_json()["pairs"]) == 1
 
 
 def test_case_db_is_reused_until_the_evidence_changes(tmp_path, monkeypatch):

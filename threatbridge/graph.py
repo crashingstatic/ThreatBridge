@@ -39,3 +39,30 @@ def last_between(times, lo, hi):
     """Latest time in [lo, hi], or None."""
     i = bisect_right(times, hi)
     return times[i - 1] if i and times[i - 1] >= lo else None
+
+
+def runs(edge, window, lo, hi):
+    """The edge's flow start times in [lo, hi] as runs [(first, last), ...]: consecutive times
+    within a run are at most `window` apart, and runs are further apart than that."""
+    times = edge["times"]
+    i, j = bisect_left(times, lo), bisect_right(times, hi)
+    if i >= j:
+        return []
+    breaks = _breaks(edge, window)
+    out, start = [], i
+    for k in breaks[bisect_left(breaks, i):bisect_left(breaks, j - 1)]:
+        out.append((times[start], times[k]))
+        start = k + 1
+    out.append((times[start], times[j - 1]))
+    return out
+
+
+def _breaks(edge, window):
+    """Indices k where times[k + 1] - times[k] > window, kept on the edge for the last window
+    asked for, so finding runs costs a binary search instead of a scan."""
+    cached = edge.get("breaks")
+    if cached is None or cached[0] != window:
+        t = edge["times"]
+        cached = edge["breaks"] = (window, array("l", (k for k in range(len(t) - 1)
+                                                       if t[k + 1] - t[k] > window)))
+    return cached[1]

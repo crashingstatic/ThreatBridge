@@ -63,13 +63,15 @@ Enter a name such as `updates.example.com` and it stands for every address it re
 
 These need the whole graph, so they work in post-mortem mode only.
 
-All three follow one rule: a hop A → B counts only if it starts after the attacker could have been on A, and within the **Window** of that. That is the rule you apply by hand when you expand hosts. Searches stop after 6 hops (`TB_THREAT_HOPS`). Excluded hosts are never crossed, and flows outside the time range are ignored.
+All of them follow one rule: a hop A → B counts only if A opened the connection, after the attacker could have been on A, and within the **Window** of that. That is the rule you apply by hand when you expand hosts. Searches stop after 6 hops (`TB_THREAT_HOPS`). Excluded hosts are never crossed, and flows outside the time range are ignored.
+
+The searches are exact under that rule. An attacker may have reached a host at several times, and a later arrival can allow a hop an earlier one can't (its Window ends later), so every arrival time is kept, not only the earliest.
 
 - **Threat line: left-click a connection.**
   - *Earlier hosts (violet):* those that could have reached its source before the connection.
   - *Later hosts (teal):* those its destination could have reached afterwards.
   - Hosts not yet on the map are added, everything else is faded, and clicking the background clears it.
-  - Each host is shown with its single best hop: the earliest arrival going forward, the latest departure going back.
+  - Each host is drawn with one hop: the fewest hops from the connection, then the earliest arrival going forward or the latest departure going back.
   - A line stops at 300 hosts per direction (`TB_THREAT_MAX_HOSTS`) and says so when it does.
 - **Compromised hosts: right-click a host, or use the side panel.**
   - Mark a host at its anchor time, at a time you enter, or with the time unknown.
@@ -77,10 +79,17 @@ All three follow one rule: a hop A → B counts only if it starts after the atta
 - **Attack paths:** recomputed after every change to the compromised or exclude lists, and drawn in red.
   - A path from A to B must leave A after A's compromise time and reach B no later than B's.
   - With A's time unknown, its first hop may happen at any point in the data.
+  - Every path counts, not just the best one. The side panel groups them by pair of hosts and lists the first 10 of each, shortest first; *Show all* opens the rest in *Paths between two hosts*.
   - Click a path in the side panel to focus on it.
+- **Paths between two hosts: side panel, or right-click a host → *Find paths from / to this host*.**
+  - For example: 10.4.0.2 is compromised, and later 10.5.0.3, on another subnet, matches a different IOC. Enter both and the map draws, in pink, every way an attacker on 10.4.0.2 could have reached 10.5.0.3 over connections in the evidence.
+  - A path never visits a host twice. Each is listed with one chain of flows that proves it: the earliest arrival, and before each hop the latest flow that leads to it.
+  - The IOC times are optional. With a time for the first host, its first hop must start within the Window after it; with one for the second, the path must reach it by then.
+  - Shortest paths first, up to 500 (`TB_MAX_PATHS`). When there are more, the panel says so; narrow them with the Window, the hop limit, the time range or the exclude list.
 - **Timing in testing:** 975k flows between 2,910 hosts, with one host pair holding 106k of them.
-  - A threat line through that busiest connection took 0.05 s.
-  - Paths among 10 very busy compromised hosts took 0.26 s.
+  - A threat line through that busiest connection took 0.06 s.
+  - Attack paths among 10 very busy compromised hosts (721 paths over 73 pairs) took 0.7 s.
+  - Every path between two of those hosts: at most 0.2 s for any of the 90 pairs.
   - Expanding the busiest host took 0.26 s.
 - **Storage.** The flows go into a SQLite file. The map and searches use a graph holding one edge per host pair, with the start times of that pair's flows.
   - Without `--db` (`TB_CASE_DB`) the file is temporary. With it, the case reopens without re-reading the evidence until a file is added or changed.
@@ -152,6 +161,7 @@ Deployment on a live Security Onion install has **not been tested**. These point
 | `TB_LIVE_DNS` / `TB_DNS_TTL` / `TB_DNS_TIMEOUT` | `true` / `300` / `2` | live lookups of domain names on the exclude list |
 | `TB_COMPROMISED_FILE` | `/data/compromised.json` (container) | hosts marked compromised |
 | `TB_THREAT_HOPS` / `TB_THREAT_MAX_HOSTS` | `6` / `300` | threat line and attack path limits |
+| `TB_MAX_PATHS` | `500` | paths listed between two hosts |
 | `TB_TLS_CERT` / `TB_TLS_KEY` / `TB_TLS_CLIENT_CA` | `/certs/…` | mTLS (gunicorn) |
 
 ## Requirements

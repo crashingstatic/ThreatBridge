@@ -3,7 +3,8 @@
     python tests/make_case.py OUTDIR
 
 203.0.113.66 -> 10.0.0.5 (443) -> 10.0.0.9 (445) -> 10.0.0.20 (3389), ten minutes apart,
-plus traffic that is not on the chain, and a DNS answer: updates.example.com -> 10.0.0.77.
+a shortcut 10.0.0.5 -> 10.0.0.20 (5985) in between, traffic that is not on the chain, and a
+DNS answer: updates.example.com -> 10.0.0.77.
 """
 import os
 import sys
@@ -18,6 +19,7 @@ CONNECTIONS = [
     ("10.0.0.9", "10.0.0.20", 3389, T + 1200),
     ("10.0.0.20", "10.0.0.30", 22, T - 600),    # before 10.0.0.20 was reached
     ("10.0.0.77", "10.0.0.9", 80, T + 1800),     # into 10.0.0.9, after the 445 hop
+    ("10.0.0.5", "10.0.0.20", 5985, T + 900),    # a second way to 10.0.0.20
 ]
 
 

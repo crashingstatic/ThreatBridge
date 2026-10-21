@@ -14,9 +14,10 @@ Status last updated 2026-10-21. **Done**, **Partial**, **Missing**, **Unverified
 | D5 | PCAP export (ATK-2, EXT-2) deferred. |
 | D6 | File inputs: tcpdump captures (classic pcap) and nfcapd files read with nfdump (tested with 1.7.3). |
 | D7 | A flow is one connection, oriented initiator -> responder like a Zeek conn record. Idle timeouts are 5 min for TCP and 1 min for UDP/ICMP, and the two halves of a NetFlow connection are merged. Details in the README, "Post-mortem mode". |
-| D8 | Attack paths and threat lines follow time order: a hop must start after the previous one, and within the map's Window of it. Limits: 6 hops, 300 hosts per threat-line direction. Post-mortem (case) backend only. |
+| D8 | Attack paths and threat lines follow time order: a hop must start after the previous one, and within the map's Window of it. Limits: 6 hops, 300 hosts per threat-line direction. Post-mortem (case) backend only. Since 2026-10-21 the searches are exact: every arrival time at a host is kept, not only the earliest. Before, a path that needed a later arrival (whose Window ends later) could be missed. |
 | D9 | Domain names on the exclude list resolve from DNS answers in the capture first, then live DNS, and the two are combined. |
 | D10 | GRA-3 means: a connection's flows can be listed in time order (oldest first, paged), and an optional time range (from/to) limits every query. A flow is in the range if it started in it. Both work with all data sources. |
+| D11 | Paths between two hosts: every path from A to B in the evidence, no host twice, each hop opened by the host the attacker is on (initiator -> responder), following D8. A's and B's IOC times are optional. Listed shortest first, up to `TB_MAX_PATHS` (500). The compromised list shows the first 10 per pair, with "Show all". |
 
 ## Data ingestion
 
@@ -46,7 +47,7 @@ Status last updated 2026-10-21. **Done**, **Partial**, **Missing**, **Unverified
 
 | ID | Requirement | Status | Notes |
 |---|---|---|---|
-| ATK-1 | SHALL perform graph traversal to identify potential attack paths between compromised hosts | Done | Case backend: paths between hosts marked compromised, recomputed on every change (D8). |
+| ATK-1 | SHALL perform graph traversal to identify potential attack paths between compromised hosts | Done | Case backend: every path between hosts marked compromised, recomputed on every change, and every path between any two hosts on request (D8, D11). Checked against brute force on random graphs. |
 | ATK-2 | SHALL generate filtered PCAP output containing only conversations along identified attack paths | TODO | D5 |
 | ATK-3 | SHALL support bidirectional path analysis (predecessors and successors) | Done | Inbound (past) and outbound (future) expansion; threat lines go both ways. |
 | ATK-4 | SHALL allow analysts to mark hosts as compromised and update path calculations | Done | Mark/unmark from the host menu or side panel, with a time or time unknown; shared list in `compromised.json`. |
@@ -84,7 +85,7 @@ Status last updated 2026-10-21. **Done**, **Partial**, **Missing**, **Unverified
 |---|---|---|---|
 | PRF-1 | SHALL process PCAP files containing at least 1 million network flows | Done | 1.25M flows; `TB_PERF=1 pytest tests/test_perf.py`. |
 | PRF-2 | SHALL complete initial graph construction within 5 minutes for datasets under 100MB | Done | Worst case, 93 MB pcap of 1.25M minimum-size packets: built in 58 s, reopened from `--db` in 24 s (one test machine). |
-| PRF-3 | SHALL keep user interaction responsive during graph traversal | Done | 975k flows: threat line 0.05 s, attack paths among 10 busy hosts 0.26 s, expanding the busiest host 0.26 s. Requests are asynchronous. |
+| PRF-3 | SHALL keep user interaction responsive during graph traversal | Done | 975k flows: threat line 0.06 s; attack paths among 10 busy hosts (721 paths) 0.7 s; every path between two of them at most 0.2 s; expanding the busiest host 0.26 s. Requests are asynchronous. |
 | PRF-S1 | SHOULD support distributed processing for large datasets | Partial | Security Onion source only: Elasticsearch does the aggregation. |
 | PRF-S2 | SHOULD support incremental graph updates for continuous monitoring | Missing | Possibly out of scope under D2; not decided. |
 | PRF-S3 | SHOULD show progress for long-running operations | Partial | Status line during queries. |
@@ -96,5 +97,5 @@ Status last updated 2026-10-21. **Done**, **Partial**, **Missing**, **Unverified
 | EXT-1 | SHALL provide plugin architecture compatible with Security Onion workflows | Partial | SOC action links and the Dashboards pivot. SOC action configuration not verified on a live install. |
 | EXT-2 | SHALL export identified attack paths as filtered PCAP files | TODO | D5 |
 | EXT-S1 | SHOULD integrate with common SIEM platforms for alert enrichment | Missing | Launched from SOC; does not enrich alerts. |
-| EXT-S2 | SHOULD support API endpoints for programmatic access | Partial | JSON API for neighbours, pivots and excludes (mutual TLS). |
+| EXT-S2 | SHOULD support API endpoints for programmatic access | Partial | JSON API for neighbours, flows, threat lines, paths, pivots and excludes (mutual TLS). Not documented as a stable interface. |
 | EXT-S3 | SHOULD provide webhook notifications | Missing | |

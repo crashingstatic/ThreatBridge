@@ -9,7 +9,8 @@
   let cfg = {};       // /api/config
   let compromised = new Map(); // ip -> {time, note}
   const COLORS = { root: "#e5484d", in: "#3e9bff", out: "#f5a524", node: "#9aa7bd",
-                   up: "#a78bfa", down: "#2dd4bf", attack: "#ff4d5e", compromised: "#b4232a" };
+                   up: "#a78bfa", down: "#2dd4bf", attack: "#ff4d5e", compromised: "#b4232a",
+                  route: "#f472b6" };
 
   const cy = cytoscape({
     container: $("cy"),
@@ -34,6 +35,8 @@
       // Attack paths between compromised hosts, and the threat line through a clicked edge.
       { selector: "edge.attack", style: {
           "line-color": COLORS.attack, "target-arrow-color": COLORS.attack, width: 6, "z-index": 10 } },
+      { selector: "edge.route", style: {
+          "line-color": COLORS.route, "target-arrow-color": COLORS.route, width: 6, "z-index": 10 } },
       { selector: "edge.up", style: {
           "line-color": COLORS.up, "target-arrow-color": COLORS.up, width: 5, "z-index": 11 } },
       { selector: "edge.down", style: {
@@ -350,6 +353,9 @@
       ...(cfg.soc_pivots === false ? [] :
         [{ label: "Open host in SOC dashboard", action: () => openPivot(n.id(), null, null) }]),
       ...compromiseItems(n),
+      ...(cfg.analysis ? [
+        { label: "Find paths from this host…", action: () => routeEnd(n.id(), "src") },
+        { label: "Find paths to this host…", action: () => routeEnd(n.id(), "dst") }] : []),
       { label: "Remove from map", action: () => { if (!n.data("root")) { n.remove(); } } },
       { label: "Add to shared exclude list", action: () => addExclude(n.id()) },
     ]);
@@ -549,45 +555,142 @@
     return els;
   }
 
-  // Re-run after every change to compromised hosts or excludes; draws the paths in red.
-  async function refreshPaths(quiet) {
-    if (!cfg.analysis) return;
-    const params = withRange(new URLSearchParams({ window: $("window").value.trim() }));
-    const r = await getJSON(`/api/paths?${params}`);
+  // Put paths on the map, their connections marked with `cls`.
+  function drawPaths(paths, cls) {
     cy.batch(() => {
-      cy.edges().removeClass("attack");
-      for (const p of r.paths) {
+      cy.edges().removeClass(cls);
+      for (const p of paths) {
         for (const h of p.hops) {
           addNode(h.source, h.start, {});
           addNode(h.target, h.start, {});
           const ports = h.proto === "tcp" || h.proto === "udp" ? [h.dport] : [];
-          mergeEdge(h.source, h.target, "out", 1, ports, h.start, h.start).addClass("attack");
+          mergeEdge(h.source, h.target, "out", 1, ports, h.start, h.start).addClass(cls);
         }
       }
     });
-    if (r.paths.length) relayout();
+    if (paths.length) relayout();
+  }
+
+  // "a → b → c", and below it the first and last hop's times; click to focus on the path.
+  function pathItem(p, what) {
+    const hosts = [p.hops[0].source, ...p.hops.map((h) => h.target)];
+    const li = document.createElement("li");
+    const times = document.createElement("small");
+    li.className = "path";
+    li.textContent = hosts.join(" → ");
+    const [first, last] = [p.hops[0], p.hops[p.hops.length - 1]].map((h) => {
+      const span = document.createElement("span");   // a timestamp wraps as a whole
+      span.textContent = h.start;
+      return span;
+    });
+    times.append(first, " → ", last);
+    li.append(times);
+    li.addEventListener("click", () => {
+      focus(pathElements(p));
+      setStatus(`${what} ${hosts[0]} → ${hosts[hosts.length - 1]}, ${p.hops.length} hop(s). ` +
+                "Click the background to clear.");
+    });
+    return li;
+  }
+
+  function hintItem(text) {
+    const li = document.createElement("li");
+    li.className = "hint";
+    li.textContent = text;
+    return li;
+  }
+
+  // Re-run after every change to compromised hosts or excludes; draws the paths in red.
+  // The server sends the first few paths per pair of hosts; "Show all" lists the rest.
+  async function refreshPaths(quiet) {
+    if (!cfg.analysis) return;
+    const params = withRange(new URLSearchParams({ window: $("window").value.trim() }));
+    const r = await getJSON(`/api/paths?${params}`);
+    const paths = r.pairs.flatMap((pair) => pair.paths);
+    drawPaths(paths, "attack");
     const ul = $("path-list");
     ul.replaceChildren();
-    for (const p of r.paths) {
-      const li = document.createElement("li");
-      const hosts = [p.hops[0].source, ...p.hops.map((h) => h.target)];
-      li.textContent = `${hosts.join(" → ")} (${p.hops[0].start} → ${p.hops[p.hops.length - 1].start})`;
-      li.className = "path";
-      li.addEventListener("click", () => {
-        focus(pathElements(p));
-        setStatus(`Attack path ${p.from} → ${p.to}, ${p.hops.length} hop(s). Click the background to clear.`);
-      });
-      ul.append(li);
+    for (const pair of r.pairs) {
+      const head = document.createElement("li");
+      head.className = "pair";
+      const span = document.createElement("span");
+      span.textContent = `${pair.from} → ${pair.to}: ` +
+        (pair.truncated ? `first ${pair.paths.length} paths` : `${pair.paths.length} path(s)`);
+      head.append(span);
+      if (pair.truncated) {
+        const btn = document.createElement("button");
+        btn.type = "button"; btn.textContent = "Show all";
+        btn.addEventListener("click", () => findRoutesBetween(pair.from, pair.to)
+          .catch((e) => setStatus(e.message, true)));
+        head.append(btn);
+      }
+      ul.append(head, ...pair.paths.map((p) => pathItem(p, "Attack path")));
     }
-    if (!r.paths.length) {
-      const li = document.createElement("li");
-      li.className = "hint";
-      li.textContent = compromised.size < 2 ? "Mark at least two hosts as compromised."
-                                            : "No time-consistent path between the marked hosts.";
-      ul.append(li);
+    if (!r.pairs.length) {
+      ul.append(hintItem(compromised.size < 2 ? "Mark at least two hosts as compromised."
+                                              : "No time-consistent path between the marked hosts."));
     }
-    if (!quiet) setStatus(`${r.paths.length} attack path(s) between ${compromised.size} compromised host(s)`);
+    const more = r.pairs.some((pair) => pair.truncated) ? "+" : "";
+    if (!quiet) setStatus(`${paths.length}${more} attack path(s) between ${compromised.size} compromised host(s)`);
   }
+
+  // ---- every path between two hosts ------------------------------------------
+  function compromiseTime(ip) {
+    const h = compromised.get(ip);
+    return (h && h.time) || "";
+  }
+
+  // From the host menu: set one end (with its compromise time, if marked); search once both are set.
+  function routeEnd(ip, end) {
+    const other = end === "src" ? "dst" : "src";
+    $(`route-${end}`).value = ip;
+    $(`route-${end}-time`).value = compromiseTime(ip);
+    const otherIp = $(`route-${other}`).value.trim();
+    if (otherIp && otherIp !== ip) return findRoutes();
+    $(`route-${other}`).focus();
+    setStatus(`Now enter the host to find paths ${end === "src" ? "to" : "from"} (side panel)`);
+    return null;
+  }
+
+  async function findRoutesBetween(src, dst) {
+    for (const [end, ip] of [["src", src], ["dst", dst]]) {
+      $(`route-${end}`).value = ip;
+      $(`route-${end}-time`).value = compromiseTime(ip);
+    }
+    await findRoutes();
+  }
+
+  async function findRoutes() {
+    const src = $("route-src").value.trim(), dst = $("route-dst").value.trim();
+    if (!src || !dst) { setStatus("Enter both hosts to find the paths between them", true); return; }
+    const params = withRange(new URLSearchParams({ src, dst, window: $("window").value.trim() }));
+    for (const end of ["src", "dst"]) {
+      const t = $(`route-${end}-time`).value.trim();
+      if (t) params.set(`${end}_time`, t);
+    }
+    setStatus(`Finding every path from ${src} to ${dst}…`);
+    const r = await getJSON(`/api/paths?${params}`);
+    drawPaths(r.paths, "route");
+    const ul = $("route-list");
+    ul.replaceChildren(...r.paths.map((p) => pathItem(p, "Path")));
+    if (!r.paths.length) ul.append(hintItem("No time-consistent path."));
+    const summary = r.truncated
+      ? `First ${r.paths.length} paths from ${r.src} to ${r.dst}, shortest first. There are more: ` +
+        "narrow them with the Window, the time range or the exclude list."
+      : `${r.paths.length} path(s) from ${r.src} to ${r.dst}.`;
+    $("route-summary").textContent = summary;
+    if (r.paths.length) {
+      const edges = cy.edges(".route");
+      focus(edges.union(edges.connectedNodes()));
+    }
+    setStatus(`${summary} At most ${cfg.threat_hops} hops, ${$("window").value.trim()} between hops.` +
+              (r.paths.length ? " Click the background to clear." : ""), false, r.truncated);
+  }
+
+  $("route-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    findRoutes().catch((err) => setStatus(err.message, true));
+  });
 
   // ---- bootstrap from URL (Security Onion action link) ----------------------
   (async function init() {
@@ -605,6 +708,7 @@
     } catch (_) { /* keep HTML defaults */ }
     getJSON("/api/excludes").then(renderExcludes).catch(() => {});
     $("paths").hidden = !cfg.analysis;
+    $("routes").hidden = !cfg.analysis;
     try { renderCompromised((await getJSON("/api/compromised")).hosts); } catch (_) { /* none */ }
     const q = new URLSearchParams(location.search);
     if (q.get("ip")) $("ip").value = q.get("ip");

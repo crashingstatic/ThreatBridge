@@ -22,6 +22,7 @@ _INDEXES = """
 CREATE INDEX flow_pair ON flow (src, dst, start_ts);
 """
 _TABLES = {"flow", "dns", "evidence", "meta"}
+_FAR = 1e18  # seconds
 _DROP = "".join(f"DROP TABLE IF EXISTS {t};" for t in sorted(_TABLES))
 # TCP/UDP destination ports per peer, for flows into ("in") or out of ("out") a host.
 # The peers are one JSON array parameter, so the SQL text never changes.
@@ -33,6 +34,17 @@ _PORTS = {
            "AND dst IN (SELECT value FROM json_each(?)) AND start_ts BETWEEN ? AND ? "
            "AND proto IN ('tcp', 'udp') GROUP BY dst, dport",
 }
+
+# Count, first/last start, and TCP/UDP destination ports of the flows src -> dst within a
+# JSON array of [lo, hi] intervals. CROSS JOIN keeps the intervals as the outer loop, so each
+# one is a range search on the flow_pair index.
+_EDGE = ("SELECT count(*), min(f.start_ts), max(f.start_ts) "
+         "FROM json_each(?) AS j CROSS JOIN flow AS f WHERE f.src = ? AND f.dst = ? "
+         "AND f.start_ts BETWEEN json_extract(j.value, '$[0]') AND json_extract(j.value, '$[1]')")
+_EDGE_PORTS = ("SELECT f.dport, count(*) "
+               "FROM json_each(?) AS j CROSS JOIN flow AS f WHERE f.src = ? AND f.dst = ? "
+               "AND f.start_ts BETWEEN json_extract(j.value, '$[0]') AND json_extract(j.value, '$[1]') "
+               "AND f.proto IN ('tcp', 'udp') GROUP BY f.dport")
 
 
 class NotAStore(Exception):
@@ -109,16 +121,14 @@ class FlowStore:
                 out[peer][port] = n
         return out
 
-    def edge(self, src, dst, lo, hi):
-        """(count, first start, last start, {dport: count}) for flows src -> dst in [lo, hi]."""
+    def edge(self, src, dst, intervals):
+        """(count, first start, last start, {dport: count}) for flows src -> dst that started
+        within the disjoint intervals [(lo, hi), ...]."""
         db = self._db()
-        n, first, last = db.execute(
-            "SELECT count(*), min(start_ts), max(start_ts) FROM flow "
-            "WHERE src = ? AND dst = ? AND start_ts BETWEEN ? AND ?", (src, dst, lo, hi)).fetchone()
-        ports = dict(db.execute(
-            "SELECT dport, count(*) FROM flow WHERE src = ? AND dst = ? AND start_ts BETWEEN ? AND ? "
-            "AND proto IN ('tcp', 'udp') GROUP BY dport", (src, dst, lo, hi)))
-        return n, first, last, ports
+        # JSON has no infinity: an open end becomes a far-off time.
+        args = (json.dumps([[max(lo, -_FAR), min(hi, _FAR)] for lo, hi in intervals]), src, dst)
+        n, first, last = db.execute(_EDGE, args).fetchone()
+        return n, first, last, dict(db.execute(_EDGE_PORTS, args))
 
     def flows(self, src, dst, lo, hi, offset, limit):
         """One page of the flows src -> dst that started within [lo, hi], oldest first."""

@@ -278,8 +278,8 @@ class CaseBackend:
             "truncated": False,
         }
 
-    def _edge(self, src, dst, lo, hi, role):
-        n, first, last, ports = self.store.edge(src, dst, lo, hi)
+    def _edge(self, src, dst, intervals, role):
+        n, first, last, ports = self.store.edge(src, dst, intervals)
         return {"source": src, "target": dst, "role": role, "count": n,
                 "first_seen": fmt_time(_utc(first)), "last_seen": fmt_time(_utc(last)),
                 "ports": _top_ports(ports)}
@@ -312,31 +312,48 @@ class CaseBackend:
             for ip in reach.via:
                 node = nodes.get(ip)
                 if node is None:
-                    nodes[ip] = {"id": ip, "role": role, "time": fmt_time(_utc(reach.time[ip])),
-                                 "hops": reach.hops[ip]}
+                    nodes[ip] = {"id": ip, "role": role,
+                                 "time": fmt_time(_utc(reach.via[ip].start)), "hops": reach.hops[ip]}
                 elif node["role"] not in ("selected", role):
                     node["role"] = "both"
-        edges = [self._edge(a, b, first, last, "selected")]
+        edges = [self._edge(a, b, [(first, last)], "selected")]
         for reach, role in ((up, "up"), (down, "down")):
-            edges += [self._edge(s, d, lo, hi, role) for s, d, lo, hi in analysis.tree_edges(reach)]
+            edges += [self._edge(s, d, iv, role) for s, d, iv in analysis.tree_edges(reach)]
         return {"nodes": list(nodes.values()), "edges": edges,
                 "truncated": up.truncated or down.truncated}
 
-    def attack_paths(self, compromised, window, max_hops, exclude, bounds=(None, None)):
-        """Time-respecting paths between compromised hosts (see analysis.attack_paths),
-        using only flows within the analyst's time range `bounds`."""
-        start = self.span[0].timestamp() if self.span else None
-        found = analysis.attack_paths(self.graph, compromised, window.total_seconds(), max_hops,
-                                      _Excluded(exclude), start, slack=TIME_SLACK,
-                                      bounds=_epochs(bounds))
-        paths = []
-        for a, b, hops in found:
-            flows = [self.store.flow_at(h.src, h.dst, h.start) for h in hops]
-            paths.append({"from": a, "to": b, "hops": [{
-                "source": f.src, "target": f.dst, "start": fmt_time(_utc(f.start)),
-                "sport": f.sport, "dport": f.dport, "proto": f.proto,
-                "packets": f.packets, "bytes": f.bytes} for f in flows]})
-        return {"paths": paths}
+    def attack_paths(self, compromised, window, max_hops, exclude, bounds=(None, None),
+                     max_paths=None):
+        """Time-respecting paths between each pair of compromised hosts ({ip: epoch or None};
+        see analysis.attack_paths), using only flows within the time range `bounds`: up to
+        max_paths per pair, shortest first."""
+        found = analysis.attack_paths(
+            self.graph, compromised, window.total_seconds(), max_hops, _Excluded(exclude),
+            self._data_start(), TIME_SLACK, _epochs(bounds), max_paths)
+        flows = {}
+        return {"pairs": [{"from": a, "to": b, "paths": self._paths(paths, flows), "truncated": cut}
+                          for a, b, paths, cut in found]}
+
+    def paths_between(self, a, b, ta, tb, window, max_hops, exclude, bounds=(None, None),
+                      max_paths=None):
+        """Every time-respecting path from a to b (see analysis.paths_between). ta, tb: when
+        each was compromised, datetimes or None if unknown."""
+        found, truncated = analysis.paths_between(
+            self.graph, a, b, _epoch(ta), _epoch(tb), window.total_seconds(), max_hops,
+            _Excluded(exclude), self._data_start(), TIME_SLACK, _epochs(bounds), max_paths)
+        return {"paths": self._paths(found, {}), "truncated": truncated}
+
+    def _data_start(self):
+        return self.span[0].timestamp() if self.span else None
+
+    def _paths(self, found, flows):
+        """[[Hop, ...], ...] -> JSON, each hop with its flow's details (`flows` caches them)."""
+        for h in {h for hops in found for h in hops} - flows.keys():
+            flows[h] = self.store.flow_at(h.src, h.dst, h.start)
+        return [{"hops": [{"source": f.src, "target": f.dst, "start": fmt_time(_utc(f.start)),
+                           "sport": f.sport, "dport": f.dport, "proto": f.proto,
+                           "packets": f.packets, "bytes": f.bytes}
+                          for f in (flows[h] for h in hops)]} for hops in found]
 
 
 class _Excluded:
@@ -352,6 +369,10 @@ class _Excluded:
             addr = ipaddress.ip_address(ip)
             hit = self.cache[ip] = any(addr in n for n in self.nets)
         return hit
+
+
+def _epoch(t):
+    return t.timestamp() if t else None
 
 
 def _epochs(bounds):

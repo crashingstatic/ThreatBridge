@@ -1,4 +1,5 @@
-// Headless browser test of post-mortem mode: threat line, compromised hosts, attack paths.
+// Headless browser test of post-mortem mode: threat line, compromised hosts, attack paths,
+// paths between two hosts, flow list, domain excludes and the time range.
 //   python tests/make_case.py DIR && python -m threatbridge --case DIR --port 5056
 //   TB_URL=http://127.0.0.1:5056 node tests/ui_case.mjs [screenshot-dir]
 import { chromium } from "playwright";
@@ -63,18 +64,39 @@ try {
   await page.mouse.click(p.x, p.y, { button: "right" });
   await menuClick("Mark compromised at");
   await page.waitForFunction(() => document.querySelector("#path-list li.path"));
-  assert.equal(await page.textContent("#path-list li.path"),
-    "203.0.113.66 → 10.0.0.5 → 10.0.0.9 → 10.0.0.20 (2024-05-01T12:00:00.000Z → 2024-05-01T12:20:00.000Z)");
-  assert.equal(await cyEval(() => window.threatbridge.cy.edges(".attack").length), 3);
+  assert.deepEqual(await page.$$eval("#path-list li", (l) => l.map((x) => x.innerText.split("\n"))), [
+    ["203.0.113.66 → 10.0.0.20: 2 path(s)"],
+    ["203.0.113.66 → 10.0.0.5 → 10.0.0.20", "2024-05-01T12:00:00.000Z → 2024-05-01T12:15:00.000Z"],
+    ["203.0.113.66 → 10.0.0.5 → 10.0.0.9 → 10.0.0.20", "2024-05-01T12:00:00.000Z → 2024-05-01T12:20:00.000Z"]]);
+  assert.equal(await cyEval(() => window.threatbridge.cy.edges(".attack").length), 4);
   assert.ok(await cyEval(() => window.threatbridge.cy.getElementById("10.0.0.20").data("compromised")));
-  await page.click("#path-list li.path");
+  await page.locator("#path-list li.path").nth(1).click();
   assert.ok((await classes("10.0.0.77")).includes("faded"));
+  assert.ok(!(await classes("10.0.0.9")).includes("faded"));
   await shot("attack-path");
 
   // Unmarking recomputes: no path left.
   await page.locator("#compromised-list li", { hasText: "10.0.0.20" }).locator("button").click();
   await page.waitForFunction(() => !document.querySelector("#path-list li.path"));
   assert.equal(await cyEval(() => window.threatbridge.cy.edges(".attack").length), 0);
+
+  // Every path between two hosts, from the side panel...
+  await page.fill("#route-src", "203.0.113.66");
+  await page.fill("#route-dst", "10.0.0.20");
+  await page.click("#route-form button");
+  await page.waitForFunction(() => document.querySelectorAll("#route-list li.path").length === 2);
+  assert.equal(await page.textContent("#route-summary"), "2 path(s) from 203.0.113.66 to 10.0.0.20.");
+  assert.equal(await cyEval(() => window.threatbridge.cy.edges(".route").length), 4);
+  assert.ok((await classes("10.0.0.77")).includes("faded"));
+  await shot("paths-between");
+  // ... and from the host menu: paths to 10.0.0.9 from the host already entered.
+  p = await at("node#10\\.0\\.0\\.9");
+  await page.mouse.click(p.x, p.y, { button: "right" });
+  await menuClick("Find paths to this host");
+  await page.waitForFunction(() => document.getElementById("route-summary").textContent.includes("to 10.0.0.9"));
+  assert.deepEqual(await page.$$eval("#route-list li.path", (l) => l.map((x) => x.innerText.split("\n"))), [
+    ["203.0.113.66 → 10.0.0.5 → 10.0.0.9", "2024-05-01T12:00:00.000Z → 2024-05-01T12:10:00.000Z"]]);
+  await page.mouse.click(box.x + 5, box.y + 5);
 
   // Exclude a domain: it resolves to 10.0.0.77 from the capture's DNS answers.
   assert.ok(await cyEval(() => window.threatbridge.cy.getElementById("10.0.0.77").nonempty()));

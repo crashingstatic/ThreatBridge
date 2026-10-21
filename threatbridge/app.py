@@ -18,6 +18,7 @@ log = logging.getLogger("threatbridge")
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 MAX_HOPS = 20
 MAX_FLOW_PAGE = 500
+PATHS_PER_PAIR = 10  # attack paths between compromised hosts: a preview per pair
 
 
 class NotSupported(Exception):
@@ -238,10 +239,22 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
 
     @app.get("/api/paths")
     def api_paths():
+        """Every time-respecting path from src to dst (each optionally with the time it was
+        compromised), up to cfg.max_paths; or, without them, the first PATHS_PER_PAIR between
+        each pair of compromised hosts."""
         require("attack_paths")
-        res = backend.attack_paths(compromised.times(), window_arg(request.args.get("window")),
-                                   hops_arg(), exclusions(), range_arg())
-        return jsonify(**res)
+        args = request.args
+        window, hops, bounds = window_arg(args.get("window")), hops_arg(), range_arg()
+        if not (args.get("src") or args.get("dst")):
+            return jsonify(**backend.attack_paths(compromised.times(), window, hops, exclusions(),
+                                                  bounds, PATHS_PER_PAIR))
+        a, b = parse_ip(args.get("src")), parse_ip(args.get("dst"))
+        if a == b:
+            raise ValidationError("src and dst are the same host")
+        ta, tb = (parse_time(args[k]) if (args.get(k) or "").strip() else None
+                  for k in ("src_time", "dst_time"))
+        res = backend.paths_between(a, b, ta, tb, window, hops, exclusions(), bounds, cfg.max_paths)
+        return jsonify(src=a, dst=b, **res)
 
     @app.get("/api/pivot")
     def api_pivot():

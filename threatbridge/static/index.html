@@ -54,8 +54,24 @@
       </section>
       <section id="paths">
         <h2>Attack paths</h2>
-        <p class="hint">Time-consistent paths between compromised hosts, recomputed on every change.</p>
+        <p class="hint">Time-consistent paths between compromised hosts, recomputed on every change:
+          up to 10 per pair, shortest first.</p>
         <ul id="path-list" class="entries"></ul>
+      </section>
+      <section id="routes">
+        <h2>Paths between two hosts</h2>
+        <p class="hint">Every way an attacker on the first host could have reached the second over
+          connections in the evidence: each hop opened by the host the attacker was on, in time
+          order, at most the Window after the hop before. IOC times are optional.</p>
+        <form id="route-form" class="entry-form route-form">
+          <input id="route-src" placeholder="from, e.g. 10.4.0.2" spellcheck="false" autocomplete="off">
+          <input id="route-src-time" placeholder="IOC time (optional)" spellcheck="false" autocomplete="off">
+          <input id="route-dst" placeholder="to, e.g. 10.5.0.3" spellcheck="false" autocomplete="off">
+          <input id="route-dst-time" placeholder="IOC time (optional)" spellcheck="false" autocomplete="off">
+          <button type="submit">Find paths</button>
+        </form>
+        <p id="route-summary" class="hint"></p>
+        <ul id="route-list" class="entries"></ul>
       </section>
       <section id="excludes">
         <h2>Shared exclude list</h2>
@@ -75,6 +91,7 @@
         <span><span class="sw out"></span> outbound (future)</span>
         <span><span class="sw compromised"></span> compromised</span>
         <span><span class="sw attack"></span> attack path</span>
+        <span><span class="sw route"></span> path between two hosts</span>
         <span><span class="sw up"></span> threat line: earlier</span>
         <span><span class="sw down"></span> threat line: later</span>
       </div>
