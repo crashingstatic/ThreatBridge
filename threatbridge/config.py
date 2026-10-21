@@ -48,11 +48,19 @@ class Config:
     f_ts: str = "@timestamp"
     f_dport: str = "destination.port"
     f_dataset: str = "event.dataset"
+    # Shown in a connection's flow list. Defaults: Security Onion 2.4's Zeek conn records,
+    # duration in seconds; packets and bytes add up the listed fields (both directions).
+    f_sport: str = "source.port"
+    f_proto: str = "network.transport"
+    f_duration: str = "event.duration"
+    f_packets: list = field(default_factory=lambda: ["client.packets", "server.packets"])
+    f_bytes: list = field(default_factory=lambda: ["client.ip_bytes", "server.ip_bytes"])
 
     # SOC pivot. {query} is replaced with the URL-encoded OQL query.
     soc_url: str = "https://securityonion"
     soc_path: str = "/#/dashboards?q={query}"
-    # Append "AND @timestamp:[* TO <anchor>]" so the pivot only shows the past.
+    # Append "AND @timestamp:[<from> TO <to>]" to pivots: up to the IOC time, within the
+    # analyst's time range.
     pivot_time_clause: bool = True
 
     default_window: str = "24h"
@@ -96,6 +104,11 @@ class Config:
             f_ts=_env("TB_FIELD_TS", cls.f_ts),
             f_dport=_env("TB_FIELD_DPORT", cls.f_dport),
             f_dataset=_env("TB_FIELD_DATASET", cls.f_dataset),
+            f_sport=_env("TB_FIELD_SPORT", cls.f_sport),
+            f_proto=_env("TB_FIELD_PROTO", cls.f_proto),
+            f_duration=_env("TB_FIELD_DURATION", cls.f_duration),
+            f_packets=_env_list("TB_FIELD_PACKETS", ["client.packets", "server.packets"]),
+            f_bytes=_env_list("TB_FIELD_BYTES", ["client.ip_bytes", "server.ip_bytes"]),
             soc_url=_env("TB_SOC_URL", cls.soc_url).rstrip("/"),
             soc_path=_env("TB_SOC_PATH", cls.soc_path),
             pivot_time_clause=_env_bool("TB_PIVOT_TIME_CLAUSE", True),

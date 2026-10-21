@@ -1,8 +1,13 @@
 """Data backends.
 
 neighbors() returns {"peers": [...], "distinct_peers": int|None, "truncated": bool}
-where each peer is {"peer", "count", "first_seen", "last_seen", "ports"}
-(times as ISO-8601 UTC strings).
+where each peer is {"peer", "count", "first_seen", "last_seen", "ports"}.
+
+flows() returns {"total": int, "flows": [...]}: one page of a connection's flows, oldest
+first, each {"start", "duration", "sport", "dport", "proto", "packets", "bytes"} (duration in
+seconds; any but start may be None).
+
+Times are ISO-8601 UTC strings.
 """
 import hashlib
 import ipaddress
@@ -17,11 +22,14 @@ import requests
 
 from . import analysis, sources
 from .graph import build_graph, count_between, first_between
-from .query import ValidationError, es_details_body, es_scan_body, es_top_body, fmt_time
+from .query import (ValidationError, es_details_body, es_flows_body, es_scan_body, es_top_body,
+                    fmt_time, parse_time)
 from .store import FlowStore, NotAStore
 
 log = logging.getLogger(__name__)
 SCAN_PAGE = 1000
+# Elasticsearch's default index.max_result_window: from + size may not go past it.
+ES_MAX_RESULTS = 10000
 # Times reach the browser rounded down to the millisecond (fmt_time) and come back that way,
 # so case queries allow this much either side.
 TIME_SLACK = 0.001
@@ -41,6 +49,9 @@ class ElasticBackend:
         self.session.headers["Content-Type"] = "application/json"
 
     def _search(self, body):
+        return self._post(body).get("aggregations", {})
+
+    def _post(self, body):
         url = f"{self.cfg.es_url.rstrip('/')}/{self.cfg.es_index}/_search"
         try:
             resp = self.session.post(url, json=body, timeout=self.cfg.es_timeout,
@@ -49,7 +60,7 @@ class ElasticBackend:
             raise BackendError(f"Elasticsearch request failed: {e.__class__.__name__}")
         if resp.status_code != 200:
             raise BackendError(f"Elasticsearch returned HTTP {resp.status_code}")
-        return resp.json().get("aggregations", {})
+        return resp.json()
 
     def neighbors(self, ip, direction, start, end, limit, order, exclude):
         if order == "top":
@@ -101,6 +112,33 @@ class ElasticBackend:
             "ports": [p["key"] for p in b.get("ports", {}).get("buckets", [])],
         }
 
+    def flows(self, src, dst, start, end, offset, limit):
+        if offset + limit > ES_MAX_RESULTS:
+            raise ValidationError(f"Security Onion lists only the first {ES_MAX_RESULTS} flows of "
+                                  "a connection; narrow the time range to see later ones")
+        hits = self._post(es_flows_body(self.cfg, src, dst, start, end, offset, limit)).get("hits", {})
+        return {"total": hits.get("total", {}).get("value", 0),
+                "flows": [self._flow(h.get("fields", {})) for h in hits.get("hits", [])]}
+
+    def _flow(self, fields):
+        def one(name):
+            values = fields.get(name)
+            return values[0] if values else None
+
+        def number(name):  # None when missing or not numeric (e.g. mapped as a string)
+            try:
+                return float(one(name))
+            except (TypeError, ValueError):
+                return None
+
+        def total(names):
+            values = [v for v in map(number, names) if v is not None]
+            return int(sum(values)) if values else None
+        cfg = self.cfg
+        return {"start": fmt_time(parse_time(one(cfg.f_ts))), "duration": number(cfg.f_duration),
+                "sport": one(cfg.f_sport), "dport": one(cfg.f_dport), "proto": one(cfg.f_proto),
+                "packets": total(cfg.f_packets), "bytes": total(cfg.f_bytes)}
+
 
 class DemoBackend:
     """Deterministic fake data so the UI can be exercised without Security Onion."""
@@ -110,9 +148,17 @@ class DemoBackend:
     def __init__(self, cfg):
         self.cfg = cfg
 
+    @staticmethod
+    def _rng(key):
+        return random.Random(int(hashlib.sha256(key.encode()).hexdigest()[:12], 16))
+
+    def _pair(self, src, dst):
+        """A random generator for the host pair, and how many flows the pair has."""
+        rng = self._rng(f"{src}>{dst}")
+        return rng, rng.choice([1, 2, 3, rng.randint(4, 500)])
+
     def neighbors(self, ip, direction, start, end, limit, order, exclude):
-        seed = int(hashlib.sha256(f"{ip}|{direction}".encode()).hexdigest()[:12], 16)
-        rng = random.Random(seed)
+        rng = self._rng(f"{ip}|{direction}")
         span = max((end - start).total_seconds(), 1)
         nets = [ipaddress.ip_network(e) for e in exclude]
         seen = {}
@@ -120,11 +166,12 @@ class DemoBackend:
             peer = f"10.{rng.randint(0, 3)}.{rng.randint(0, 9)}.{rng.randint(2, 30)}"
             if peer == ip or peer in seen:
                 continue
+            _, count = self._pair(*((peer, ip) if direction == "in" else (ip, peer)))
             a = start + timedelta(seconds=rng.uniform(0, span))
-            b = start + timedelta(seconds=rng.uniform(0, span))
+            b = a if count == 1 else start + timedelta(seconds=rng.uniform(0, span))
             seen[peer] = {
                 "peer": peer,
-                "count": rng.choice([1, 2, 3, rng.randint(4, 500)]),
+                "count": count,
                 "first_seen": fmt_time(min(a, b)),
                 "last_seen": fmt_time(max(a, b)),
                 "ports": sorted(rng.sample(self.PORTS, rng.randint(1, 3))),
@@ -136,6 +183,18 @@ class DemoBackend:
         else:
             peers.sort(key=lambda p: (p["count"], p["peer"]))
         return {"peers": peers[:limit], "distinct_peers": len(peers), "truncated": False}
+
+    def flows(self, src, dst, start, end, offset, limit):
+        # As many flows as neighbors() reports for the pair, the first and last at the ends
+        # of [start, end] (the connection's first and last seen).
+        rng, count = self._pair(src, dst)
+        span = (end - start).total_seconds()
+        starts = sorted([start, end][:count] +
+                        [start + timedelta(seconds=rng.uniform(0, span)) for _ in range(count - 2)])
+        rows = [{"start": fmt_time(t), "duration": round(rng.expovariate(0.2), 3),
+                 "sport": rng.randint(1024, 65535), "dport": rng.choice(self.PORTS), "proto": "tcp",
+                 "packets": rng.randint(2, 400), "bytes": rng.randint(120, 500000)} for t in starts]
+        return {"total": count, "flows": rows[offset:offset + limit]}
 
 
 def _utc(epoch):
@@ -225,8 +284,20 @@ class CaseBackend:
                 "first_seen": fmt_time(_utc(first)), "last_seen": fmt_time(_utc(last)),
                 "ports": _top_ports(ports)}
 
-    def threat_line(self, a, b, first, last, window, max_hops, exclude, max_hosts):
-        """Hosts and hops time-consistent with the conversation a -> b (see analysis.py)."""
+    def flows(self, src, dst, start, end, offset, limit):
+        lo, hi = start.timestamp() - TIME_SLACK, end.timestamp() + TIME_SLACK
+        total = (count_between(self.graph[src][dst]["times"], lo, hi)[0]
+                 if self.graph.has_edge(src, dst) else 0)
+        page = self.store.flows(src, dst, lo, hi, offset, limit) if offset < total else []
+        return {"total": total, "flows": [{
+            "start": fmt_time(_utc(f.start)), "duration": round(f.end - f.start, 6),
+            "sport": f.sport, "dport": f.dport, "proto": f.proto, "packets": f.packets,
+            "bytes": f.bytes} for f in page]}
+
+    def threat_line(self, a, b, first, last, window, max_hops, exclude, max_hosts,
+                    bounds=(None, None)):
+        """Hosts and hops time-consistent with the conversation a -> b (see analysis.py),
+        using only flows within the analyst's time range `bounds`."""
         first = first.timestamp() - TIME_SLACK
         last = last.timestamp() + TIME_SLACK
         window = window.total_seconds()
@@ -234,7 +305,7 @@ class CaseBackend:
                 first_between(self.graph[a][b]["times"], first, last) is None:
             raise ValidationError(f"no flows from {a} to {b} in that time range")
         up, down = analysis.threat_line(self.graph, a, b, first, last, window, max_hops,
-                                        _Excluded(exclude), max_hosts)
+                                        _Excluded(exclude), max_hosts, _epochs(bounds))
         nodes = {a: {"id": a, "role": "selected", "time": fmt_time(_utc(last)), "hops": 0},
                  b: {"id": b, "role": "selected", "time": fmt_time(_utc(first)), "hops": 0}}
         for reach, role in ((up, "up"), (down, "down")):
@@ -251,11 +322,13 @@ class CaseBackend:
         return {"nodes": list(nodes.values()), "edges": edges,
                 "truncated": up.truncated or down.truncated}
 
-    def attack_paths(self, compromised, window, max_hops, exclude):
-        """Time-respecting paths between compromised hosts (see analysis.attack_paths)."""
+    def attack_paths(self, compromised, window, max_hops, exclude, bounds=(None, None)):
+        """Time-respecting paths between compromised hosts (see analysis.attack_paths),
+        using only flows within the analyst's time range `bounds`."""
         start = self.span[0].timestamp() if self.span else None
         found = analysis.attack_paths(self.graph, compromised, window.total_seconds(), max_hops,
-                                      _Excluded(exclude), start, slack=TIME_SLACK)
+                                      _Excluded(exclude), start, slack=TIME_SLACK,
+                                      bounds=_epochs(bounds))
         paths = []
         for a, b, hops in found:
             flows = [self.store.flow_at(h.src, h.dst, h.start) for h in hops]
@@ -279,6 +352,14 @@ class _Excluded:
             addr = ipaddress.ip_address(ip)
             hit = self.cache[ip] = any(addr in n for n in self.nets)
         return hit
+
+
+def _epochs(bounds):
+    """The analyst's time range (datetimes, None = open) in epoch seconds, widened by
+    TIME_SLACK."""
+    lo, hi = bounds
+    return (lo.timestamp() - TIME_SLACK if lo else -analysis.INF,
+            hi.timestamp() + TIME_SLACK if hi else analysis.INF)
 
 
 def _top_ports(counts, n=5):

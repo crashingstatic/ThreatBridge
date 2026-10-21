@@ -20,6 +20,8 @@
       </select>
     </label>
     <label>Window <input id="window" size="5" value="24h"></label>
+    <label>Range from (UTC) <input id="range-from" placeholder="blank = no limit" spellcheck="false"></label>
+    <label>Range to (UTC) <input id="range-to" placeholder="blank = no limit" spellcheck="false"></label>
     <label>Peers
       <select id="order">
         <option value="top">Top (most connections)</option>
@@ -37,7 +39,8 @@
     <aside id="details">
       <h2>Details</h2>
       <div id="detail-body"><p class="hint">Left-click a host to expand it in the selected direction.
-        Left-click a connection to trace its threat line (PCAP/NetFlow cases).
+        Left-click a connection to list its flows in time order and trace its threat line
+        (PCAP/NetFlow cases). The time range, when set, limits everything shown.
         Right-click a host or connection for more, such as marking a host compromised or a
         Security Onion filter for two hosts.</p></div>
       <section id="compromised-section">

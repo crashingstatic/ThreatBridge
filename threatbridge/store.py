@@ -120,6 +120,14 @@ class FlowStore:
             "AND proto IN ('tcp', 'udp') GROUP BY dport", (src, dst, lo, hi)))
         return n, first, last, ports
 
+    def flows(self, src, dst, lo, hi, offset, limit):
+        """One page of the flows src -> dst that started within [lo, hi], oldest first."""
+        rows = self._db().execute(
+            "SELECT src, dst, sport, dport, proto, start_ts, end_ts, packets, bytes, source "
+            "FROM flow WHERE src = ? AND dst = ? AND start_ts BETWEEN ? AND ? "
+            "ORDER BY start_ts, rowid LIMIT ? OFFSET ?", (src, dst, lo, hi, limit, offset))
+        return [Flow(*row) for row in rows]
+
     def flow_at(self, src, dst, start):
         """The flow src -> dst that started at exactly `start`."""
         row = self._db().execute(

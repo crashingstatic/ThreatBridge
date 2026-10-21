@@ -41,6 +41,12 @@ try {
   assert.ok((await classes("10.0.0.20")).includes("down"));
   assert.ok((await classes("10.0.0.5->10.0.0.9")).includes("line-selected"));
   assert.ok((await classes("10.0.0.77")).includes("faded"), "inbound peer after the hop is not on the line");
+  // The same click lists the connection's flows, oldest first.
+  await page.waitForSelector("#flows ol.flows li");
+  assert.equal(await page.textContent("#flows .pager span"), "1–1 of 1");
+  assert.equal(await page.$eval("#flows ol.flows li", (li) => li.firstChild.textContent),
+               "2024-05-01T12:10:00.000Z");
+  assert.match(await page.textContent("#flows ol.flows li small"), /^tcp 50001 → 445 · 0\.001 s · 2 pkts · \d+ B$/);
   await shot("threat-line");
 
   // Clicking the background clears the highlight.
@@ -80,6 +86,17 @@ try {
   await shot("domain-exclude");
   await page.locator("#exclude-list li button").click();
   await page.waitForFunction(() => !document.querySelector("#exclude-list li"));
+
+  // A time range limits the map: from 12:20 only the later inbound connection is left.
+  await page.fill("#range-from", "2024-05-01T12:20:00Z");
+  await page.press("#range-from", "Enter");
+  await page.waitForFunction(() => /showing top/.test(document.getElementById("status").textContent));
+  assert.match(await page.textContent("#status"),
+    /^10\.0\.0\.9: showing top 1 of 1 distinct peer\(s\), 2024-05-01T12:20:00\.000Z → /);
+  assert.deepEqual(await cyEval(() => window.threatbridge.cy.nodes().map((n) => n.id()).sort()),
+                   ["10.0.0.77", "10.0.0.9"]);
+  assert.match(page.url(), /range_from=2024-05-01T12%3A20%3A00Z/);
+  await shot("time-range");
 
   assert.deepEqual(errors, [], "browser console errors");
   console.log("Case-mode UI test passed");

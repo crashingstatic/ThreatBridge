@@ -54,6 +54,15 @@ def test_es_filter_direction_and_excludes():
     assert {"term": {"source.ip": "10.0.0.5"}} in f["filter"]
 
 
+def test_es_flows_body():
+    body = q.es_flows_body(Config(), "10.0.0.1", "10.0.0.2", T0, T0, 100, 50)
+    assert (body["from"], body["size"], body["sort"]) == (100, 50, [{"@timestamp": "asc"}])
+    f = body["query"]["bool"]["filter"]
+    assert {"term": {"source.ip": "10.0.0.1"}} in f and {"terms": {"destination.ip": ["10.0.0.2"]}} in f
+    assert body["_source"] is False and body["track_total_hits"] is True
+    assert {"source.port", "event.duration", "client.packets", "server.ip_bytes"} <= set(body["fields"][1:])
+
+
 def test_pivot_query_both_directions_up_to_ioc():
     cfg = Config(soc_url="https://so")
     query = q.soc_pivot_query(cfg, "10.0.0.1", "fe80::1", T0)
@@ -102,6 +111,31 @@ class FakeES:
             {"key": p, "doc_count": d[p], "first_seen": {"value_as_string": "a"},
              "last_seen": {"value_as_string": "b"}, "ports": {"buckets": [{"key": 443}]}}
             for p in wanted]}}})
+
+
+class FlowsES:
+    def __init__(self, hits, total):
+        self.body = {"hits": {"total": {"value": total}, "hits": [{"fields": h} for h in hits]}}
+
+    def post(self, url, json, timeout, params):
+        return FakeResp(self.body)
+
+
+def test_elastic_flows_read_fields_and_stop_at_the_result_window():
+    be = ElasticBackend(Config())
+    be.session = FlowsES([
+        {"@timestamp": ["2024-05-01T12:00:00.123456Z"], "source.port": [50000],
+         "destination.port": [445], "network.transport": ["tcp"], "event.duration": [1.5],
+         "client.packets": [3], "server.packets": [4], "client.ip_bytes": [300]},
+        {"@timestamp": ["2024-05-01T12:00:01Z"], "event.duration": ["n/a"]}], total=7)
+    res = be.flows("10.0.0.1", "10.0.0.2", T0, T0, 0, 50)
+    assert res["total"] == 7
+    assert res["flows"][0] == {"start": "2024-05-01T12:00:00.123Z", "duration": 1.5, "sport": 50000,
+                               "dport": 445, "proto": "tcp", "packets": 7, "bytes": 300}
+    assert res["flows"][1]["packets"] is None and res["flows"][1]["sport"] is None
+    assert res["flows"][1]["duration"] is None                      # not a number: left out
+    with pytest.raises(q.ValidationError, match="narrow the time range"):
+        be.flows("10.0.0.1", "10.0.0.2", T0, T0, 9990, 50)
 
 
 def _elastic(counts, cap=10000):
@@ -164,6 +198,29 @@ def test_resolve_and_pivot(client):
     p = client.get("/api/pivot?a=10.0.0.5&b=10.0.0.6&until=2024-05-01T12:00:00Z").get_json()
     assert p["url"].startswith("https://so/#/dashboards?q=")
     assert "@timestamp:[* TO" in p["query"]
+
+
+def test_pivots_carry_the_time_range(client):
+    base = "/api/pivot?a=10.0.0.5&range_from=2024-05-01T10:00:00Z"
+    p = client.get(base + "&b=10.0.0.6&until=2024-05-01T12:00:00Z&range_to=2024-05-01T11:00:00Z")
+    assert '@timestamp:["2024-05-01T10:00:00.000Z" TO "2024-05-01T11:00:00.000Z"] |' in p.get_json()["query"]
+    p = client.get(base).get_json()                                  # host pivot, open end
+    assert p["query"] == ('(source.ip:"10.0.0.5" OR destination.ip:"10.0.0.5") AND '
+                          '@timestamp:["2024-05-01T10:00:00.000Z" TO *] | groupby source.ip '
+                          'destination.ip destination.port')
+    assert "@timestamp" not in client.get("/api/pivot?a=10.0.0.5").get_json()["query"]
+
+
+def test_time_range_and_flows_on_the_demo_backend(client):
+    r = client.get("/api/neighbors?ip=10.0.0.5&ts=2024-05-01T12:00:00Z"
+                   "&range_from=2024-05-01T11:00:00Z").get_json()
+    assert r["start"] == "2024-05-01T11:00:00.000Z" and r["peers"]
+    assert all(p["first_seen"] >= r["start"] for p in r["peers"])
+    base = "/api/flows?src=10.0.0.7&dst=10.0.0.5&from=2024-05-01T11:00:00Z&to=2024-05-01T12:00:00Z"
+    every = client.get(base + "&limit=500").get_json()
+    starts = [f["start"] for f in every["flows"]]
+    assert every["total"] == len(starts) == 2 and starts == sorted(starts)
+    assert client.get(base + "&limit=1&offset=1").get_json()["flows"] == every["flows"][1:]
 
 
 def test_security_headers(client):

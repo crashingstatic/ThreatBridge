@@ -1,6 +1,6 @@
 # Requirements and status
 
-Status last updated 2026-10-20. **Done**, **Partial**, **Missing**, **Unverified**,
+Status last updated 2026-10-21. **Done**, **Partial**, **Missing**, **Unverified**,
 **TODO** (deferred by decision), **Out of scope** (by decision).
 
 ## Decisions
@@ -16,6 +16,7 @@ Status last updated 2026-10-20. **Done**, **Partial**, **Missing**, **Unverified
 | D7 | A flow is one connection, oriented initiator -> responder like a Zeek conn record. Idle timeouts are 5 min for TCP and 1 min for UDP/ICMP, and the two halves of a NetFlow connection are merged. Details in the README, "Post-mortem mode". |
 | D8 | Attack paths and threat lines follow time order: a hop must start after the previous one, and within the map's Window of it. Limits: 6 hops, 300 hosts per threat-line direction. Post-mortem (case) backend only. |
 | D9 | Domain names on the exclude list resolve from DNS answers in the capture first, then live DNS, and the two are combined. |
+| D10 | GRA-3 means: a connection's flows can be listed in time order (oldest first, paged), and an optional time range (from/to) limits every query. A flow is in the range if it started in it. Both work with all data sources. |
 
 ## Data ingestion
 
@@ -33,13 +34,13 @@ Status last updated 2026-10-20. **Done**, **Partial**, **Missing**, **Unverified
 
 | ID | Requirement | Status | Notes |
 |---|---|---|---|
-| GRA-1 | SHALL construct a directed graph representing network conversations between hosts | Done | Files: whole dataset in a `MultiDiGraph`. Security Onion: built one hop at a time as the analyst expands. |
+| GRA-1 | SHALL construct a directed graph representing network conversations between hosts | Done | Files: whole dataset in a `DiGraph` of host pairs (D4). Security Onion: built one hop at a time as the analyst expands. |
 | GRA-2 | SHALL display nodes representing network hosts and edges representing communications | Done | |
-| GRA-3 | SHALL maintain temporal ordering of network conversations | Partial | Hops are time-chained (first/last seen); individual flows are not ordered. |
+| GRA-3 | SHALL maintain temporal ordering of network conversations | Done | Per D10. Clicking a connection lists its flows oldest first, numbered, 50 per page. Hops are time-chained, and threat lines and attack paths follow time order (D8). Security Onion lists at most the first 10,000 flows of a connection; the time range reaches later ones. |
 | GRA-4 | SHALL provide interactive graph visualization with clickable nodes and edges | Done | |
 | GRA-S1 | SHOULD provide multiple graph layout algorithms | Missing | One layout (breadthfirst). |
-| GRA-S2 | SHOULD support graph filtering by time ranges, protocols, or traffic volume | Partial | Per-hop time window only. |
-| GRA-S3 | SHOULD display connection metadata (packet counts, byte volumes, duration) | Partial | Connection count, ports, first/last seen. File flows carry packets and bytes, but the UI doesn't show them yet. |
+| GRA-S2 | SHOULD support graph filtering by time ranges, protocols, or traffic volume | Done | Time range (from/to) on every query, plus the per-hop window. No protocol or volume filter. |
+| GRA-S3 | SHOULD display connection metadata (packet counts, byte volumes, duration) | Done | Per connection: count, ports, first/last seen. Per flow, in the flow list: duration, packets, bytes, protocol, ports. Security Onion field names are unverified (README). |
 
 ## Attack path analysis
 

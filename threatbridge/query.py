@@ -72,6 +72,13 @@ def time_range(anchor, direction, window):
     return anchor, anchor + window
 
 
+def clip(start, end, bounds):
+    """[start, end] narrowed to the analyst's range `bounds` (lo, hi); None is an open end.
+    The result is empty (start > end) when they don't overlap."""
+    lo, hi = bounds
+    return (max(start, lo) if lo else start), (min(end, hi) if hi else end)
+
+
 ORDERS = ("top", "bottom")
 
 
@@ -191,25 +198,48 @@ def es_details_body(cfg, ip, direction, start, end, peers, exclude):
     }
 
 
+def es_flows_body(cfg, src, dst, start, end, offset, size):
+    """One page of the flows src -> dst that started within [start, end], oldest first."""
+    return {
+        "from": offset,
+        "size": size,
+        "track_total_hits": True,
+        "sort": [{cfg.f_ts: "asc"}],
+        "_source": False,
+        "fields": [{"field": cfg.f_ts, "format": "strict_date_optional_time"}, cfg.f_sport,
+                   cfg.f_dport, cfg.f_proto, cfg.f_duration, *cfg.f_packets, *cfg.f_bytes],
+        "query": es_filter(cfg, src, "out", start, end, [], peers=[dst]),
+    }
+
+
 def _oql_value(ip):
     # Values are already validated IPs; quote so IPv6 colons are not parsed as syntax.
     return '"' + ip + '"'
 
 
-def soc_pivot_query(cfg, a, b, until=None):
-    """OQL for every conversation between a and b (either direction), optionally up to `until`."""
+def _oql_time(cfg, since, until):
+    """' AND @timestamp:[since TO until]', open ends as *; empty when there are no limits."""
+    if not cfg.pivot_time_clause or (since is None and until is None):
+        return ""
+    since, until = (f'"{fmt_time(t)}"' if t else "*" for t in (since, until))
+    return f" AND {cfg.f_ts}:[{since} TO {until}]"
+
+
+def soc_pivot_query(cfg, a, b, until=None, since=None):
+    """OQL for every conversation between a and b (either direction), optionally limited to
+    [since, until]."""
     s, d = cfg.f_src, cfg.f_dst
     q = (f"(({s}:{_oql_value(a)} AND {d}:{_oql_value(b)}) OR "
          f"({s}:{_oql_value(b)} AND {d}:{_oql_value(a)}))")
-    if until is not None and cfg.pivot_time_clause:
-        q += f' AND {cfg.f_ts}:[* TO "{fmt_time(until)}"]'
+    q += _oql_time(cfg, since, until)
     q += f" | groupby {s} {d} {cfg.f_dport}"
     return q
 
 
-def soc_host_query(cfg, ip):
+def soc_host_query(cfg, ip, since=None, until=None):
     v = _oql_value(ip)
-    return f"({cfg.f_src}:{v} OR {cfg.f_dst}:{v}) | groupby {cfg.f_src} {cfg.f_dst} {cfg.f_dport}"
+    return (f"({cfg.f_src}:{v} OR {cfg.f_dst}:{v}){_oql_time(cfg, since, until)}"
+            f" | groupby {cfg.f_src} {cfg.f_dst} {cfg.f_dport}")
 
 
 def soc_url(cfg, query):

@@ -63,6 +63,14 @@ def test_store_queries(tmp_path):
     assert store.stats()[0] == 1
 
 
+def test_store_pages_a_connections_flows_oldest_first(tmp_path):
+    store = FlowStore(str(tmp_path / "case.db"))
+    store.write(FLOWS[::-1], {}, [])
+    assert [f.start for f in store.flows("10.0.0.1", H, T, T + 100, 0, 2)] == [T + 10, T + 20]
+    assert [f.start for f in store.flows("10.0.0.1", H, T, T + 100, 2, 2)] == [T + 30]
+    assert store.flows("10.0.0.1", H, T + 11, T + 29, 0, 9) == [FLOWS[1]]
+
+
 def test_store_refuses_to_overwrite_other_databases(tmp_path):
     import sqlite3
     from threatbridge.store import NotAStore
@@ -116,6 +124,57 @@ def test_api_config_and_default_anchor(client, backend):
     assert r_out["anchor"] == backend.summary()["start"]
     r_ts = client.get(f"/api/resolve?ip={H}&ts=2024-05-01T12:30:00Z").get_json()
     assert r_ts["anchor"] == "2024-05-01T12:30:00.000Z"
+
+
+def test_flows_api_lists_a_connection_oldest_first(client):
+    base = f"/api/flows?src=10.0.0.1&dst={H}&from=2024-05-01T12:00:10.000Z&to=2024-05-01T12:00:30.000Z"
+    r = client.get(base + "&limit=2").get_json()
+    assert (r["total"], r["offset"]) == (3, 0)
+    assert r["flows"] == [
+        {"start": "2024-05-01T12:00:10.000Z", "duration": 1.0, "sport": 50000, "dport": 445,
+         "proto": "tcp", "packets": 2, "bytes": 120},
+        {"start": "2024-05-01T12:00:20.000Z", "duration": 1.0, "sport": 50000, "dport": 445,
+         "proto": "tcp", "packets": 2, "bytes": 120}]
+    r = client.get(base + "&limit=2&offset=2").get_json()
+    assert [(f["start"], f["dport"]) for f in r["flows"]] == [("2024-05-01T12:00:30.000Z", 3389)]
+    assert client.get(base + "&offset=3").get_json()["flows"] == []
+    # The analyst's time range narrows the list; outside it there is nothing.
+    r = client.get(base + "&range_from=2024-05-01T12:00:15Z").get_json()
+    assert r["total"] == 2 and r["start"] == "2024-05-01T12:00:15.000Z"
+    assert client.get(base + "&range_to=2024-05-01T12:00:05Z").get_json()["total"] == 0
+    assert client.get(f"/api/flows?src=10.0.0.9&dst={H}&from=2024-05-01T12:00:10Z").get_json()["total"] == 0
+
+
+@pytest.mark.parametrize("query", [
+    f"src=10.0.0.1&dst={H}",                                        # no from
+    f"src=nope&dst={H}&from=2024-05-01T12:00:10Z",
+    f"src=10.0.0.1&dst={H}&from=2024-05-01T12:00:10Z&offset=x",
+    f"src=10.0.0.1&dst={H}&from=2024-05-01T12:00:10Z&range_from=2024-05-02T00:00:00Z"
+    "&range_to=2024-05-01T00:00:00Z",                                # range ends before it starts
+])
+def test_flows_api_validation(client, query):
+    assert client.get(f"/api/flows?{query}").status_code == 400
+
+
+def test_time_range_limits_neighbors_and_the_default_anchor(client, backend):
+    base = f"/api/neighbors?ip={H}&direction=in&ts=2024-05-01T13:00:00Z&window=24h"
+
+    def peers(extra):
+        return {p["peer"]: p["count"] for p in client.get(base + extra).get_json()["peers"]}
+    assert peers("")["10.0.0.1"] == 3
+    assert peers("&range_from=2024-05-01T12:00:15Z&range_to=2024-05-01T12:00:45Z") == {
+        "10.0.0.1": 2, "10.0.0.2": 1}
+    assert peers("&range_from=2024-05-02T00:00:00Z") == {}               # window before the range
+    # No timestamp: the range's end (inbound) or start (outbound), if inside the data.
+    resolve = f"/api/resolve?ip={H}&direction="
+    assert client.get(resolve + "in&range_to=2024-05-01T12:30:00Z").get_json()["anchor"] == \
+        "2024-05-01T12:30:00.000Z"
+    assert client.get(resolve + "out&range_from=2024-05-01T12:30:00Z").get_json()["anchor"] == \
+        "2024-05-01T12:30:00.000Z"
+    assert client.get(resolve + "in&range_to=2030-01-01T00:00:00Z").get_json()["anchor"] == \
+        backend.summary()["end"]
+    assert client.get(resolve + "out&range_from=2020-01-01T00:00:00Z").get_json()["anchor"] == \
+        backend.summary()["start"]
 
 
 def test_api_neighbors_from_pcap_directory(tmp_path):
@@ -208,6 +267,24 @@ def test_attack_paths_update_with_marked_hosts(chain_client):
     # Marked compromised before the chain reached it: no path any more.
     c.post("/api/compromised", json={"ip": "10.0.0.20", "time": "2024-05-01T12:15:00Z"}, headers=WRITE)
     assert c.get("/api/paths").get_json() == {"paths": []}
+
+
+def test_time_range_limits_threat_lines_and_attack_paths(chain_client):
+    c = chain_client
+    line = f"/api/threatline?a=10.0.0.5&b={H}&from=2024-05-01T12:10:00Z"
+    r = c.get(line + "&range_from=2024-05-01T12:05:00Z").get_json()
+    roles = {n["id"]: n["role"] for n in r["nodes"]}
+    assert "203.0.113.66" not in roles and roles["10.0.0.20"] == "down"     # 12:00 hop cut off
+    r = c.get(line + "&range_to=2024-05-01T12:20:30Z").get_json()
+    counts = {(e["source"], e["target"]): e["count"] for e in r["edges"]}
+    assert counts[(H, "10.0.0.20")] == 1                                     # 12:21:40 flow cut off
+    assert c.get(line + "&range_from=2024-05-01T12:15:00Z").status_code == 400  # hop itself outside
+
+    c.post("/api/compromised", json={"ip": "203.0.113.66"}, headers=WRITE)
+    c.post("/api/compromised", json={"ip": "10.0.0.20", "time": "2024-05-01T13:00:00Z"}, headers=WRITE)
+    assert len(c.get("/api/paths").get_json()["paths"]) == 1
+    assert c.get("/api/paths?range_from=2024-05-01T12:05:00Z").get_json() == {"paths": []}
+    assert len(c.get("/api/paths?range_to=2024-05-01T12:20:00Z").get_json()["paths"]) == 1
 
 
 def test_analysis_needs_case_backend(tmp_path):

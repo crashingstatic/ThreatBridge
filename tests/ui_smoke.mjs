@@ -56,6 +56,12 @@ try {
   assert.ok(url.includes(`(source.ip:"${b}" AND destination.ip:"${a}")`), url);
   assert.ok(url.includes('@timestamp:[* TO "2024-05-01T12:00:00.000Z"]'), url);
 
+  // The details panel lists the connection's flows, oldest first.
+  await page.waitForSelector("#flows ol.flows li");
+  const starts = await page.$$eval("#flows ol.flows li", (l) => l.map((x) => x.firstChild.textContent));
+  assert.deepEqual(starts, [...starts].sort());
+  assert.match(await page.textContent("#flows .pager span"), /^1–\d+ of [\d,]+$/);
+
   // 4. Shared exclude list round-trip through the UI.
   await page.fill("#exclude-input", "10.200.0.0/16");
   await page.click("#exclude-form button");
@@ -63,7 +69,13 @@ try {
   await page.click("#exclude-list li:has-text('10.200.0.0/16') button");
   await page.waitForSelector("#exclude-list li >> text=10.200.0.0/16", { state: "detached" });
 
-  // 5. No CSP violations or script errors anywhere above.
+  // 5. A time range narrows the next map.
+  await page.fill("#range-from", "2024-05-01T11:00:00Z");
+  await page.press("#range-from", "Enter");
+  await page.waitForFunction(() => document.getElementById("status").textContent
+    .includes("2024-05-01T11:00:00.000Z → 2024-05-01T12:00:00.000Z"));
+
+  // 6. No CSP violations or script errors anywhere above.
   assert.deepEqual(errors, [], "browser console errors");
   console.log("UI smoke test passed");
 } finally {

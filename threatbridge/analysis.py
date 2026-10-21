@@ -4,6 +4,9 @@ A hop A -> B counts only if its flow starts no earlier than the attacker could h
 and at most `window` seconds later. That is the rule the map applies when an analyst expands
 hosts by hand, done automatically and to a hop limit.
 
+An optional `bounds` (lo, hi) is the analyst's time range: flows starting outside it are
+ignored.
+
 Each search keeps one best hop per host: the earliest arrival going forward, the latest
 departure going backward. The result is a tree that explains how each host was reached.
 
@@ -27,24 +30,30 @@ class Reach:
     forward: bool
     window: float
     unbounded_first_hop: bool = False
+    bounds: tuple = (-INF, INF)               # only flows starting in [lo, hi]
     time: dict = field(default_factory=dict)  # host -> arrival (forward) / departure (backward)
     via: dict = field(default_factory=dict)   # host -> the Hop on its tree edge
     hops: dict = field(default_factory=dict)
     truncated: bool = False                    # stopped at max_hosts
 
+    def allowed(self, n):
+        """Start times allowed for a hop out of n (forward) or into n (backward)."""
+        t = self.time[n]
+        lo, hi = self.bounds
+        if self.forward:
+            top = INF if (n == self.origin and self.unbounded_first_hop) else t + self.window
+            return max(t, lo), min(top, hi)
+        return max(t - self.window, lo), min(t, hi)
+
     def interval(self, src, dst):
         """Start times allowed for flows on the tree hop src -> dst."""
-        if self.forward:
-            t = self.time[src]
-            return t, INF if (src == self.origin and self.unbounded_first_hop) else t + self.window
-        t = self.time[dst]
-        return t - self.window, t
+        return self.allowed(src if self.forward else dst)
 
 
 def forward(g, origin, t0, window, max_hops, blocked=frozenset(), max_hosts=None,
-            unbounded_first_hop=False):
+            unbounded_first_hop=False, bounds=(-INF, INF)):
     """Earliest-arrival search from `origin`, present on it from time t0."""
-    r = Reach(origin, True, window, unbounded_first_hop, {origin: t0}, {}, {origin: 0})
+    r = Reach(origin, True, window, unbounded_first_hop, bounds, {origin: t0}, {}, {origin: 0})
     heap, done = [(t0, origin)], set()
     while heap:
         t, n = heapq.heappop(heap)
@@ -53,11 +62,11 @@ def forward(g, origin, t0, window, max_hops, blocked=frozenset(), max_hosts=None
         done.add(n)
         if r.hops[n] >= max_hops:
             continue
-        hi = INF if (n == origin and unbounded_first_hop) else t + window
+        lo, hi = r.allowed(n)
         for v, edge in g.succ[n].items():
             if v == n or v in blocked:
                 continue
-            start = first_between(edge["times"], t, hi)
+            start = first_between(edge["times"], lo, hi)
             if start is not None and start < r.time.get(v, INF):
                 if v not in r.time and max_hosts and len(r.time) >= max_hosts:
                     r.truncated = True
@@ -67,9 +76,10 @@ def forward(g, origin, t0, window, max_hops, blocked=frozenset(), max_hosts=None
     return r
 
 
-def backward(g, origin, t0, window, max_hops, blocked=frozenset(), max_hosts=None):
+def backward(g, origin, t0, window, max_hops, blocked=frozenset(), max_hosts=None,
+             bounds=(-INF, INF)):
     """Latest-departure search into `origin`: who could have reached it by time t0."""
-    r = Reach(origin, False, window, False, {origin: t0}, {}, {origin: 0})
+    r = Reach(origin, False, window, False, bounds, {origin: t0}, {}, {origin: 0})
     heap, done = [(-t0, origin)], set()
     while heap:
         neg_t, n = heapq.heappop(heap)
@@ -79,10 +89,11 @@ def backward(g, origin, t0, window, max_hops, blocked=frozenset(), max_hosts=Non
         done.add(n)
         if r.hops[n] >= max_hops:
             continue
+        lo, hi = r.allowed(n)
         for u, edge in g.pred[n].items():
             if u == n or u in blocked:
                 continue
-            start = last_between(edge["times"], t - window, t)
+            start = last_between(edge["times"], lo, hi)
             if start is not None and start > r.time.get(u, -INF):
                 if u not in r.time and max_hosts and len(r.time) >= max_hosts:
                     r.truncated = True
@@ -107,17 +118,18 @@ def path_to(r, target):
     return hops[::-1]
 
 
-def threat_line(g, a, b, first, last, window, max_hops, blocked=frozenset(), max_hosts=None):
+def threat_line(g, a, b, first, last, window, max_hops, blocked=frozenset(), max_hosts=None,
+                bounds=(-INF, INF)):
     """Everything time-consistent with the conversation a -> b, whose flows started in
     [first, last]: who could have reached `a` before it (up), and where `b` could have
     gone after it (down)."""
-    up = backward(g, a, last, window, max_hops, blocked, max_hosts)
-    down = forward(g, b, first, window, max_hops, blocked, max_hosts)
+    up = backward(g, a, last, window, max_hops, blocked, max_hosts, bounds=bounds)
+    down = forward(g, b, first, window, max_hops, blocked, max_hosts, bounds=bounds)
     return up, down
 
 
 def attack_paths(g, compromised, window, max_hops, blocked=frozenset(), data_start=None,
-                 slack=0.0):
+                 slack=0.0, bounds=(-INF, INF)):
     """Time-respecting paths between compromised hosts.
 
     compromised: {ip: compromise time (epoch) or None if unknown}. A path a -> b must leave a
@@ -133,7 +145,8 @@ def attack_paths(g, compromised, window, max_hops, blocked=frozenset(), data_sta
         t0 = data_start if unknown else ta - slack
         if t0 is None:
             continue
-        r = forward(g, a, t0, window, max_hops, blocked, unbounded_first_hop=unknown)
+        r = forward(g, a, t0, window, max_hops, blocked, unbounded_first_hop=unknown,
+                    bounds=bounds)
         for b, tb in sorted(compromised.items()):
             if b == a or b not in r.via:
                 continue

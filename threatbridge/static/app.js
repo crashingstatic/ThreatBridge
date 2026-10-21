@@ -58,6 +58,14 @@
     statusEl.classList.toggle("warn", !!isWarn && !isError);
   }
 
+  // The analyst's time range (toolbar): sent with every query, which it limits. Blank = open.
+  function withRange(params) {
+    const lo = $("range-from").value.trim(), hi = $("range-to").value.trim();
+    if (lo) params.set("range_from", lo);
+    if (hi) params.set("range_to", hi);
+    return params;
+  }
+
   async function getJSON(url, opts) {
     const r = await fetch(url, Object.assign({ credentials: "same-origin" }, opts || {}));
     let body = null;
@@ -112,10 +120,10 @@
   async function expand(ip, direction) {
     const node = cy.getElementById(ip);
     const anchor = node.nonempty() ? node.data("anchor") : $("ts").value.trim();
-    const params = new URLSearchParams({
+    const params = withRange(new URLSearchParams({
       ip, direction, window: $("window").value.trim(), limit: $("limit").value.trim(),
       order: $("order").value,
-    });
+    }));
     if (anchor) params.set("ts", anchor);
     setStatus(`Querying ${direction === "in" ? "inbound (past)" : "outbound (future)"} for ${ip}…`);
     const res = await getJSON(`/api/neighbors?${params}`);
@@ -141,7 +149,7 @@
     const which = res.order === "top" ? "top" : "rarest";
     let msg = `${res.ip}: showing ${which} ${res.peers.length}`;
     if (res.distinct_peers != null) msg += ` of ${res.distinct_peers} distinct peer(s)`;
-    msg += `, ${res.start} → ${res.end}`;
+    msg += res.start <= res.end ? `, ${res.start} → ${res.end}` : " — the window is outside the time range";
     if (res.truncated) msg += " — WARNING: scan hit the peer cap; rarest list may be incomplete";
     setStatus(msg, false, res.truncated);
     return res;
@@ -154,8 +162,8 @@
     const ts = $("ts").value.trim();
     try {
       const res = await expandRoot(ip, ts, $("direction").value);
-      const q = new URLSearchParams({ ip: res.ip, ts: iocTime, dir: $("direction").value,
-                                      window: $("window").value.trim(), order: $("order").value });
+      const q = withRange(new URLSearchParams({ ip: res.ip, ts: iocTime, dir: $("direction").value,
+                                                window: $("window").value.trim(), order: $("order").value }));
       history.replaceState(null, "", `?${q}`);
       await refreshPaths(true);
     } catch (err) { setStatus(err.message, true); }
@@ -163,7 +171,7 @@
 
   async function expandRoot(ip, ts, direction) {
     // Normalise IP/anchor server-side; the root anchor is the IOC time used for pivots.
-    const params = new URLSearchParams({ ip, direction });
+    const params = withRange(new URLSearchParams({ ip, direction }));
     if (ts) params.set("ts", ts);
     const r = await getJSON(`/api/resolve?${params}`);
     iocTime = r.anchor;
@@ -172,6 +180,7 @@
   }
 
   function showDetails(rows) {
+    flowsFor = null;
     const body = $("detail-body");
     body.replaceChildren();
     const dl = document.createElement("dl");
@@ -184,6 +193,8 @@
   }
 
   let detailsFor = null; // host shown in the details panel
+  let flowsFor = null;   // connection whose flows the details panel lists
+  const FLOW_PAGE = 50;
 
   function refreshDetails(ip) {
     const n = cy.getElementById(ip);
@@ -211,6 +222,67 @@
       ["Connections", e.data("count")], ["Top dst ports", (e.data("ports") || []).join(", ")],
       ["First seen", e.data("first_seen")], ["Last seen", e.data("last_seen")],
     ]);
+    flowsFor = { src: e.data("source"), dst: e.data("target"),
+                 from: e.data("first_seen"), to: e.data("last_seen") };
+    loadFlows(flowsFor, 0).catch((err) => setStatus(err.message, true));
+  }
+
+  // ---- a connection's flows, oldest first, a page at a time -------------------
+  async function loadFlows(conn, offset) {
+    const params = withRange(new URLSearchParams({ src: conn.src, dst: conn.dst, from: conn.from,
+                                                   to: conn.to, offset, limit: FLOW_PAGE }));
+    const r = await getJSON(`/api/flows?${params}`);
+    if (flowsFor === conn) renderFlows(conn, r); // else another element was clicked meanwhile
+  }
+
+  // "tcp 51234 → 445 · 1.204 s · 12 pkts · 3,410 B"; missing values are left out.
+  function flowMeta(f) {
+    const ports = f.proto === "tcp" || f.proto === "udp" ? ` ${f.sport} → ${f.dport}` : "";
+    const n = (v) => v.toLocaleString("en-US");
+    return [`${f.proto || "?"}${ports}`,
+            f.duration == null ? null : `${f.duration.toFixed(3)} s`,
+            f.packets == null ? null : `${n(f.packets)} pkts`,
+            f.bytes == null ? null : `${n(f.bytes)} B`].filter((x) => x).join(" · ");
+  }
+
+  function renderFlows(conn, r) {
+    let section = $("flows");
+    if (!section) {
+      section = document.createElement("section");
+      section.id = "flows";
+      $("detail-body").append(section);
+    }
+    const title = document.createElement("h3");
+    title.textContent = "Flows, oldest first";
+    const pager = document.createElement("div");
+    pager.className = "pager";
+    const button = (label, offset, enabled) => {
+      const b = document.createElement("button");
+      b.type = "button"; b.textContent = label; b.disabled = !enabled;
+      b.addEventListener("click", () => loadFlows(conn, offset).catch((e) => setStatus(e.message, true)));
+      return b;
+    };
+    const last = Math.max(0, Math.floor((r.total - 1) / FLOW_PAGE) * FLOW_PAGE);
+    const info = document.createElement("span");
+    info.textContent = r.flows.length
+      ? `${r.offset + 1}–${r.offset + r.flows.length} of ${r.total.toLocaleString("en-US")}`
+      : "none in the time range";
+    pager.append(button("First", 0, r.offset > 0),
+                 button("Older", Math.max(0, r.offset - FLOW_PAGE), r.offset > 0), info,
+                 button("Newer", r.offset + FLOW_PAGE, r.offset + FLOW_PAGE < r.total),
+                 button("Last", last, r.offset < last));
+    const list = document.createElement("ol");
+    list.className = "flows";
+    list.start = r.offset + 1;
+    for (const f of r.flows) {
+      const li = document.createElement("li");
+      const small = document.createElement("small");
+      li.textContent = f.start;
+      small.textContent = flowMeta(f);
+      li.append(small);
+      list.append(li);
+    }
+    section.replaceChildren(title, pager, list);
   }
 
   // ---- context menu -------------------------------------------------------
@@ -235,7 +307,7 @@
   }
 
   async function pivot(a, b, until) {
-    const params = new URLSearchParams({ a });
+    const params = withRange(new URLSearchParams({ a }));
     if (b) params.set("b", b);
     if (until) params.set("until", until);
     return getJSON(`/api/pivot?${params}`);
@@ -313,7 +385,7 @@
   $("go").addEventListener("click", start);
   $("fit").addEventListener("click", () => cy.fit(undefined, 40));
   $("clear").addEventListener("click", () => { cy.elements().remove(); iocTime = null; setStatus(""); });
-  for (const id of ["ip", "ts", "window", "limit"]) {
+  for (const id of ["ip", "ts", "window", "limit", "range-from", "range-to"]) {
     $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") start(); });
   }
 
@@ -390,8 +462,8 @@
   // could have reached, following time order with at most `window` between hops.
   async function showThreatLine(e) {
     const [a, b] = [e.data("source"), e.data("target")];
-    const params = new URLSearchParams({ a, b, from: e.data("first_seen"),
-                                         to: e.data("last_seen"), window: $("window").value.trim() });
+    const params = withRange(new URLSearchParams({ a, b, from: e.data("first_seen"),
+                                                   to: e.data("last_seen"), window: $("window").value.trim() }));
     setStatus(`Tracing the threat line through ${a} → ${b}…`);
     const r = await getJSON(`/api/threatline?${params}`);
     let line = cy.collection();
@@ -480,7 +552,7 @@
   // Re-run after every change to compromised hosts or excludes; draws the paths in red.
   async function refreshPaths(quiet) {
     if (!cfg.analysis) return;
-    const params = new URLSearchParams({ window: $("window").value.trim() });
+    const params = withRange(new URLSearchParams({ window: $("window").value.trim() }));
     const r = await getJSON(`/api/paths?${params}`);
     cy.batch(() => {
       cy.edges().removeClass("attack");
@@ -525,6 +597,8 @@
       $("limit").value = cfg.default_limit;
       if (cfg.case) {
         $("ts").placeholder = "blank = end of data (inbound) / start (outbound)";
+        $("range-from").placeholder = "blank = start of data";
+        $("range-to").placeholder = "blank = end of data";
         setStatus(`Case: ${cfg.case.flows} flows between ${cfg.case.hosts} hosts, ` +
                   `${cfg.case.start} → ${cfg.case.end}`);
       }
@@ -536,6 +610,8 @@
     if (q.get("ip")) $("ip").value = q.get("ip");
     if (q.get("ts")) $("ts").value = q.get("ts");
     if (q.get("window")) $("window").value = q.get("window");
+    if (q.get("range_from")) $("range-from").value = q.get("range_from");
+    if (q.get("range_to")) $("range-to").value = q.get("range_to");
     const dir = q.get("dir") || q.get("direction");
     if (dir === "in" || dir === "out") $("direction").value = dir;
     const order = q.get("order");

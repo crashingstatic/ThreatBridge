@@ -10,13 +10,14 @@ from .config import Config
 from .domains import DomainResolver
 from .excludes import ExcludeStore
 from .model import SourceError
-from .query import (DIRECTIONS, ORDERS, ValidationError, fmt_time, parse_direction,
+from .query import (DIRECTIONS, ORDERS, ValidationError, clip, fmt_time, parse_direction,
                     parse_exclude, parse_ip, parse_order, parse_time, parse_window,
                     soc_host_query, soc_pivot_query, soc_url, time_range)
 
 log = logging.getLogger("threatbridge")
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 MAX_HOPS = 20
+MAX_FLOW_PAGE = 500
 
 
 class NotSupported(Exception):
@@ -46,11 +47,24 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
             raise ValidationError(f"window exceeds maximum of {cfg.max_window}")
         return window
 
-    def hops_arg(value):
+    def int_arg(name, default):
+        value = request.args.get(name)
         try:
-            hops = int(value) if value not in (None, "") else cfg.threat_hops
+            return int(value) if value not in (None, "") else default
         except ValueError:
-            raise ValidationError("hops must be an integer")
+            raise ValidationError(f"{name} must be an integer")
+
+    def range_arg():
+        """The analyst's time range (range_from, range_to): datetimes, None for an open end.
+        Every query is limited to it."""
+        lo, hi = (parse_time(request.args[k]) if (request.args.get(k) or "").strip() else None
+                  for k in ("range_from", "range_to"))
+        if lo and hi and hi < lo:
+            raise ValidationError("range_to is before range_from")
+        return lo, hi
+
+    def hops_arg():
+        hops = int_arg("hops", cfg.threat_hops)
         if not 1 <= hops <= MAX_HOPS:
             raise ValidationError(f"hops must be between 1 and {MAX_HOPS}")
         return hops
@@ -118,15 +132,20 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
     @app.get("/api/resolve")
     def api_resolve():
         ip = parse_ip(request.args.get("ip"))
-        ts = request.args.get("ts")
-        span = getattr(backend, "span", None)
-        if span and not (ts or "").strip():
-            # Evidence is in the past, so "now" is no use: look back from the end of the
-            # data (inbound) or forward from its start (outbound).
-            direction = parse_direction(request.args.get("direction", "in"))
-            anchor = span[1] if direction == "in" else span[0]
-        else:
+        ts = (request.args.get("ts") or "").strip()
+        if ts:
             anchor = parse_time(ts)
+        else:
+            # Look back from the end of what can be shown (inbound) or forward from its start
+            # (outbound): the analyst's time range and the evidence's span (files), else now.
+            direction = parse_direction(request.args.get("direction", "in"))
+            lo, hi = range_arg()
+            first, last = getattr(backend, "span", None) or (None, None)
+            if direction == "in":
+                anchor = min((t for t in (hi, last) if t), default=None)
+            else:
+                anchor = max((t for t in (lo, first) if t), default=None)
+            anchor = anchor or parse_time(None)
         return jsonify(ip=ip, anchor=fmt_time(anchor))
 
     @app.get("/api/neighbors")
@@ -136,17 +155,30 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
         direction = parse_direction(args.get("direction", "in"))
         anchor = parse_time(args.get("ts"))
         window = window_arg(args.get("window"))
-        try:
-            limit = int(args.get("limit", cfg.default_limit))
-        except ValueError:
-            raise ValidationError("limit must be an integer")
-        limit = max(1, min(limit, cfg.max_limit))
+        limit = max(1, min(int_arg("limit", cfg.default_limit), cfg.max_limit))
         order = parse_order(args.get("order"))
 
-        start, end = time_range(anchor, direction, window)
-        res = backend.neighbors(ip, direction, start, end, limit, order, exclusions())
+        start, end = clip(*time_range(anchor, direction, window), range_arg())
+        res = (backend.neighbors(ip, direction, start, end, limit, order, exclusions())
+               if start <= end else {"peers": [], "distinct_peers": 0, "truncated": False})
         return jsonify(ip=ip, direction=direction, order=order, anchor=fmt_time(anchor),
                        start=fmt_time(start), end=fmt_time(end), **res)
+
+    @app.get("/api/flows")
+    def api_flows():
+        """One page of the flows src -> dst that started within [from, to], oldest first."""
+        args = request.args
+        src, dst = parse_ip(args.get("src")), parse_ip(args.get("dst"))
+        if not args.get("from"):
+            raise ValidationError("from (start of the first flow) is required")
+        start, end = clip(parse_time(args["from"]), parse_time(args.get("to") or args["from"]),
+                          range_arg())
+        offset = max(0, int_arg("offset", 0))
+        limit = max(1, min(int_arg("limit", 50), MAX_FLOW_PAGE))
+        res = (backend.flows(src, dst, start, end, offset, limit)
+               if start <= end else {"total": 0, "flows": []})
+        return jsonify(src=src, dst=dst, start=fmt_time(start), end=fmt_time(end), offset=offset,
+                       **res)
 
     @app.get("/api/excludes")
     def api_excludes():
@@ -196,28 +228,32 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
         last = parse_time(args.get("to") or args["from"])
         if last < first:
             raise ValidationError("to is before from")
+        bounds = range_arg()
+        first, last = clip(first, last, bounds)
+        if last < first:
+            raise ValidationError("the conversation is outside the time range")
         res = backend.threat_line(a, b, first, last, window_arg(args.get("window")),
-                                  hops_arg(args.get("hops")), exclusions(),
-                                  cfg.threat_max_hosts)
+                                  hops_arg(), exclusions(), cfg.threat_max_hosts, bounds)
         return jsonify(a=a, b=b, **res)
 
     @app.get("/api/paths")
     def api_paths():
         require("attack_paths")
         res = backend.attack_paths(compromised.times(), window_arg(request.args.get("window")),
-                                   hops_arg(request.args.get("hops")), exclusions())
+                                   hops_arg(), exclusions(), range_arg())
         return jsonify(**res)
 
     @app.get("/api/pivot")
     def api_pivot():
         a = parse_ip(request.args.get("a"))
         b = request.args.get("b")
+        lo, hi = range_arg()
         if b:
             b = parse_ip(b)
             until = parse_time(request.args["until"]) if request.args.get("until") else None
-            q = soc_pivot_query(cfg, a, b, until)
+            q = soc_pivot_query(cfg, a, b, min((t for t in (until, hi) if t), default=None), lo)
         else:
-            q = soc_host_query(cfg, a)
+            q = soc_host_query(cfg, a, lo, hi)
         return jsonify(query=q, url=soc_url(cfg, q))
 
     return app

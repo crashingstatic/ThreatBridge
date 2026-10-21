@@ -7,7 +7,7 @@ A companion tool for **Security Onion 2.4**. When an analyst finds an IOC in SOC
 
 Click any host to expand it. Hops are *time-chained*: an outbound peer's next hop starts at the time it was first contacted, and an inbound peer's next hop ends at the time it was last seen. This lets you follow a lateral-movement chain forward or an entry path backward.
 
-**Right-click a connection (edge)** → *Filter SOC Dashboards*. This opens SOC Dashboards filtered to every conversation between those two hosts, in either direction, **up to the IOC time**.
+**Click a connection (edge)** to list its flows in time order. **Right-click it** → *Filter SOC Dashboards*. This opens SOC Dashboards filtered to every conversation between those two hosts, in either direction, **up to the IOC time**.
 
 Data sources: Zeek `conn` records in Security Onion's Elasticsearch (`event.dataset` = `conn` / `zeek.conn`), or, for post-mortem work, tcpdump captures and nfdump (nfcapd) files. See [Post-mortem mode](#post-mortem-mode-pcap-and-netflow-files).
 
@@ -19,6 +19,8 @@ Data sources: Zeek `conn` records in Security Onion's Elasticsearch (`event.data
 | Peer selection | **Top N** (most connections) or **Bottom N** (rarest). Default N = 50. Bottom N is **exact**: it counts every distinct peer, up to 10,000 (`TB_RARE_SCAN_CAP`). Beyond that the map shows a warning that the list may be incomplete. |
 | Exclude list | Shared across all analysts and editable in the UI (side panel, or right-click a host). Takes IPs, CIDRs or domain names (see [Domain names](#domain-names-on-the-exclude-list)). Applied to both Top and Bottom. Stored in `/data/exclude.json`. No audit trail. |
 | Time window | 24h per hop by default. Adjustable on the map, up to `TB_MAX_WINDOW` (30d). |
+| Time range | Optional *Range from* / *Range to* (UTC) on the map. It limits everything: expansions, the default anchor, flow lists, threat lines, attack paths and SOC pivots. Kept in the map's URL. |
+| Flow list | Clicking a connection lists its flows oldest first, 50 per page, with start, protocol, ports, duration, packets and bytes. Security Onion returns at most the first 10,000 flows of a connection; narrow the time range to page past them. |
 | Auth | **Mutual TLS.** Connections without a client cert signed by the ThreatBridge CA fail at the TLS handshake. |
 
 ## Post-mortem mode (PCAP and NetFlow files)
@@ -41,7 +43,7 @@ python -m threatbridge --case /cases/incident-42/      # files or directories, i
 - **NetFlow records are one-way, so the two halves are merged.** The half that started first is the initiator.
   - Sometimes timing can't tell: both halves start in the same millisecond, or one half is missing.
   - Then a well-known port (<1024) talking to an ephemeral port marks the responder.
-- **Default anchor.** With no anchor time, the map looks back from the end of the data (inbound) or forward from its start (outbound).
+- **Default anchor.** With no anchor time, the map looks back from the end of the data (inbound) or forward from its start (outbound). With a time range set, from the range's end or start when it lies inside the data.
 - **SOC pivots** are hidden in this mode.
 
 ### Domain names on the exclude list
@@ -61,7 +63,7 @@ Enter a name such as `updates.example.com` and it stands for every address it re
 
 These need the whole graph, so they work in post-mortem mode only.
 
-All three follow one rule: a hop A → B counts only if it starts after the attacker could have been on A, and within the **Window** of that. That is the rule you apply by hand when you expand hosts. Searches stop after 6 hops (`TB_THREAT_HOPS`). Excluded hosts are never crossed.
+All three follow one rule: a hop A → B counts only if it starts after the attacker could have been on A, and within the **Window** of that. That is the rule you apply by hand when you expand hosts. Searches stop after 6 hops (`TB_THREAT_HOPS`). Excluded hosts are never crossed, and flows outside the time range are ignored.
 
 - **Threat line: left-click a connection.**
   - *Earlier hosts (violet):* those that could have reached its source before the connection.
@@ -123,6 +125,8 @@ Deployment on a live Security Onion install has **not been tested**. These point
 4. **The CA that signed Elasticsearch's cert** (`SO_CA`, default `/etc/pki/ca.crt`).
 5. **The host firewall:** port 5443/tcp must be allowed from analyst workstations in SO's firewall configuration.
 6. **Which existing SO Elasticsearch account to reuse.** It needs read access to the conn indices. A dedicated read-only role would limit the blast radius if the env file leaks.
+7. **The fields the flow list reads:** `source.port`, `network.transport`, `event.duration` (seconds), `client.packets` + `server.packets`, and `client.ip_bytes` + `server.ip_bytes`. Values that are missing show as blank. Override with `TB_FIELD_SPORT`, `TB_FIELD_PROTO`, `TB_FIELD_DURATION`, `TB_FIELD_PACKETS` and `TB_FIELD_BYTES` (comma-separated, summed).
+8. **Whether SOC Dashboards accepts `@timestamp:["…" TO "…"]` and `["…" TO *]`,** which pivots carry when a time range is set.
 
 ## Configuration (env vars)
 
@@ -137,8 +141,10 @@ Deployment on a live Security Onion install has **not been tested**. These point
 | `TB_ES_INDEX` | `logs-*` | |
 | `TB_DATASETS` | `conn,zeek.conn` | empty = no dataset filter |
 | `TB_FIELD_SRC/DST/TS/DPORT/DATASET` | ECS names | |
+| `TB_FIELD_SPORT/PROTO/DURATION` | `source.port` / `network.transport` / `event.duration` | flow list |
+| `TB_FIELD_PACKETS` / `TB_FIELD_BYTES` | `client.packets,server.packets` / `client.ip_bytes,server.ip_bytes` | flow list; the fields are summed |
 | `TB_SOC_URL` / `TB_SOC_PATH` | `https://securityonion` / `/#/dashboards?q={query}` | pivot target |
-| `TB_PIVOT_TIME_CLAUSE` | `true` | bound pivots at the IOC time |
+| `TB_PIVOT_TIME_CLAUSE` | `true` | bound pivots at the IOC time and the time range |
 | `TB_WINDOW` / `TB_MAX_WINDOW` | `24h` / `30d` | |
 | `TB_LIMIT` / `TB_MAX_LIMIT` | `50` / `200` | |
 | `TB_RARE_SCAN_CAP` | `10000` | exact Bottom-N scan limit |

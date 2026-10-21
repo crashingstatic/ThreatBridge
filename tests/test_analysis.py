@@ -62,6 +62,13 @@ def test_tree_edges_carry_their_time_range():
                                                ("old", "ws", 2 * H - W, 2 * H)]
 
 
+def test_time_range_bounds_both_searches():
+    # Only flows starting 1.5h-3.5h: evil's and old's hops into ws, and dc -> backup, fall outside.
+    up, down = analysis.threat_line(G, "ws", "fs", 2 * H, 2 * H, W, 6, bounds=(1.5 * H, 3.5 * H))
+    assert up.via == {} and set(down.via) == {"dc"}
+    assert analysis.tree_edges(down) == [("fs", "dc", 2 * H, 3.5 * H)]
+
+
 def test_earliest_arrival_wins():
     g = build_graph([f("a", "b", 10), f("a", "c", 1), f("c", "b", 2)])
     r = analysis.forward(g, "a", 0, W, 6)
@@ -83,6 +90,9 @@ def test_attack_paths_between_compromised_hosts():
     assert path_hosts(found) == [("evil", "backup", ["evil", "ws", "fs", "dc", "backup"])]
     # An excluded host breaks the path.
     assert analysis.attack_paths(G, {"ws": 0, "dc": None}, W, 6, blocked={"fs"}) == []
+    # So does a time range that leaves out a hop, even an unbounded first one.
+    assert analysis.attack_paths(G, {"evil": None, "backup": None}, W, 6, data_start=0,
+                                 bounds=(1.5 * H, analysis.INF)) == []
 
 
 def test_unknown_time_lifts_only_the_first_window():
