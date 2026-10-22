@@ -192,7 +192,7 @@ mutmut run --max-children 4        # ~4 minutes; results in mutants/ (ignored by
 mutmut results                     # the survivors; `mutmut show <name>` for one
 ```
 
-On 2026-10-22: 3,770 of 4,186 mutants caught (90.1%). The 416 survivors were reviewed. None is a missing test that matters; they change:
+On 2026-10-22: 3,764 of 4,179 mutants caught (90.1%). The 415 survivors were reviewed. None is a missing test that matters; they change:
 
 - text only: log messages and their arguments, error message wording, SQL keyword case, command-line help;
 - performance only: caches, pruning in the path search, work skipped when the answer is already known;
