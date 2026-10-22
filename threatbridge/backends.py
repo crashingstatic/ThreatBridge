@@ -9,13 +9,16 @@ seconds; any but start may be None).
 
 Times are ISO-8601 UTC strings.
 """
+import fcntl
 import hashlib
 import ipaddress
 import logging
 import os
 import random
+import sqlite3
 import tempfile
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -217,12 +220,13 @@ class CaseBackend:
             path = os.path.join(self._tmp.name, "case.db")
         self.store = FlowStore(path)
         t = time.monotonic()
-        if flows is not None:   # given directly (tests, scripts)
-            self.dns = dns or {}
-            self.store.write(flows, self.dns, [])
-            self.graph = build_graph((f.src, f.dst, f.start) for f in flows)
-        else:
-            self._load(cfg.case_paths)
+        with _build_lock(cfg.case_db):
+            if flows is not None:   # given directly (tests, scripts)
+                self.dns = dns or {}
+                self._write(flows, [])
+                self.graph = build_graph((f.src, f.dst, f.start) for f in flows)
+            else:
+                self._load(cfg.case_paths)
         self.flow_count, first, last = self.store.stats()
         self.span = (_utc(first), _utc(last)) if self.flow_count else None
         log.info("case ready: %d flows, %d hosts, %d host pairs, %d names in DNS answers, in %.1fs",
@@ -238,12 +242,17 @@ class CaseBackend:
         else:
             self.dns = {}
             flows = sources.read(found, self.dns)
-            try:
-                self.store.write(flows, self.dns, evidence)
-            except NotAStore as e:
-                raise sources.SourceError(str(e))
+            self._write(flows, evidence)
             del flows
         self.graph = build_graph(self.store.pairs())
+
+    def _write(self, flows, evidence):
+        try:
+            self.store.write(flows, self.dns, evidence)
+        except NotAStore as e:
+            raise sources.SourceError(str(e))
+        except sqlite3.Error as e:
+            raise sources.SourceError(f"{self.store.path}: can't write the case database ({e})")
 
     def summary(self):
         return {
@@ -354,6 +363,25 @@ class CaseBackend:
                            "sport": f.sport, "dport": f.dport, "proto": f.proto,
                            "packets": f.packets, "bytes": f.bytes}
                           for f in (flows[h] for h in hops)]} for hops in found]
+
+
+@contextmanager
+def _build_lock(db_path):
+    """With a shared case database (gunicorn starts several workers), one process builds it at
+    a time; the others wait, then find it built and reuse it."""
+    if not db_path:
+        yield
+        return
+    try:
+        fh = open(db_path + ".lock", "a")
+    except OSError as e:
+        raise sources.SourceError(f"{db_path}: can't use this case database ({e.strerror})")
+    with fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
 
 
 class _Excluded:

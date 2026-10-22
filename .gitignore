@@ -370,3 +370,4 @@ compromised.json.lock
 deploy/threatbridge.env
 node_modules/
 *.db
+*.db.lock

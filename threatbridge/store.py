@@ -68,7 +68,12 @@ class FlowStore:
         """Replace the contents with `flows`, the passive DNS map and the evidence manifest
         [(path, size, mtime_ns)]."""
         db = self._db()
-        tables = {name for (name,) in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        try:
+            tables = {name for (name,) in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        except sqlite3.OperationalError:
+            raise
+        except sqlite3.DatabaseError:   # some other kind of file
+            tables = {"?"}
         if tables - _TABLES:
             raise NotAStore(f"{self.path} is not a ThreatBridge case database; not overwriting it")
         db.execute("PRAGMA journal_mode=OFF")  # a cache: if a build is interrupted, rebuild
@@ -82,8 +87,9 @@ class FlowStore:
                            ((name, ip, t[0], t[1]) for name, seen in dns.items()
                             for ip, t in seen.items()))
             db.executemany("INSERT INTO evidence VALUES (?,?,?)", evidence)
-            db.execute("INSERT INTO meta VALUES ('version', ?)", (VERSION,))
         db.executescript(_INDEXES)
+        with db:   # last: a build that stopped before here is never reused
+            db.execute("INSERT INTO meta VALUES ('version', ?)", (VERSION,))
 
     def matches(self, evidence):
         """True if the store was built from exactly these files, unchanged."""

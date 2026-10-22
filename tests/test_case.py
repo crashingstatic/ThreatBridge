@@ -389,3 +389,117 @@ def test_case_db_is_reused_until_the_evidence_changes(tmp_path, monkeypatch):
     monkeypatch.setattr(sources, "read", real_read)
     write_pcap(d / "more.pcap", [(T + 5, udp(H, "10.0.0.53", 40000, 53, b"q"))])
     assert CaseBackend(cfg).summary()["flows"] == 2           # new file: rebuilt
+
+
+# ---- edge cases: the store and the case backend ------------------------------------------
+
+import sqlite3  # noqa: E402
+import threading  # noqa: E402
+
+from threatbridge.model import SourceError  # noqa: E402
+from threatbridge.store import NotAStore  # noqa: E402
+
+
+def test_a_non_sqlite_file_is_never_overwritten(tmp_path):
+    notes = tmp_path / "notes.txt"
+    notes.write_text("analyst notes, not a database\n" * 20)
+    with pytest.raises(NotAStore):
+        FlowStore(str(notes)).write(FLOWS, {}, [])
+    assert notes.read_text() == "analyst notes, not a database\n" * 20
+    cfg = Config(backend="case", case_db=str(notes))
+    with pytest.raises(SourceError, match="not a ThreatBridge case database"):
+        CaseBackend(cfg, flows=FLOWS)
+
+
+def test_db_in_a_missing_directory_is_a_clear_error(tmp_path):
+    cfg = Config(backend="case", case_db=str(tmp_path / "nowhere" / "case.db"))
+    with pytest.raises(SourceError, match="nowhere"):
+        CaseBackend(cfg, flows=FLOWS)
+
+
+def test_an_interrupted_build_is_not_reused(tmp_path, monkeypatch):
+    from threatbridge import store as store_mod
+    path = str(tmp_path / "case.db")
+    monkeypatch.setattr(store_mod, "_INDEXES", "CREATE INDEX broken ON nowhere (x);")
+    with pytest.raises(sqlite3.Error):
+        FlowStore(path).write(FLOWS, {}, [("/e/cap.pcap", 10, 5)])     # dies building the index
+    assert not FlowStore(path).matches([("/e/cap.pcap", 10, 5)])
+
+
+def test_reuse_keeps_dns_and_ignores_file_order(tmp_path):
+    store = FlowStore(str(tmp_path / "case.db"))
+    dns = {"x.example": {"10.0.0.1": [T, T + 1]}}
+    files = [("/e/a.pcap", 1, 1), ("/e/b.pcap", 2, 2)]
+    store.write(FLOWS, dns, files)
+    again = FlowStore(store.path)
+    assert again.matches(files[::-1]) and again.dns() == dns
+    assert not again.matches(files[:1]) and not again.matches(files + [("/e/c.pcap", 3, 3)])
+
+
+def test_flows_with_the_same_start_page_without_gaps(tmp_path):
+    same = [Flow("10.0.0.1", H, 50000 + i, 445, "tcp", T, T + 1, 2, 120, "x") for i in range(5)]
+    store = FlowStore(str(tmp_path / "case.db"))
+    store.write(same, {}, [])
+    pages = [store.flows("10.0.0.1", H, T, T, off, 2) for off in (0, 2, 4)]
+    assert sorted(f.sport for page in pages for f in page) == [50000 + i for i in range(5)]
+
+
+def test_the_store_answers_from_other_threads(backend):
+    out = []
+    t = threading.Thread(target=lambda: out.append(backend.flows(
+        "10.0.0.1", H, utc(T), utc(T + 100), 0, 10)["total"]))
+    t.start()
+    t.join()
+    assert out == [3]
+
+
+def test_two_loaders_sharing_a_db_read_the_evidence_once(tmp_path, monkeypatch):
+    # gunicorn starts several workers; with TB_CASE_DB they share one file.
+    from threatbridge import sources
+    import time as time_mod
+    d = tmp_path / "case"
+    d.mkdir()
+    write_pcap(d / "cap.pcap", [(T, tcp("10.0.0.5", H, 50000, 445, SYN)),
+                                (T + 0.001, tcp(H, "10.0.0.5", 445, 50000, SYN | ACK))])
+    real_read, reads = sources.read, []
+
+    def slow_read(*a, **k):
+        reads.append(1)
+        time_mod.sleep(0.5)
+        return real_read(*a, **k)
+    monkeypatch.setattr(sources, "read", slow_read)
+    cfg = Config(backend="case", case_paths=[str(d)], case_db=str(tmp_path / "case.db"))
+    results, errors = [], []
+
+    def load():
+        try:
+            results.append(CaseBackend(cfg).summary()["flows"])
+        except Exception as e:  # noqa: BLE001 - reported below
+            errors.append(e)
+    threads = [threading.Thread(target=load) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == [] and results == [1, 1] and len(reads) == 1
+
+
+def test_an_empty_case_works_end_to_end(tmp_path):
+    cfg = Config(backend="case", compromised_file=str(tmp_path / "c.json"))
+    c = create_app(cfg, CaseBackend(cfg, flows=[]), ExcludeStore(str(tmp_path / "ex.json"))).test_client()
+    assert c.get("/api/config").get_json()["case"] == {
+        "flows": 0, "hosts": 0, "start": None, "end": None, "dns_names": 0}
+    assert c.get(f"/api/resolve?ip={H}&direction=in").status_code == 200
+    assert c.get(f"/api/neighbors?ip={H}&ts=2024-05-01T12:00:00Z").get_json()["peers"] == []
+    assert c.get(f"/api/flows?src=10.0.0.1&dst={H}&from=2024-05-01T12:00:00Z").get_json()["total"] == 0
+    assert c.get("/api/paths").get_json() == {"pairs": []}
+    assert c.get(f"/api/paths?src=10.0.0.1&dst={H}").get_json()["paths"] == []
+    assert c.get(f"/api/threatline?a=10.0.0.1&b={H}&from=2024-05-01T12:00:00Z").status_code == 400
+
+
+def test_neighbor_ties_are_ordered_by_address(tmp_path):
+    flows = [flow(p, H, 445, T + i) for i, p in enumerate(["10.0.0.30", "10.0.0.4", "fe80::1", "10.0.0.200"])]
+    be = CaseBackend(Config(backend="case"), flows=flows)
+    for order in ("top", "bottom"):
+        res = be.neighbors(H, "in", utc(T), utc(T + 60), 10, order, [])
+        assert [p["peer"] for p in res["peers"]] == sorted(p["peer"] for p in res["peers"])
