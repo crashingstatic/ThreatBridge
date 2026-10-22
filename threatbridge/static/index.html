@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ThreatBridge</title>
+  <link rel="icon" href="data:,">
+  <!-- The id stops Cytoscape injecting an inline <style> (blocked by our CSP). -->
+  <link rel="stylesheet" id="__________cytoscape_stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header id="toolbar">
+    <strong class="brand">ThreatBridge</strong>
+    <label>Host / IOC IP <input id="ip" placeholder="10.0.0.5" autocomplete="off" spellcheck="false"></label>
+    <label>Anchor time (UTC) <input id="ts" placeholder="2024-05-01T12:00:00Z (blank = now)" spellcheck="false"></label>
+    <label>Direction
+      <select id="direction">
+        <option value="in">Inbound: who connected to the host (past)</option>
+        <option value="out">Outbound: who the host connected to (future)</option>
+      </select>
+    </label>
+    <label>Window <input id="window" size="5" value="24h"></label>
+    <label>Range from (UTC) <input id="range-from" placeholder="blank = no limit" spellcheck="false"></label>
+    <label>Range to (UTC) <input id="range-to" placeholder="blank = no limit" spellcheck="false"></label>
+    <label>Peers
+      <select id="order">
+        <option value="top">Top (most connections)</option>
+        <option value="bottom">Bottom (rarest)</option>
+      </select>
+    </label>
+    <label>N <input id="limit" size="4" value="50"></label>
+    <button id="go" type="button">Map</button>
+    <button id="fit" type="button">Fit</button>
+    <button id="clear" type="button">Clear</button>
+    <span id="status" role="status"></span>
+  </header>
+  <main>
+    <div id="cy"></div>
+    <aside id="details">
+      <h2>Details</h2>
+      <div id="detail-body"><p class="hint">Left-click a host to expand it in the selected direction.
+        Left-click a connection to list its flows in time order and trace its threat line
+        (PCAP/NetFlow cases). The time range, when set, limits everything shown.
+        Right-click a host or connection for more, such as marking a host compromised or a
+        Security Onion filter for two hosts.</p></div>
+      <section id="compromised-section">
+        <h2>Compromised hosts</h2>
+        <form id="compromised-form" class="entry-form">
+          <input id="compromised-ip" placeholder="10.0.0.5" spellcheck="false" autocomplete="off">
+          <input id="compromised-time" placeholder="time UTC (blank = unknown)" spellcheck="false" autocomplete="off">
+          <button type="submit">Mark</button>
+        </form>
+        <ul id="compromised-list" class="entries"></ul>
+      </section>
+      <section id="paths">
+        <h2>Attack paths</h2>
+        <p class="hint">Time-consistent paths between compromised hosts, recomputed on every change:
+          up to 10 per pair, shortest first.</p>
+        <ul id="path-list" class="entries"></ul>
+      </section>
+      <section id="routes">
+        <h2>Paths between two hosts</h2>
+        <p class="hint">Every way an attacker on the first host could have reached the second over
+          connections in the evidence: each hop opened by the host the attacker was on, in time
+          order, at most the Window after the hop before. IOC times are optional.</p>
+        <form id="route-form" class="entry-form route-form">
+          <input id="route-src" placeholder="from, e.g. 10.4.0.2" spellcheck="false" autocomplete="off">
+          <input id="route-src-time" placeholder="IOC time (optional)" spellcheck="false" autocomplete="off">
+          <input id="route-dst" placeholder="to, e.g. 10.5.0.3" spellcheck="false" autocomplete="off">
+          <input id="route-dst-time" placeholder="IOC time (optional)" spellcheck="false" autocomplete="off">
+          <button type="submit">Find paths</button>
+        </form>
+        <p id="route-summary" class="hint"></p>
+        <ul id="route-list" class="entries"></ul>
+      </section>
+      <section id="excludes">
+        <h2>Shared exclude list</h2>
+        <p class="hint">IPs, CIDRs and domain names hidden from every analyst's maps and never
+          crossed by threat lines or attack paths. A domain stands for the addresses it had in the
+          capture's DNS answers and in a live lookup; <code>*.example.com</code> matches capture
+          answers only.</p>
+        <form id="exclude-form" class="entry-form">
+          <input id="exclude-input" placeholder="10.0.0.53, 10.0.0.0/24 or updates.example.com" spellcheck="false" autocomplete="off">
+          <button type="submit">Add</button>
+        </form>
+        <ul id="exclude-list" class="entries"></ul>
+      </section>
+      <div class="legend">
+        <span><span class="sw root"></span> IOC host</span>
+        <span><span class="sw in"></span> inbound (past)</span>
+        <span><span class="sw out"></span> outbound (future)</span>
+        <span><span class="sw compromised"></span> compromised</span>
+        <span><span class="sw attack"></span> attack path</span>
+        <span><span class="sw route"></span> path between two hosts</span>
+        <span><span class="sw up"></span> threat line: earlier</span>
+        <span><span class="sw down"></span> threat line: later</span>
+      </div>
+    </aside>
+  </main>
+  <ul id="menu" class="menu" hidden></ul>
+  <script src="/static/vendor/cytoscape.min.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>
