@@ -7,6 +7,10 @@ import tempfile
 import threading
 
 
+class StoreError(RuntimeError):
+    """The shared file can't be read; it is left as it is for someone to fix."""
+
+
 class JsonStore:
     def __init__(self, path, key):
         self.path = path
@@ -31,9 +35,15 @@ class JsonStore:
     def _load(self):
         try:
             with open(self.path, encoding="utf-8") as fh:
-                return json.load(fh).get(self.key, [])
+                data = json.load(fh)
         except FileNotFoundError:
             return []
+        except ValueError as e:
+            raise StoreError(f"{self.path} is not valid JSON ({e}); fix or remove it")
+        items = data.get(self.key, []) if isinstance(data, dict) else None
+        if not isinstance(items, list):
+            raise StoreError(f'{self.path} should hold {{"{self.key}": [...]}}; fix or remove it')
+        return items
 
     def _save(self, items):
         directory = os.path.dirname(os.path.abspath(self.path))

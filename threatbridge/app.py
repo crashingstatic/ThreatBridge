@@ -9,6 +9,7 @@ from .compromised import CompromisedStore
 from .config import Config
 from .domains import DomainResolver
 from .excludes import ExcludeStore
+from .jsonstore import StoreError
 from .model import SourceError
 from .query import (DIRECTIONS, ORDERS, ValidationError, clip, fmt_time, parse_direction,
                     parse_exclude, parse_ip, parse_order, parse_time, parse_window,
@@ -47,6 +48,14 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
         if window > max_window:
             raise ValidationError(f"window exceeds maximum of {cfg.max_window}")
         return window
+
+    def json_body():
+        body = request.get_json(silent=True)
+        if body is None:
+            return {}
+        if not isinstance(body, dict):
+            raise ValidationError("the request body must be a JSON object")
+        return body
 
     def int_arg(name, default):
         value = request.args.get(name)
@@ -104,6 +113,11 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
     @app.errorhandler(NotSupported)
     def _not_supported(e):
         return jsonify(error=str(e)), 501
+
+    @app.errorhandler(StoreError)
+    def _store_error(e):
+        log.error("%s", e)
+        return jsonify(error=str(e)), 500
 
     @app.errorhandler(BackendError)
     def _backend_error(e):
@@ -172,8 +186,10 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
         src, dst = parse_ip(args.get("src")), parse_ip(args.get("dst"))
         if not args.get("from"):
             raise ValidationError("from (start of the first flow) is required")
-        start, end = clip(parse_time(args["from"]), parse_time(args.get("to") or args["from"]),
-                          range_arg())
+        start, end = parse_time(args["from"]), parse_time(args.get("to") or args["from"])
+        if end < start:
+            raise ValidationError("to is before from")
+        start, end = clip(start, end, range_arg())
         offset = max(0, int_arg("offset", 0))
         limit = max(1, min(int_arg("limit", 50), MAX_FLOW_PAGE))
         res = (backend.flows(src, dst, start, end, offset, limit)
@@ -187,7 +203,7 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
 
     @app.post("/api/excludes")
     def api_excludes_add():
-        body = request.get_json(silent=True) or {}
+        body = json_body()
         entry = parse_exclude(body.get("entry"))
         entries = excludes.add(entry)
         log.info("exclude added: %s", entry)
@@ -195,7 +211,7 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
 
     @app.delete("/api/excludes")
     def api_excludes_remove():
-        body = request.get_json(silent=True) or {}
+        body = json_body()
         entries = excludes.remove(body.get("entry"))
         log.info("exclude removed: %s", body.get("entry"))
         return excludes_body(entries)
@@ -206,14 +222,14 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
 
     @app.post("/api/compromised")
     def api_compromised_mark():
-        body = request.get_json(silent=True) or {}
+        body = json_body()
         hosts = compromised.mark(body.get("ip"), body.get("time"), body.get("note"))
         log.info("marked compromised: %s at %s", body.get("ip"), body.get("time") or "unknown time")
         return jsonify(hosts=hosts)
 
     @app.delete("/api/compromised")
     def api_compromised_unmark():
-        body = request.get_json(silent=True) or {}
+        body = json_body()
         hosts = compromised.unmark(body.get("ip"))
         log.info("unmarked compromised: %s", body.get("ip"))
         return jsonify(hosts=hosts)

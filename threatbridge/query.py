@@ -20,10 +20,15 @@ class ValidationError(ValueError):
 
 
 def parse_ip(value):
+    if not isinstance(value, str):
+        raise ValidationError(f"invalid IP address: {value!r}")
     try:
-        return str(ipaddress.ip_address((value or "").strip()))
+        addr = ipaddress.ip_address(value.strip())
     except ValueError:
         raise ValidationError(f"invalid IP address: {value!r}")
+    if getattr(addr, "scope_id", None):   # "%..." can hold any text, quotes included
+        raise ValidationError(f"IPv6 scope not allowed: {value!r}")
+    return str(addr)
 
 
 def parse_direction(value):
@@ -34,10 +39,13 @@ def parse_direction(value):
 
 
 def parse_window(value):
-    m = _WINDOW_RE.match(value or "")
+    m = _WINDOW_RE.match(value if isinstance(value, str) else "")
     if not m:
         raise ValidationError(f"invalid window {value!r}; use e.g. 30m, 24h, 7d")
-    return timedelta(**{_UNITS[m.group(2).lower()]: int(m.group(1))})
+    try:
+        return timedelta(**{_UNITS[m.group(2).lower()]: int(m.group(1))})
+    except OverflowError:
+        raise ValidationError(f"window {value!r} is too large")
 
 
 def parse_time(value):
@@ -91,8 +99,10 @@ def parse_order(value):
 
 def parse_network(value):
     """Validate an exclude entry (IP or CIDR); returns canonical string."""
+    if not isinstance(value, str) or "%" in value:   # no IPv6 scopes (see parse_ip)
+        raise ValidationError(f"invalid IP/CIDR: {value!r}")
     try:
-        net = ipaddress.ip_network((value or "").strip(), strict=False)
+        net = ipaddress.ip_network(value.strip(), strict=False)
     except ValueError:
         raise ValidationError(f"invalid IP/CIDR: {value!r}")
     return str(net.network_address) if net.num_addresses == 1 else str(net)
@@ -104,11 +114,13 @@ _DOMAIN_RE = re.compile(rf"^(\*\.)?(?:{_LABEL}\.)*{_LABEL}$")
 
 def parse_exclude(value):
     """An exclude entry: IP, CIDR, or domain name (optionally "*.suffix"); canonical string."""
+    if not isinstance(value, str):
+        raise ValidationError(f"invalid IP, CIDR or domain name: {value!r}")
     try:
         return parse_network(value)
     except ValidationError:
         pass
-    raw = (value or "").strip()
+    raw = value.strip()
     name = raw.lower().rstrip(".")
     if len(name) > 253 or not _DOMAIN_RE.match(name) or name.rsplit(".", 1)[-1].isdigit():
         raise ValidationError(f"invalid IP, CIDR or domain name: {raw!r}")

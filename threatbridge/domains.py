@@ -67,6 +67,8 @@ class DomainResolver:
                 ips, error = [], "DNS lookup timed out"
             except OSError as e:  # socket.gaierror: no such name, no resolver, ...
                 ips, error = [], f"DNS lookup failed: {e.strerror or e}"
+            except ValueError as e:  # e.g. UnicodeError from IDNA encoding
+                ips, error = [], f"DNS lookup failed: {e}"
             self._live_cache[name] = (now, ips, error)
 
     def describe(self, entries):

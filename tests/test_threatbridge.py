@@ -227,3 +227,131 @@ def test_security_headers(client):
     r = client.get("/")
     assert r.status_code == 200
     assert "default-src 'self'" in r.headers["Content-Security-Policy"]
+
+
+# ---- edge cases: validation, shared files, Elasticsearch -----------------------------------
+
+import json  # noqa: E402
+import threading  # noqa: E402
+
+from threatbridge.backends import BackendError  # noqa: E402
+
+WRITE = {"X-ThreatBridge": "1"}
+
+
+@pytest.mark.parametrize("bad", ["fe80::1%eth0", 'fe80::1%a" OR source.ip:*'])
+def test_scoped_ipv6_addresses_are_rejected(client, bad):
+    # A scope can hold any text, quotes included, which would break out of OQL quoting.
+    with pytest.raises(q.ValidationError):
+        q.parse_ip(bad)
+    assert client.get("/api/pivot", query_string={"a": bad, "b": "10.0.0.6"}).status_code == 400
+    assert client.get("/api/neighbors", query_string={"ip": bad}).status_code == 400
+    assert client.post("/api/excludes", json={"entry": bad}, headers=WRITE).status_code == 400
+
+
+@pytest.mark.parametrize("url,body", [
+    ("/api/excludes", ["10.0.0.1"]), ("/api/excludes", {"entry": 5}),
+    ("/api/compromised", ["10.0.0.5"]), ("/api/compromised", {"ip": 5}),
+    ("/api/compromised", {"ip": "10.0.0.5", "note": 5}), ("/api/compromised", {"ip": "10.0.0.5", "time": []}),
+    ("/api/excludes", "10.0.0.1"),
+])
+def test_json_of_the_wrong_shape_is_a_bad_request(client, url, body):
+    assert client.post(url, json=body, headers=WRITE).status_code == 400
+
+
+def test_a_numeric_compromise_time_is_an_epoch(client):
+    r = client.post("/api/compromised", json={"ip": "10.0.0.5", "time": 1714564800}, headers=WRITE)
+    assert r.status_code == 200 and r.get_json()["hosts"][0]["time"] == "2024-05-01T12:00:00.000Z"
+
+
+def test_writes_need_the_header_whatever_the_method(client):
+    for method in ("post", "put", "patch", "delete"):
+        assert getattr(client, method)("/api/excludes", json={"entry": "10.0.0.1"}).status_code == 403
+
+
+@pytest.mark.parametrize("window", ["99999999999d", "999999999999w", "0x10h"])
+def test_absurd_windows_are_rejected(client, window):
+    assert client.get(f"/api/neighbors?ip=10.0.0.5&window={window}").status_code == 400
+
+
+def test_flows_to_before_from_is_rejected(client):
+    r = client.get("/api/flows?src=10.0.0.1&dst=10.0.0.5&from=2024-05-01T12:00:00Z&to=2024-05-01T11:00:00Z")
+    assert r.status_code == 400
+
+
+def test_demo_flows_past_the_end(client):
+    r = client.get("/api/flows?src=10.0.0.7&dst=10.0.0.5&from=2024-05-01T11:00:00Z"
+                   "&to=2024-05-01T12:00:00Z&offset=100000").get_json()
+    assert r["flows"] == [] and r["total"] == 2
+
+
+def shared_client(tmp_path, exclude_text=None, compromised_text=None):
+    ex, comp = tmp_path / "ex.json", tmp_path / "c.json"
+    if exclude_text is not None:
+        ex.write_text(exclude_text)
+    if compromised_text is not None:
+        comp.write_text(compromised_text)
+    cfg = Config(backend="demo", exclude_file=str(ex), compromised_file=str(comp), live_dns=False)
+    return create_app(cfg, DemoBackend(cfg)).test_client()
+
+
+def test_hand_edited_shared_files_with_bad_entries(tmp_path):
+    c = shared_client(tmp_path, json.dumps({"entries": ["10.0.0.1", "bogus!!", "Example.COM"]}),
+                      json.dumps({"hosts": [{"ip": "10.0.0.5", "time": "garbage", "note": ""},
+                                            {"ip": "nope", "time": None, "note": ""},
+                                            {"ip": "10.0.0.6", "time": None, "note": "ok"}]}))
+    # One bad line doesn't break every map query; the valid entries still apply.
+    assert c.get("/api/excludes").get_json()["entries"] == ["10.0.0.1", "example.com"]
+    assert c.get("/api/neighbors?ip=10.0.0.5&ts=2024-05-01T12:00:00Z").status_code == 200
+    assert [h["ip"] for h in c.get("/api/compromised").get_json()["hosts"]] == ["10.0.0.6"]
+
+
+def test_a_corrupt_shared_file_is_reported_and_left_alone(tmp_path):
+    c = shared_client(tmp_path, exclude_text="{not json")
+    r = c.get("/api/excludes")
+    assert r.status_code == 500 and "ex.json" in r.get_json()["error"]
+    assert c.post("/api/excludes", json={"entry": "10.0.0.1"}, headers=WRITE).status_code == 500
+    assert (tmp_path / "ex.json").read_text() == "{not json"
+    c = shared_client(tmp_path, exclude_text=json.dumps(["10.0.0.1"]))          # wrong shape
+    assert c.get("/api/excludes").status_code == 500
+
+
+def test_concurrent_writers_lose_nothing(tmp_path):
+    path = str(tmp_path / "ex.json")
+    threads = [threading.Thread(target=ExcludeStore(path).add, args=(f"10.0.0.{i}",))
+               for i in range(1, 21)]   # separate stores, like separate gunicorn workers
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(ExcludeStore(path).list()) == sorted(f"10.0.0.{i}" for i in range(1, 21))
+
+
+class OddES:
+    """A session whose answer is not what Elasticsearch normally sends."""
+
+    def __init__(self, body=None, text="<html>proxy login</html>"):
+        self.body, self.text = body, text
+
+    def post(self, url, json, timeout, params):
+        resp = FakeResp(self.body)
+        if self.body is None:
+            def bad_json():
+                raise ValueError("Expecting value: line 1 column 1 (char 0)")
+            resp.json = bad_json
+        return resp
+
+
+def test_an_answer_that_is_not_json_is_a_backend_error():
+    be = ElasticBackend(Config())
+    be.session = OddES()
+    with pytest.raises(BackendError):
+        be.neighbors("10.0.0.5", "in", T0, T0, 5, "top", [])
+    with pytest.raises(BackendError):
+        be.flows("10.0.0.1", "10.0.0.2", T0, T0, 0, 50)
+
+
+def test_hits_total_as_a_plain_number():
+    be = ElasticBackend(Config())
+    be.session = OddES({"hits": {"total": 3, "hits": [{"fields": {"@timestamp": ["2024-05-01T12:00:00Z"]}}]}})
+    assert be.flows("10.0.0.1", "10.0.0.2", T0, T0, 0, 50)["total"] == 3

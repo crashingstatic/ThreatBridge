@@ -63,7 +63,13 @@ class ElasticBackend:
             raise BackendError(f"Elasticsearch request failed: {e.__class__.__name__}")
         if resp.status_code != 200:
             raise BackendError(f"Elasticsearch returned HTTP {resp.status_code}")
-        return resp.json()
+        try:
+            body = resp.json()
+        except ValueError:   # e.g. a proxy's login page
+            raise BackendError("Elasticsearch's answer is not JSON")
+        if not isinstance(body, dict):
+            raise BackendError("Elasticsearch's answer is not a JSON object")
+        return body
 
     def neighbors(self, ip, direction, start, end, limit, order, exclude):
         if order == "top":
@@ -120,7 +126,8 @@ class ElasticBackend:
             raise ValidationError(f"Security Onion lists only the first {ES_MAX_RESULTS} flows of "
                                   "a connection; narrow the time range to see later ones")
         hits = self._post(es_flows_body(self.cfg, src, dst, start, end, offset, limit)).get("hits", {})
-        return {"total": hits.get("total", {}).get("value", 0),
+        total = hits.get("total", 0)   # {"value": n}; a plain n before Elasticsearch 7
+        return {"total": total.get("value", 0) if isinstance(total, dict) else int(total),
                 "flows": [self._flow(h.get("fields", {})) for h in hits.get("hits", [])]}
 
     def _flow(self, fields):

@@ -126,3 +126,18 @@ def test_domain_excludes_apply_to_maps_and_paths(tmp_path):
     assert {p["peer"] for p in c.get(q).get_json()["peers"]} == {"10.0.0.5"}
     r = c.get(f"/api/threatline?a=10.0.0.5&b={C}&from=2024-05-01T12:00:02Z").get_json()
     assert "10.0.0.77" not in {n["id"] for n in r["nodes"]}
+
+
+# ---- edge cases ---------------------------------------------------------------------------
+
+def test_a_lookup_failing_oddly_never_breaks_the_map():
+    def lookup(name):
+        raise UnicodeError("label empty or too long")
+    d = DomainResolver({}, lookup=lookup).describe(["x.example"])
+    assert d["x.example"]["dns"] == [] and d["x.example"]["error"].startswith("DNS lookup failed")
+
+
+def test_wildcards_match_whole_labels_only():
+    r = DomainResolver({"a.example.com": {"192.0.2.1": [T, T]}, "badexample.com": {"192.0.2.2": [T, T]},
+                        "example.com": {"192.0.2.3": [T, T]}}, live=False)
+    assert r.captured("*.example.com") == ["192.0.2.1"]
