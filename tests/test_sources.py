@@ -478,3 +478,31 @@ def test_a_cname_target_of_sixteen_bytes_is_not_an_address():
     record_dns(dns_answer("x.test", [("x.test", "CNAME", "abcdefghij.net"),
                                      ("abcdefghij.net", "A", "192.0.2.1")]), T, dns)
     assert dns == {"x.test": {"192.0.2.1": [T, T]}, "abcdefghij.net": {"192.0.2.1": [T, T]}}
+
+
+def test_damaged_and_unsupported_captures(tmp_path):
+    good = tmp_path / "good.pcap"
+    write_pcap(good, handshake())
+    damaged = tmp_path / "damaged.pcap"
+    damaged.write_bytes(good.read_bytes()[:12])              # the global header is cut short
+    with pytest.raises(SourceError, match="damaged.pcap: not a readable pcap file"):
+        sources.load([str(damaged)])
+    radiotap = tmp_path / "wifi.pcap"
+    with open(radiotap, "wb") as fh:
+        dpkt.pcap.Writer(fh, linktype=127).writepkt(b"\0" * 40, ts=T)   # 802.11 radiotap
+    with pytest.raises(SourceError, match="wifi.pcap: unsupported link type 127"):
+        sources.load([str(radiotap)])
+
+
+def test_raw_ip_packets_that_are_neither_v4_nor_v6(tmp_path):
+    bogus = b"\x50" + b"\0" * 39                             # version nibble 5
+    flows = load_packets(tmp_path, [(T, bogus), (T + 1, tcp(C, S, 50000, 445, SYN))], linktype=101)
+    assert endpoints(flows) == [(C, 50000, S, 445, "tcp")]
+
+
+def test_a_live_nfcapd_file_in_a_directory_is_skipped(tmp_path):
+    d = tmp_path / "netflow"
+    d.mkdir()
+    (d / "nfcapd.current.4242").write_bytes(bytes.fromhex("0ca5") + b"\0" * 30)
+    write_pcap(d / "cap.pcap", handshake())
+    assert sources.find([str(d)]) == {"pcap": [str(d / "cap.pcap")], "nfcapd": []}

@@ -4,12 +4,14 @@
 //   TB_URL=http://127.0.0.1:5056 node tests/ui_case.mjs [screenshot-dir]
 import { chromium } from "playwright";
 import assert from "node:assert/strict";
+import { saveCoverage, startCoverage } from "./ui_coverage.mjs";
 
 const BASE = process.env.TB_URL || "http://127.0.0.1:5056";
 const SHOTS = process.argv[2];
 const browser = await chromium.launch(
   process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {});
 const page = await browser.newPage({ viewport: { width: 1400, height: 850 } });
+await startCoverage(page);
 const errors = [];
 page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
 page.on("pageerror", (e) => errors.push(String(e)));
@@ -123,5 +125,6 @@ try {
   assert.deepEqual(errors, [], "browser console errors");
   console.log("Case-mode UI test passed");
 } finally {
+  await saveCoverage(page, "case");
   await browser.close();
 }

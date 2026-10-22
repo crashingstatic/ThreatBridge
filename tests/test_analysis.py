@@ -472,3 +472,29 @@ def test_default_slack_is_zero():
 
 def test_no_data_is_not_a_cut_list():
     assert analysis.paths_between(G, "ws", "dc", None, None, W, 6) == ([], False)
+
+
+def test_pruning_bounds_for_the_path_search():
+    # a -> b at 1, b -> c at 5, a -> c at 10; target c.
+    g = build_graph([f("a", "b", 1), f("b", "c", 5), f("a", "c", 10)])
+    r = analysis.spread_into(g, "c", 7, W, 6)          # c's IOC time 7: a -> c at 10 is too late
+    assert r.hops == {"c": 0, "b": 1, "a": 1}            # fewest hops, time ignored
+    assert r.allowed == {"c": [(-INF, 7)], "b": [(-INF, 5)], "a": [(-INF, 1)]}   # latest hop in
+    assert analysis.spread_into(g, "c", None, W, 6).allowed == {h: [(-INF, INF)] for h in "abc"}
+    assert analysis.spread_into(g, "c", 7, W, 6, blocked={"b"}).hops == {"c": 0}   # only via b in time
+    assert analysis.spread_into(g, "c", 7, W, 2).hops == {"c": 0, "b": 1, "a": 1}
+    assert analysis.spread_into(g, "c", None, W, 1).hops == {"c": 0}                # no hops left to use
+    assert analysis.spread_into(g, "c", 7, W, 6, bounds=(2, INF)).allowed == {"c": [(-INF, 7)], "b": [(-INF, 5)]}
+
+
+def test_pruning_bounds_reach_past_self_loops_and_stale_entries():
+    # Target b, IOC time 100. y1 -> b at 100 and y2 -> b at 50; x reaches y1 at 5 and y2 at 40,
+    # so x is first queued at 5 and then improved to 40 (the 5 becomes stale); z -> x at 2,
+    # w -> z at 1. A self-connection on b comes first among its predecessors.
+    g = build_graph([f("b", "b", 0), f("y1", "b", 100), f("y2", "b", 50), f("x", "y1", 5),
+                     f("x", "y2", 40), f("z", "x", 2), f("w", "z", 1), f("far", "w", 0.5)])
+    r = analysis.spread_into(g, "b", 100, W, 5)          # hosts up to 4 hops from b: not "far"
+    assert {h: iv[0][1] for h, iv in r.allowed.items()} == {"b": 100, "y1": 100, "y2": 50, "x": 40,
+                                                            "z": 2, "w": 1}
+    paths, _ = analysis.paths_between(g, "w", "b", 0, 100, W, 5)
+    assert [hosts(p) for p in paths] == [["w", "z", "x", "y2", "b"], ["w", "z", "x", "y1", "b"]]

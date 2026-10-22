@@ -621,3 +621,8 @@ def test_database_errors_name_the_problem(tmp_path):
     be = CaseBackend(Config(backend="case"), flows=FLOWS)
     with pytest.raises(ValidationError, match=f"no flows from 10.0.0.1 to {H} in that time range"):
         be.threat_line("10.0.0.1", H, utc(T + 1000), utc(T + 1000), timedelta(days=1), 6, [], 300)
+
+
+def test_threatline_to_before_from(chain_client):
+    r = chain_client.get(f"/api/threatline?a=10.0.0.5&b={H}&from=2024-05-01T12:10:00Z&to=2024-05-01T12:00:00Z")
+    assert r.status_code == 400 and r.get_json()["error"] == "to is before from"

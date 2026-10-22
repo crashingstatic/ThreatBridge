@@ -88,11 +88,12 @@ The searches are exact under that rule. An attacker may have reached a host at s
   - A path never visits a host twice. Each is listed with one chain of flows that proves it: the earliest arrival, and before each hop the latest flow that leads to it.
   - The IOC times are optional. With a time for the first host, its first hop must start within the Window after it; with one for the second, the path must reach it by then.
   - Shortest paths first, up to 500 (`TB_MAX_PATHS`). When there are more, the panel says so; narrow them with the Window, the hop limit, the time range or the exclude list.
-- **Timing in testing:** 975k flows between 2,910 hosts, with one host pair holding 106k of them.
-  - A threat line through that busiest connection took 0.06 s.
-  - Attack paths among 10 very busy compromised hosts (721 paths over 73 pairs) took 0.7 s.
-  - Every path between two of those hosts: at most 0.2 s for any of the 90 pairs.
-  - Expanding the busiest host took 0.26 s.
+- **Timing in testing** (`TB_PERF=1 pytest tests/test_perf.py`, also run in CI):
+  - *An office-like week*: 1M flows, 2,500 hosts, three servers everyone talks to, and one connection with 100k flows.
+    - Expanding the busiest host took 0.2 s, and the last page of that connection's flows 0.01 s.
+    - A threat line through that connection took 0.75 s; every path between two busy hosts, 0.1 s.
+    - Attack paths among the ten busiest hosts took 0.35 s. With an IOC time on each it took 5 s, recomputed in the background while the map stays usable.
+  - *An earlier benchmark*: 975k flows between 2,910 hosts. Attack paths among its 10 busiest hosts took 0.18 s, and every path between two of them at most 0.07 s.
 - **Storage.** The flows go into a SQLite file. The map and searches use a graph holding one edge per host pair, with the start times of that pair's flows.
   - Without `--db` (`TB_CASE_DB`) the file is temporary. With it, the case reopens without re-reading the evidence until a file is added or changed.
   - Nothing is written to the evidence directories. Keep the `--db` file with your working files. Next to it, `<file>.lock` lets several workers share it: one builds it, the others wait and reuse it.
@@ -149,6 +150,7 @@ Deployment on a live Security Onion install has **not been tested**. These point
 | `TB_NFDUMP` | `nfdump` | nfdump binary for nfcapd files |
 | `TB_ES_URL` / `TB_ES_USER` / `TB_ES_PASS` | `https://localhost:9200` | Elasticsearch |
 | `TB_ES_CA` / `TB_ES_VERIFY` | – / `true` | TLS verification for Elasticsearch |
+| `TB_ES_TIMEOUT` | `30` | seconds per Elasticsearch request |
 | `TB_ES_INDEX` | `logs-*` | |
 | `TB_DATASETS` | `conn,zeek.conn` | empty = no dataset filter |
 | `TB_FIELD_SRC/DST/TS/DPORT/DATASET` | ECS names | |
@@ -165,6 +167,9 @@ Deployment on a live Security Onion install has **not been tested**. These point
 | `TB_THREAT_HOPS` / `TB_THREAT_MAX_HOSTS` | `6` / `300` | threat line and attack path limits |
 | `TB_MAX_PATHS` | `500` | paths listed between two hosts |
 | `TB_TLS_CERT` / `TB_TLS_KEY` / `TB_TLS_CLIENT_CA` | `/certs/…` | mTLS (gunicorn) |
+| `TB_PORT` | `5443` (gunicorn) / `5055` (`python -m threatbridge`) | listening port |
+| `TB_HOST` | `127.0.0.1` | listening address of `python -m threatbridge` (gunicorn binds all) |
+| `TB_WORKERS` | `2` | gunicorn worker processes; each loads its own copy of a case |
 
 ## Requirements
 
@@ -176,7 +181,7 @@ Requirement IDs, current status and design decisions: [docs/REQUIREMENTS.md](doc
 pip install -r requirements.txt pytest
 python -m pytest
 TB_BACKEND=demo python -m threatbridge --port 5055   # fake data, plain HTTP, localhost only
-TB_PERF=1 python -m pytest -s tests/test_perf.py    # PRF-1/PRF-2: 1.25M flows, ~1 minute
+TB_PERF=1 python -m pytest -s tests/test_perf.py    # PRF-1/2/3: 1.25M flows, a busy week; ~1 minute
 ```
 
 The nfcapd test needs `nfdump` installed (`apt install nfdump`); without it, it is skipped locally.
@@ -191,7 +196,7 @@ mutmut run --max-children 4        # ~4 minutes; results in mutants/ (ignored by
 mutmut results                     # the survivors; `mutmut show <name>` for one
 ```
 
-On 2026-10-22: 3,717 of 4,133 mutants caught (89.9%). The 416 survivors were reviewed. None is a missing test that matters; they change:
+On 2026-10-22: 3,770 of 4,186 mutants caught (90.1%). The 416 survivors were reviewed. None is a missing test that matters; they change:
 
 - text only: log messages and their arguments, error message wording, SQL keyword case, command-line help;
 - performance only: caches, pruning in the path search, work skipped when the answer is already known;
@@ -206,11 +211,12 @@ Run it again after changing the analysis or the readers, and look at the new sur
 
 | Job | Checks |
 |---|---|
-| Unit tests | pytest on Python 3.11 and 3.12, including reading a real nfcapd file (nfdump from apt) |
+| Unit tests | pytest on Python 3.11 and 3.12, including reading a real nfcapd file (nfdump from apt), worker processes sharing files, the command line, and the README, env example and SOC actions staying in step with the code |
+| Performance | `TB_PERF=1 tests/test_perf.py`: 1.25M flows built within 5 minutes (PRF-1/2), and the interactive queries timed on a busy case (PRF-3) |
 | Shellcheck | `scripts/`, `deploy/`, `tests/` shell scripts |
 | Security scan | `pip-audit` (known-vulnerable dependencies), `bandit -ll` (medium+ Python security issues) |
 | Docker build + mTLS | Generates a throwaway PKI, builds and starts the container with `deploy/run.sh` (demo backend), then `tests/mtls_check.sh`. No cert and foreign-CA certs must be refused, a valid cert accepted, and writes without the CSRF header rejected. |
-| UI tests | Headless Chromium. Both scripts fail on any console/CSP error, and screenshots are uploaded as an artifact. `tests/ui_smoke.mjs` (demo backend) loads the map as a SOC action would, expands a hop, right-clicks an edge, checks the SOC pivot URL and round-trips the exclude list. `tests/ui_case.mjs` runs post-mortem mode on a pcap made by `tests/make_case.py`: it traces a threat line, marks two hosts compromised, checks the attack path, then unmarks one. |
+| UI tests | Headless Chromium. Both scripts fail on any console/CSP error, and screenshots are uploaded as an artifact. `tests/ui_smoke.mjs` (demo backend) loads the map as a SOC action would, expands a hop, right-clicks an edge, checks the SOC pivot URL and round-trips the exclude list. `tests/ui_case.mjs` runs post-mortem mode on a pcap made by `tests/make_case.py`: it traces a threat line, marks two hosts compromised, checks the attack path, then unmarks one. `tests/ui_actions.mjs` covers the rest: opening without parameters, errors, left-click expansion, every host-menu action, the compromised form, "Show all" paths, paging flows, a time range from the URL, a failing server, Fit and Clear. The job ends with `tests/js_coverage.mjs`, which lists what of `app.js` no browser test ran. |
 
 CI cannot reach a real Security Onion, so the items under *Things to verify on your install* still need a manual check.
 

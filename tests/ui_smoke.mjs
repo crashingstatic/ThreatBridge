@@ -3,6 +3,7 @@
 // Needs the `playwright` npm package. Set CHROMIUM_PATH to use a preinstalled browser.
 import { chromium } from "playwright";
 import assert from "node:assert/strict";
+import { saveCoverage, startCoverage } from "./ui_coverage.mjs";
 
 const BASE = process.env.TB_URL || "http://127.0.0.1:5055";
 const SHOTS = process.argv[2];
@@ -11,9 +12,11 @@ const IOC = "10.0.0.5", IOC_TIME = "2024-05-01T12:00:00Z";
 
 const browser = await chromium.launch(
   process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {});
-const ctx = await browser.newContext({ viewport: { width: 1400, height: 850 } });
+const ctx = await browser.newContext({ viewport: { width: 1400, height: 850 },
+                                      permissions: ["clipboard-read", "clipboard-write"] });
 await ctx.route(`${SOC}/**`, (r) => r.fulfill({ body: "SOC stub" }));
 const page = await ctx.newPage();
+await startCoverage(page);
 const errors = [];
 page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
 page.on("pageerror", (e) => errors.push(String(e)));
@@ -62,6 +65,24 @@ try {
   assert.deepEqual(starts, [...starts].sort());
   assert.match(await page.textContent("#flows .pager span"), /^1–\d+ of [\d,]+$/);
 
+  await popup.close();
+
+  // 3b. The same menu copies the query instead; the host menu opens the host in SOC.
+  // (The status line now holds the long query and wraps, moving the map: find the edge again.)
+  const again = await at(`edge[id = "${edge.id}"]`, "edge");
+  await page.mouse.click(again.x, again.y, { button: "right" });
+  await page.click("text=Copy SOC query");
+  await page.waitForFunction(() => document.getElementById("status").textContent === "SOC query copied to clipboard");
+  const copied = await page.evaluate(() => navigator.clipboard.readText());
+  assert.ok(copied.startsWith(`((source.ip:"${a}" AND destination.ip:"${b}")`), copied);
+  const host = await at("node[?root]", "node");
+  await page.mouse.click(host.x, host.y, { button: "right" });
+  const [hostPopup] = await Promise.all([ctx.waitForEvent("page"),
+                                          page.click("text=Open host in SOC dashboard")]);
+  const hostUrl = decodeURIComponent(hostPopup.url());
+  assert.ok(hostUrl.includes(`(source.ip:"${IOC}" OR destination.ip:"${IOC}") | groupby`), hostUrl);
+  await hostPopup.close();
+
   // 4. Shared exclude list round-trip through the UI.
   await page.fill("#exclude-input", "10.200.0.0/16");
   await page.click("#exclude-form button");
@@ -79,5 +100,6 @@ try {
   assert.deepEqual(errors, [], "browser console errors");
   console.log("UI smoke test passed");
 } finally {
+  await saveCoverage(page, "smoke");
   await browser.close();
 }

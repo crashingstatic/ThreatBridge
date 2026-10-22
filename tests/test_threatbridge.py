@@ -621,8 +621,12 @@ def test_config_from_the_environment(monkeypatch):
     for value, expected in (("1", True), ("TRUE", True), ("yes", True), ("on", True), ("off", False), ("", True)):
         monkeypatch.setenv("TB_ES_VERIFY", value)
         assert Config.from_env().es_verify is expected, value
+    # Set but empty means "none" (README: "empty = no dataset filter"); unset means the default.
     monkeypatch.setenv("TB_DATASETS", "")
-    assert Config.from_env().datasets == ["conn", "zeek.conn"]               # empty: the default
+    assert Config.from_env().datasets == []
+    assert q.es_filter(Config.from_env(), "10.0.0.5", "in", T0, T0, [])["bool"]["filter"][-1] != DATASETS
+    monkeypatch.delenv("TB_DATASETS")
+    assert Config.from_env().datasets == ["conn", "zeek.conn"]
 
 
 def test_main(monkeypatch):
@@ -789,3 +793,28 @@ def test_flows_answer_without_hits():
     be = ElasticBackend(Config())
     be.session = RecordingES({"took": 3})
     assert be.flows("10.0.0.1", "10.0.0.2", T0, T1, 0, 50) == {"total": 0, "flows": []}
+
+
+def test_backend_failures_reach_the_client_as_502(tmp_path):
+    cfg = Config(backend="elastic", live_dns=False, exclude_file=str(tmp_path / "ex.json"),
+                 compromised_file=str(tmp_path / "c.json"))
+    be = ElasticBackend(cfg)
+    be.session = RecordingES(status=503)
+    c = create_app(cfg, be).test_client()
+    r = c.get("/api/neighbors?ip=10.0.0.5&ts=2024-05-01T12:00:00Z")
+    assert r.status_code == 502 and r.get_json() == {"error": "Elasticsearch returned HTTP 503"}
+    assert c.get("/healthz").get_json() == {"status": "ok", "backend": "elastic"}
+
+
+def test_adding_an_entry_twice_keeps_one(tmp_path):
+    store = ExcludeStore(str(tmp_path / "ex.json"))
+    store.add("10.0.0.7/24")
+    assert store.add("10.0.0.0/24") == ["10.0.0.0/24"]
+    assert json.loads((tmp_path / "ex.json").read_text()) == {"entries": ["10.0.0.0/24"]}
+
+
+def test_hand_edited_note_that_is_not_text(tmp_path):
+    path = tmp_path / "c.json"
+    path.write_text(json.dumps({"hosts": [{"ip": "10.0.0.5", "time": None, "note": 7},
+                                          {"ip": "10.0.0.6", "time": None}]}))
+    assert CompromisedStore(str(path)).list() == [{"ip": "10.0.0.6", "time": None, "note": ""}]

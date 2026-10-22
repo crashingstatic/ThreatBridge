@@ -85,7 +85,7 @@ Status last updated 2026-10-21. **Done**, **Partial**, **Missing**, **Unverified
 |---|---|---|---|
 | PRF-1 | SHALL process PCAP files containing at least 1 million network flows | Done | 1.25M flows; `TB_PERF=1 pytest tests/test_perf.py`. |
 | PRF-2 | SHALL complete initial graph construction within 5 minutes for datasets under 100MB | Done | Worst case, 93 MB pcap of 1.25M minimum-size packets: built in 58 s, reopened from `--db` in 24 s (one test machine). |
-| PRF-3 | SHALL keep user interaction responsive during graph traversal | Done | 975k flows: threat line 0.06 s; attack paths among 10 busy hosts (721 paths) 0.7 s; every path between two of them at most 0.2 s; expanding the busiest host 0.26 s. Requests are asynchronous. |
+| PRF-3 | SHALL keep user interaction responsive during graph traversal | Done | Tested in CI (`tests/test_perf.py`) on an office-like week of 1M flows with busy servers and a 100k-flow connection. Queries an analyst waits on take under 1 s (threshold 3 s). Attack paths among the ten busiest hosts take 0.35 s, or 5 s with IOC times on all ten (threshold 10 s); they are recomputed in the background. Requests are asynchronous. |
 | PRF-S1 | SHOULD support distributed processing for large datasets | Partial | Security Onion source only: Elasticsearch does the aggregation. |
 | PRF-S2 | SHOULD support incremental graph updates for continuous monitoring | Missing | Possibly out of scope under D2; not decided. |
 | PRF-S3 | SHOULD show progress for long-running operations | Partial | Status line during queries. |

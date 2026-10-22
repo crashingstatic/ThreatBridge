@@ -12,7 +12,11 @@ not just the earliest arrival. A hop over a busy host pair is found by binary se
 pair's sorted flow start times (graph.py), so it costs no more than over a quiet one.
 
 Times are epoch seconds. Interval sets are sorted lists of disjoint closed intervals.
+
+The hot loops read the DiGraph's adjacency dicts (g._succ, g._pred) directly: networkx's
+read-only views around them cost about half the time of a search on a busy case.
 """
+import heapq
 from collections import namedtuple
 from dataclasses import dataclass, field
 
@@ -103,7 +107,7 @@ def spread(g, sources, window, max_hops, forward=True, blocked=frozenset(), max_
         for x, intervals in delta.items():
             if x not in g:
                 continue
-            for y, edge in (g.succ[x] if forward else g.pred[x]).items():
+            for y, edge in (g._succ[x] if forward else g._pred[x]).items():
                 if y == x or y in blocked:
                     continue
                 found_runs = _found(edge, intervals, window)
@@ -190,7 +194,7 @@ def paths_between(g, a, b, ta, tb, window, max_hops, blocked=frozenset(), data_s
         # a hub with many dead-end peers is scanned once, and a capped list doesn't depend on
         # the order the evidence was read in.
         if x not in nexts:
-            nexts[x] = sorted((y, e) for y, e in g.succ[x].items() if y in into_b.hops)
+            nexts[x] = sorted((y, e) for y, e in g._succ[x].items() if y in into_b.hops)
         return nexts[x]
 
     class Stop(Exception):
@@ -231,9 +235,38 @@ def paths_between(g, a, b, ta, tb, window, max_hops, blocked=frozenset(), data_s
 
 
 def spread_into(g, b, tb, window, max_hops, blocked=frozenset(), slack=0.0, bounds=(-INF, INF)):
-    """Backward spread() from b: which hosts can still reach b by tb, and when."""
-    deadline = INF if tb is None else tb + slack
-    return spread(g, {b: [(-INF, deadline)]}, window, max_hops - 1, False, blocked, None, bounds)
+    """What the path search needs to prune with: the hosts that might still reach b by tb, each
+    with the fewest hops to b and the latest time a hop into it could start.
+
+    Both are optimistic (hops ignore time, times ignore the Window), so pruning on them never
+    loses a path; paths_between() checks every hop exactly. Exact sets (a backward spread())
+    would prune a little more but cost seconds per host on a busy case."""
+    deadline = min(INF if tb is None else tb + slack, bounds[1])
+    hops, frontier = {b: 0}, [b]
+    for k in range(1, max_hops):                 # fewest hops to b, time ignored
+        nxt = []
+        for y in frontier:
+            for x in g._pred[y]:
+                if x not in hops and x not in blocked:
+                    hops[x] = k
+                    nxt.append(x)
+        frontier = nxt
+    if deadline == INF:                          # no deadline: time can't rule anything out
+        return Reach(False, {h: [(-INF, INF)] for h in hops}, hops=hops)
+    latest, heap = {b: deadline}, [(-deadline, b)]
+    while heap:                                  # latest departure towards b, Window ignored
+        t, y = heapq.heappop(heap)
+        if -t < latest[y]:
+            continue
+        for x, edge in g._pred[y].items():
+            if x == y or x not in hops:
+                continue
+            s = last_between(edge["times"], bounds[0], -t)
+            if s is not None and s > latest.get(x, -INF):
+                latest[x] = s
+                heapq.heappush(heap, (-s, x))
+    return Reach(False, {h: [(-INF, t)] for h, t in latest.items()},
+                 hops={h: hops[h] for h in latest})
 
 
 def _chain(g, hosts, entered, window):

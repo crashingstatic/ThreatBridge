@@ -16,7 +16,9 @@ def _env_bool(name, default):
 
 
 def _env_list(name, default):
-    value = _env(name)
+    """Comma-separated list. Unset: `default`. Set but empty: no items (e.g. TB_DATASETS=
+    turns the dataset filter off)."""
+    value = os.environ.get(name)
     if value is None:
         return list(default)
     return [v.strip() for v in value.split(",") if v.strip()]
