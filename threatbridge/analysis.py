@@ -95,7 +95,7 @@ def spread(g, sources, window, max_hops, forward=True, blocked=frozenset(), max_
 
     Layer k adds what k-hop chains reach. Each layer starts only from the time intervals the
     previous layer added, so a flow is looked at about once per search."""
-    r = Reach(forward, {h: _clip(iv, bounds) for h, iv in sources.items()})
+    r = Reach(forward, {h: _clip(merge(iv), bounds) for h, iv in sources.items()})
     r.hops = {h: 0 for h in sources}
     delta = dict(r.allowed)
     for k in range(1, max_hops + 1):
@@ -183,6 +183,15 @@ def paths_between(g, a, b, ta, tb, window, max_hops, blocked=frozenset(), data_s
     start = [(data_start, INF)] if ta is None else [(ta - slack, ta + window)]
     start = _clip(start, bounds)
     found, steps = [], 0
+    nexts = {}
+
+    def onward(x):
+        # x's successors that can still reach b, in a fixed order: computed once per host, so
+        # a hub with many dead-end peers is scanned once, and a capped list doesn't depend on
+        # the order the evidence was read in.
+        if x not in nexts:
+            nexts[x] = sorted((y, e) for y, e in g.succ[x].items() if y in into_b.hops)
+        return nexts[x]
 
     class Stop(Exception):
         pass
@@ -191,8 +200,8 @@ def paths_between(g, a, b, ta, tb, window, max_hops, blocked=frozenset(), data_s
         # leave: when hosts[-1] can be left; entered[i]: the times hop i could start at.
         nonlocal steps
         left = length - (len(hosts) - 1)              # hops still to take, including this one
-        for y, edge in g.succ[x].items():
-            if y in blocked or y in hosts:
+        for y, edge in onward(x):
+            if y in hosts:                            # (blocked hosts never reach b)
                 continue
             if (y == b) != (left == 1) or into_b.hops.get(y, INF) > left - 1:
                 continue                # b not reached in exactly `length` hops, or not in time

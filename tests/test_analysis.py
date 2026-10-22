@@ -242,3 +242,174 @@ def test_matches_brute_force(seed):
                          (-bounds[1], -bounds[0]))
     del expect[b]
     assert {h: r.hops[h] for h in r.via} == expect
+
+
+# ---- edge cases ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("given,merged", [
+    ([], []),
+    ([(3, 4), (1, 2)], [(1, 2), (3, 4)]),                  # unsorted
+    ([(1, 2), (2, 3)], [(1, 3)]),                          # touching
+    ([(1, 10), (2, 3)], [(1, 10)]),                        # nested
+    ([(5, 5), (5, 5)], [(5, 5)]),                          # repeated point
+])
+def test_merge(given, merged):
+    assert analysis.merge(given) == merged
+    assert analysis.merge(iter(given)) == merged           # any iterable
+
+
+@pytest.mark.parametrize("a,b,out", [
+    ([], [(0, 1)], []),
+    ([(0, 5)], [(5, 9)], [(5, 5)]),                        # touching: one point in common
+    ([(0, 2), (4, 6), (8, 10)], [(1, 9)], [(1, 2), (4, 6), (8, 9)]),
+    ([(0, 10)], [(2, 3), (5, 6)], [(2, 3), (5, 6)]),
+])
+def test_intersect(a, b, out):
+    assert analysis.intersect(a, b) == out
+    assert analysis.intersect(b, a) == out
+
+
+@pytest.mark.parametrize("a,b,out", [
+    ([(0, 10)], [], [(0, 10)]),
+    ([(0, 10)], [(0, 10)], []),                            # covered exactly
+    ([(0, 10)], [(-5, 20)], []),
+    ([(0, 10)], [(3, 4)], [(0, 3), (4, 10)]),              # a hole
+    ([(5, 5)], [(0, 10)], []),                             # a covered point
+    ([(5, 5)], [(6, 10)], [(5, 5)]),                       # a point outside
+    ([(0, 4), (6, 10)], [(2, 8)], [(0, 2), (8, 10)]),
+])
+def test_subtract(a, b, out):
+    assert analysis.subtract(a, b) == out
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_interval_sets_against_point_sets(seed):
+    rng = random.Random(seed)
+
+    def rand_set():
+        return analysis.merge((x, x + rng.choice([0, 0, 1, 2, 3]))
+                              for x in (rng.randint(0, 30) for _ in range(rng.randint(0, 6))))
+
+    def points(s):
+        return {x / 2 for x in range(-2, 70) if any(lo <= x / 2 <= hi for lo, hi in s)}
+    a, b = rand_set(), rand_set()
+    assert points(analysis.intersect(a, b)) == points(a) & points(b)
+    left = points(analysis.subtract(a, b))
+    assert points(a) - points(b) <= left <= points(a)       # nothing lost; extras only on b's edges
+    assert all(x in points(b) and (x - 0.5 not in points(b) or x + 0.5 not in points(b))
+               for x in left & points(b))
+
+
+def test_runs_edge_cases():
+    g = build_graph([f("a", "b", t) for t in (1, 1, 2, 4, 4, 9)])
+    e = g["a"]["b"]
+    assert graph.runs(e, 0, 0, 10) == [(1, 1), (2, 2), (4, 4), (9, 9)]   # equal times: one run
+    assert graph.runs(e, 2, 0, 10) == [(1, 4), (9, 9)]
+    assert graph.runs(e, 2, 5, 3) == []                                  # empty range
+    assert graph.runs(e, 2, -INF, INF) == [(1, 4), (9, 9)]
+    assert graph.runs(e, 5, 0, 10) == [(1, 9)]                           # the cache follows the window
+    assert graph.runs(e, 2, 4, 4) == [(4, 4)]
+
+
+def test_window_edges_are_inclusive():
+    g = build_graph([f("a", "b", 10), f("b", "c", 10 + W), f("b", "d", 10 + W + 0.001),
+                     f("b", "e", 10)])                       # same instant as the hop in: allowed
+    r = analysis.spread(g, {"a": [(0, W)]}, W, 6)
+    assert set(r.via) == {"b", "c", "e"}
+    paths = analysis.paths_between(g, "a", "e", 0, None, W, 6)[0]
+    assert [hosts(p) for p in paths] == [["a", "b", "e"]]
+
+
+def test_compromise_times_and_slack():
+    g = build_graph([f("a", "b", 100), f("b", "c", 200)])
+    ok = lambda **kw: bool(analysis.paths_between(g, "a", "c", window=W, max_hops=6, **kw)[0])  # noqa: E731
+    assert ok(ta=100, tb=200)                                # both ends inclusive
+    assert not ok(ta=100.5, tb=200)                          # first hop before a was compromised
+    assert ok(ta=100.0005, tb=200, slack=0.001)              # ... unless within the UI's rounding
+    assert not ok(ta=0, tb=199.9)                            # reached c after c's IOC time
+    assert ok(ta=0, tb=199.9995, slack=0.001)
+    assert not ok(ta=300, tb=200)                            # deadline before the start
+    assert not ok(ta=None, tb=None)                          # time unknown and no data start
+    assert ok(ta=None, tb=None, data_start=0)
+
+
+def test_hop_limits():
+    g = build_graph([f("a", "b", 1), f("b", "c", 2), f("a", "c", 3)])
+    r = analysis.spread(g, {"a": [(0, W)]}, W, 0)
+    assert r.via == {} and r.allowed == {"a": [(0, W)]}
+    assert [hosts(p) for p in analysis.paths_between(g, "a", "c", 0, None, W, 1)[0]] == [["a", "c"]]
+
+
+def test_reach_may_revisit_a_host_but_paths_never_do():
+    # a -> b -> a -> c: back on a at 2, and only from then can a reach c within the window.
+    g = build_graph([f("a", "b", 1), f("b", "a", 2), f("a", "c", 2 + 1.5)])
+    r = analysis.spread(g, {"a": [(0, 2)]}, 2, 6)
+    assert set(r.via) == {"b", "c"} and r.hops["c"] == 3
+    assert analysis.paths_between(g, "a", "c", 0, None, 2, 6) == ([], False)
+
+
+def test_sources_need_not_be_sorted_or_disjoint():
+    g = build_graph([f("a", "b", 4), f("b", "c", 5)])
+    messy = analysis.spread(g, {"a": [(3, 6), (0, 4)]}, W, 6)
+    clean = analysis.spread(g, {"a": [(0, 6)]}, W, 6)
+    assert (messy.via, messy.allowed) == (clean.via, clean.allowed)
+
+
+def test_threat_line_with_no_selected_flows_reaches_nothing():
+    up, down = analysis.threat_line(G, "ws", "fs", 5 * H, 4 * H, W, 6)
+    assert up.via == {} and down.via == {}
+
+
+def test_attack_paths_skip_unusable_hosts():
+    assert analysis.attack_paths(G, {"ws": 0}, W, 6) == []                       # one host
+    assert analysis.attack_paths(G, {"ws": 0, "nowhere": None}, W, 6) == []
+    assert analysis.attack_paths(G, {"ws": 0, "dc": None}, W, 6, blocked={"dc"}) == []
+    assert analysis.paths_between(G, "ws", "dc", 0, None, W, 6, blocked={"ws"}) == ([], False)
+
+
+def test_step_budget_cuts_the_search(monkeypatch):
+    monkeypatch.setattr(analysis, "MAX_STEPS", 1)          # one hop tried: a -> d
+    paths, cut = analysis.paths_between(ROUTES, "a", "d", 0, None, W, 6)
+    assert cut and [hosts(p) for p in paths] == [["a", "d"]]
+
+
+@pytest.mark.parametrize("seed", range(30))
+def test_a_capped_list_keeps_the_shortest_paths(seed):
+    rng = random.Random(seed)
+    names = "abcdefgh"
+    flows = [f(s, d, float(rng.randint(0, 30))) for s, d in
+             (rng.sample(names, 2) for _ in range(rng.randint(15, 45)))]
+    g = build_graph(flows)
+    every, cut = analysis.paths_between(g, "a", "b", 0.0, None, 10.0, 5)
+    assert not cut
+    for n in range(1, len(every)):
+        kept, cut = analysis.paths_between(g, "a", "b", 0.0, None, 10.0, 5, max_paths=n)
+        assert cut and len(kept) == n
+        assert max(map(len, kept)) <= min(len(p) for p in every if p not in kept)
+        assert all(p in every for p in kept)
+
+
+def test_results_do_not_depend_on_the_order_flows_were_read():
+    # Five same-length paths a -> m -> b. Which ones a capped list keeps must not depend on
+    # the order the evidence was read in.
+    flows = [f("a", m, 1) for m in "pqrst"] + [f(m, "b", 2) for m in "pqrst"]
+    expect = analysis.paths_between(build_graph(flows), "a", "b", 0, None, W, 6, max_paths=2)
+    for seed in range(5):
+        shuffled = flows[:]
+        random.Random(seed).shuffle(shuffled)
+        g = build_graph(shuffled)
+        assert analysis.paths_between(g, "a", "b", 0, None, W, 6, max_paths=2) == expect
+        up, down = analysis.threat_line(g, "a", "p", 1, 1, W, 6)
+        assert down.via == analysis.threat_line(build_graph(flows), "a", "p", 1, 1, W, 6)[1].via
+
+
+def test_a_hub_with_many_dead_ends_is_not_rescanned(monkeypatch):
+    # 400 ways from a to the hub; the hub talks to 60k hosts, one of which leads to b.
+    import time
+    flows = [f("a", f"m{i}", 1) for i in range(400)] + [f(f"m{i}", "hub", 2) for i in range(400)]
+    flows += [f("hub", f"x{i}", 3) for i in range(60000)] + [f("hub", "y", 3), f("y", "b", 4)]
+    g = build_graph(flows)
+    t = time.perf_counter()
+    paths, cut = analysis.paths_between(g, "a", "b", 0, None, W, 6, max_paths=1000)
+    assert len(paths) == 400 and not cut
+    assert time.perf_counter() - t < 1.5
