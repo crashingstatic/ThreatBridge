@@ -141,3 +141,22 @@ def test_wildcards_match_whole_labels_only():
     r = DomainResolver({"a.example.com": {"192.0.2.1": [T, T]}, "badexample.com": {"192.0.2.2": [T, T]},
                         "example.com": {"192.0.2.3": [T, T]}}, live=False)
     assert r.captured("*.example.com") == ["192.0.2.1"]
+
+
+# ---- gaps found by mutation testing -------------------------------------------------------
+
+def test_live_answers_expire_exactly_at_the_ttl():
+    now, calls = [0.0], []
+    r = DomainResolver({}, ttl=300, lookup=lambda n: calls.append(n) or ["192.0.2.9"], clock=lambda: now[0])
+    r.expand(["x.example"])
+    now[0] = 299.9
+    r.expand(["x.example"])
+    now[0] = 300.0
+    r.expand(["x.example"])
+    assert len(calls) == 2
+
+
+def test_capture_answers_are_in_address_order():
+    seen = {"192.0.2.10": [T, T], "192.0.2.9": [T, T], "2001:db8::1": [T, T], "10.0.0.1": [T, T]}
+    r = DomainResolver({"x.example": seen}, live=False)
+    assert r.captured("x.example") == ["10.0.0.1", "192.0.2.9", "192.0.2.10", "2001:db8::1"]

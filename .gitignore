@@ -371,3 +371,6 @@ deploy/threatbridge.env
 node_modules/
 *.db
 *.db.lock
+
+# mutmut working copy
+mutants/

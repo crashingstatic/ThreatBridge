@@ -413,3 +413,62 @@ def test_a_hub_with_many_dead_ends_is_not_rescanned(monkeypatch):
     paths, cut = analysis.paths_between(g, "a", "b", 0, None, W, 6, max_paths=1000)
     assert len(paths) == 400 and not cut
     assert time.perf_counter() - t < 1.5
+
+
+# ---- gaps found by mutation testing -------------------------------------------------------
+
+def test_subtract_several_holes_in_one_interval():
+    assert analysis.subtract([(0, 10)], [(2, 3), (5, 6)]) == [(0, 2), (3, 5), (6, 10)]
+
+
+def test_between_helpers_outside_the_range():
+    times = graph.array("d", [10.0, 20.0, 30.0])
+    assert graph.count_between(times, 11, 19) == (0, None, None)
+    assert graph.count_between(times, 10, 30) == (3, 10.0, 30.0)
+    assert graph.first_between(times, 31, 40) is None and graph.first_between(times, 0, 9) is None
+    assert graph.last_between(times, 0, 9) is None and graph.last_between(times, 21, 29) is None
+    assert graph.last_between(times, 0, 25) == 20.0 and graph.first_between(times, 15, 40) == 20.0
+
+
+def test_threat_line_through_a_connection_with_several_flows():
+    # a -> b at 1h and again at 40h (two runs a day apart). Each run has its own before/after.
+    g = build_graph([f("a", "b", 1 * H), f("a", "b", 40 * H),
+                     f("x", "a", 0.5 * H), f("y", "a", 39 * H),          # before each run
+                     f("b", "p", 2 * H), f("b", "q", 41 * H)])           # after each run
+    up, down = analysis.threat_line(g, "a", "b", 0, 50 * H, W, 6)
+    assert set(up.via) == {"x", "y"} and set(down.via) == {"p", "q"}
+
+
+def test_threat_line_caps_both_directions():
+    g = build_graph([f("u1", "a", 1), f("u2", "a", 1), f("a", "b", 2), f("b", "d1", 3), f("b", "d2", 3)])
+    up, down = analysis.threat_line(g, "a", "b", 2, 2, W, 6, max_hosts=2)
+    assert up.truncated and down.truncated and len(down.allowed) == 2
+
+
+def test_spread_carries_on_past_a_source_missing_from_the_graph():
+    g = build_graph([f("a", "b", 1)])
+    r = analysis.spread(g, {"ghost": [(0, W)], "a": [(0, W)]}, W, 6)
+    assert set(r.via) == {"b"}
+
+
+def test_attack_paths_skip_an_unusable_host_and_carry_on():
+    # "aaa" sorts first and is not in the graph; the pair after it must still be found.
+    found = analysis.attack_paths(G, {"aaa": None, "ws": 1.5 * H, "dc": 5 * H}, W, 6)
+    assert path_hosts(found) == [("ws", "dc", [["ws", "fs", "dc"]], False)]
+
+
+def test_attack_paths_list_pairs_by_source_then_target():
+    g = build_graph([f("b", "a", 1), f("a", "c", 2)])
+    found = analysis.attack_paths(g, {"a": None, "b": None, "c": None}, W, 6, data_start=0)
+    assert [(a, b) for a, b, _, _ in found] == [("a", "c"), ("b", "a"), ("b", "c")]
+
+
+def test_default_slack_is_zero():
+    g = build_graph([f("a", "b", 100), f("b", "c", 200)])
+    assert analysis.attack_paths(g, {"a": 100.5, "c": None}, W, 6) == []         # left a too early
+    assert analysis.attack_paths(g, {"a": 0, "c": 199.5}, W, 6) == []            # reached c too late
+    assert analysis.paths_between(g, "a", "c", 0, 199.5, W, 6) == ([], False)
+
+
+def test_no_data_is_not_a_cut_list():
+    assert analysis.paths_between(G, "ws", "dc", None, None, W, 6) == ([], False)

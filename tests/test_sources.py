@@ -348,3 +348,133 @@ def test_files_that_are_not_evidence(tmp_path):
     live.write_bytes(bytes.fromhex("0ca5") + b"\0" * 30)
     with pytest.raises(SourceError, match="still being written"):
         sources.find([str(live)])
+
+
+# ---- gaps found by mutation testing -------------------------------------------------------
+
+from threatbridge import model  # noqa: E402
+
+
+def test_model_helpers():
+    assert (model.idle_timeout("tcp"), model.idle_timeout("udp"), model.idle_timeout("icmp")) == (300, 60, 60)
+    assert model.idle_timeout("47") == 60                                   # anything else
+    assert (model.proto_name(6), model.proto_name(58), model.proto_name(47)) == ("tcp", "icmp", "47")
+    assert model.looks_reversed(1023, 1024) and not model.looks_reversed(1024, 1024)
+    assert not model.looks_reversed(80, 1023) and model.looks_reversed(0, 65535)
+
+
+def test_tcp_idle_timeout_is_five_minutes(tmp_path):
+    a = lambda t: (t, tcp(C, S, 50000, 445, PSH | ACK, b"x"))  # noqa: E731
+    flows = load_packets(tmp_path, [a(T), a(T + 300), a(T + 600.001)])
+    assert [(f.start, f.end) for f in flows] == [(T, T + 300), (T + 600.001, T + 600.001)]
+
+
+def test_other_ip_protocols_are_flows_too(tmp_path):
+    gre = dpkt.ip.IP(src=socket.inet_aton(C), dst=socket.inet_aton(S), p=47, ttl=64, data=b"\0" * 24)
+    gre.len = 44
+    raw = bytes(dpkt.ethernet.Ethernet(src=MAC, dst=MAC, type=0x0800, data=gre))
+    [f] = load_packets(tmp_path, [(T, raw), (T + 30, raw)])
+    assert (f.proto, f.sport, f.dport, f.packets) == ("47", 0, 0, 2)
+
+
+def test_skipped_packets_do_not_stop_the_capture(tmp_path):
+    later_v4 = dpkt.ip.IP(src=socket.inet_aton(C), dst=socket.inet_aton(S), p=6, ttl=64,
+                          data=b"\xbb" * 40, offset=800)
+    later_v4.len = 60
+    junk = [
+        b"\x01\x02",                                                       # undecodable frame
+        bytes(dpkt.ethernet.Ethernet(src=MAC, dst=MAC, type=0x0800, data=bytes(later_v4))),
+        ipv6_fragment(1000, b"\xaa" * 48, more=False),                     # later IPv6 fragment
+        frame(udp(C, R, 53000, 53, b"q"))[:14 + 20 + 2],                  # header too short for ports
+    ]
+    flows = load_packets(tmp_path, [(T + i * 0.001, j) for i, j in enumerate(junk)] + handshake(t=T + 1))
+    assert endpoints(flows) == [(C, 50000, S, 445, "tcp")]
+
+
+def test_snap_length_boundaries(tmp_path):
+    # Exactly 4 bytes: the ports. 14 bytes: the TCP flags too, so a lone SYN-ACK still
+    # shows who the server was.
+    ports_only = frame(tcp(C, S, 50000, 445, SYN))[:14 + 20 + 4]
+    [f] = load_packets(tmp_path, [(T, ports_only)])
+    assert (f.sport, f.dport) == (50000, 445)
+    synack = frame(tcp(S, C, 445, 50000, SYN | ACK))[:14 + 20 + 14]
+    [f] = load_packets(tmp_path, [(T, synack)])
+    assert (f.src, f.sport, f.dst, f.dport) == (C, 50000, S, 445)
+
+
+def test_raw_ip_captures_with_ipv6(tmp_path):
+    [f] = load_packets(tmp_path, [(T, tcp("2001:db8::5", "2001:db8::9", 50000, 22, SYN))], linktype=101)
+    assert (f.src, f.dst, f.dport) == ("2001:db8::5", "2001:db8::9", 22)
+
+
+def test_flow_start_and_source_with_packets_out_of_order(tmp_path):
+    # Captured on two interfaces and merged: the SYN-ACK is written before the SYN.
+    pkts = [(T + 0.002, tcp(S, C, 445, 50000, SYN | ACK)), (T + 0.001, tcp(C, S, 50000, 445, SYN))]
+    path = tmp_path / "cap.pcap"
+    write_pcap(path, pkts)
+    [f] = sources.load([str(path)])
+    assert (f.src, f.start, f.end, f.source) == (C, T + 0.001, T + 0.002, str(path))
+
+
+def test_dns_chains_needing_several_passes_and_seen_times():
+    dns = {}
+    answer = dns_answer("a.test", [("b.test", "CNAME", "c.test"), ("a.test", "CNAME", "b.test"),
+                                   ("c.test", "A", "192.0.2.7")])
+    record_dns(answer, T + 50, dns)
+    record_dns(answer, T + 10, dns)
+    record_dns(answer, T + 90, dns)
+    assert dns == {n: {"192.0.2.7": [T + 10, T + 90]} for n in ("a.test", "b.test", "c.test")}
+
+
+def test_dns_ignores_unrelated_records_before_the_chain():
+    dns = {}
+    record_dns(dns_answer("evil.test", [("other.test", "A", "6.6.6.7"), ("evil.test", "A", "6.6.6.6")]),
+               T, dns)
+    assert dns == {"evil.test": {"6.6.6.6": [T, T]}}
+
+
+def test_only_port_53_answers_count(tmp_path):
+    path = tmp_path / "cap.pcap"
+    answer = dns_answer("printer.local", [("printer.local", "A", "10.0.0.66")])
+    write_pcap(path, [(T, udp("10.0.0.66", "224.0.0.251", 5353, 5353, answer))])   # mDNS
+    dns = {}
+    sources.read(sources.find([str(path)]), dns)
+    assert dns == {}
+
+
+def test_nfdump_failing_silently(tmp_path, monkeypatch):
+    fake_nfdump(tmp_path, monkeypatch, "exit 4\n")
+    with pytest.raises(SourceError, match="nfdump failed: exit 4"):
+        list(read_records("x"))
+
+
+def test_pairing_sorts_records_and_keeps_tcp_open_five_minutes():
+    out_of_order = [rec(S, 445, C, 50000, T + 0.5, T + 1), rec(C, 50000, S, 445, T, T + 1)]
+    [f] = pair_records(out_of_order)
+    assert (f.src, f.dst) == (C, S)                                    # the earlier half initiated
+    [f] = pair_records([rec(C, 50000, S, 445, T, T + 1), rec(C, 50000, S, 445, T + 200, T + 201)])
+    assert f.end == T + 201                                            # 199 s gap: same TCP connection
+    split = pair_records([rec(C, 50000, S, 445, T, T + 1), rec(C, 50000, S, 445, T + 400, T + 401)])
+    assert [(x.start, x.end) for x in split] == [(T, T + 1), (T + 400, T + 401)]
+
+
+def test_a_duplicate_does_not_stop_the_walk(tmp_path):
+    d = tmp_path / "case"
+    d.mkdir()
+    write_pcap(d / "a.pcap", handshake())
+    write_pcap(d / "b.pcap", handshake(cport=50001, t=T + 10))
+    found = sources.find([str(d / "a.pcap"), str(d)])
+    assert found["pcap"] == [str(d / "a.pcap"), str(d / "b.pcap")]
+
+
+def test_unknown_address_family_is_named():
+    with pytest.raises(SourceError, match="unknown address family 0"):
+        parse_pipe_line("0|0|0|6|0|0|0|1|50000|0|0|0|2|445|0|0|0|0|0|0|1|1")
+
+
+def test_a_cname_target_of_sixteen_bytes_is_not_an_address():
+    # "abcdefghij.net" encodes to 16 bytes, the size of an IPv6 address.
+    dns = {}
+    record_dns(dns_answer("x.test", [("x.test", "CNAME", "abcdefghij.net"),
+                                     ("abcdefghij.net", "A", "192.0.2.1")]), T, dns)
+    assert dns == {"x.test": {"192.0.2.1": [T, T]}, "abcdefghij.net": {"192.0.2.1": [T, T]}}

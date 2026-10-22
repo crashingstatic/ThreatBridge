@@ -181,6 +181,25 @@ TB_PERF=1 python -m pytest -s tests/test_perf.py    # PRF-1/PRF-2: 1.25M flows, 
 
 The nfcapd test needs `nfdump` installed (`apt install nfdump`); without it, it is skipped locally.
 
+### Mutation testing
+
+[mutmut](https://github.com/boxed/mutmut) makes small changes to the code (a `<` becomes `<=`, a `continue` a `break`, an argument `None`) and checks that some test fails for each. Settings are in `setup.cfg`.
+
+```bash
+pip install mutmut
+mutmut run --max-children 4        # ~4 minutes; results in mutants/ (ignored by git)
+mutmut results                     # the survivors; `mutmut show <name>` for one
+```
+
+On 2026-10-22: 3,717 of 4,133 mutants caught (89.9%). The 416 survivors were reviewed. None is a missing test that matters; they change:
+
+- text only: log messages and their arguments, error message wording, SQL keyword case, command-line help;
+- performance only: caches, pruning in the path search, work skipped when the answer is already known;
+- the demo backend's random data;
+- nothing observable, e.g. a default value no caller relies on, a tie-break between equal choices, or an end point the interval code is allowed to repeat.
+
+Run it again after changing the analysis or the readers, and look at the new survivors.
+
 ### CI
 
 `.github/workflows/ci.yml` runs on every push and pull request:

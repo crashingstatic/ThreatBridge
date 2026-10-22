@@ -24,7 +24,7 @@ from datetime import datetime, timedelta, timezone
 import requests
 
 from . import analysis, sources
-from .graph import build_graph, count_between, first_between
+from .graph import build_graph, count_between
 from .query import (ValidationError, es_details_body, es_flows_body, es_scan_body, es_top_body,
                     fmt_time, parse_time)
 from .store import FlowStore, NotAStore
@@ -127,10 +127,15 @@ class ElasticBackend:
                                   "a connection; narrow the time range to see later ones")
         hits = self._post(es_flows_body(self.cfg, src, dst, start, end, offset, limit)).get("hits", {})
         total = hits.get("total", 0)   # {"value": n}; a plain n before Elasticsearch 7
+        flows = [self._flow(h) for h in hits.get("hits", [])]
         return {"total": total.get("value", 0) if isinstance(total, dict) else int(total),
-                "flows": [self._flow(h.get("fields", {})) for h in hits.get("hits", [])]}
+                "flows": [f for f in flows if f]}
 
-    def _flow(self, fields):
+    def _flow(self, hit):
+        """One hit as a flow, or None if it has no time: better left out than shown at a
+        made-up one."""
+        fields = hit.get("fields", {})
+
         def one(name):
             values = fields.get(name)
             return values[0] if values else None
@@ -145,7 +150,13 @@ class ElasticBackend:
             values = [v for v in map(number, names) if v is not None]
             return int(sum(values)) if values else None
         cfg = self.cfg
-        return {"start": fmt_time(parse_time(one(cfg.f_ts))), "duration": number(cfg.f_duration),
+        if one(cfg.f_ts) is not None:
+            start = parse_time(one(cfg.f_ts))
+        elif hit.get("sort"):     # the sort key is @timestamp, in epoch milliseconds
+            start = datetime.fromtimestamp(hit["sort"][0] / 1000.0, timezone.utc)
+        else:
+            return None
+        return {"start": fmt_time(start), "duration": number(cfg.f_duration),
                 "sport": one(cfg.f_sport), "dport": one(cfg.f_dport), "proto": one(cfg.f_proto),
                 "packets": total(cfg.f_packets), "bytes": total(cfg.f_bytes)}
 
@@ -317,13 +328,15 @@ class CaseBackend:
         first = first.timestamp() - TIME_SLACK
         last = last.timestamp() + TIME_SLACK
         window = window.total_seconds()
-        if not self.graph.has_edge(a, b) or \
-                first_between(self.graph[a][b]["times"], first, last) is None:
+        n, start, end = (count_between(self.graph[a][b]["times"], first, last)
+                         if self.graph.has_edge(a, b) else (0, None, None))
+        if not n:
             raise ValidationError(f"no flows from {a} to {b} in that time range")
         up, down = analysis.threat_line(self.graph, a, b, first, last, window, max_hops,
                                         _Excluded(exclude), max_hosts, _epochs(bounds))
-        nodes = {a: {"id": a, "role": "selected", "time": fmt_time(_utc(last)), "hops": 0},
-                 b: {"id": b, "role": "selected", "time": fmt_time(_utc(first)), "hops": 0}}
+        # The conversation's own first and last flow, not the rounding slack around them.
+        nodes = {a: {"id": a, "role": "selected", "time": fmt_time(_utc(end)), "hops": 0},
+                 b: {"id": b, "role": "selected", "time": fmt_time(_utc(start)), "hops": 0}}
         for reach, role in ((up, "up"), (down, "down")):
             for ip in reach.via:
                 node = nodes.get(ip)

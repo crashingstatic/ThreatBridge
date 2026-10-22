@@ -1,5 +1,5 @@
 """Post-mortem ("case") backend: graph queries and the HTTP API on top of it."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -397,6 +397,7 @@ import sqlite3  # noqa: E402
 import threading  # noqa: E402
 
 from threatbridge.model import SourceError  # noqa: E402
+from threatbridge.query import ValidationError  # noqa: E402
 from threatbridge.store import NotAStore  # noqa: E402
 
 
@@ -503,3 +504,120 @@ def test_neighbor_ties_are_ordered_by_address(tmp_path):
     for order in ("top", "bottom"):
         res = be.neighbors(H, "in", utc(T), utc(T + 60), 10, order, [])
         assert [p["peer"] for p in res["peers"]] == sorted(p["peer"] for p in res["peers"])
+
+
+# ---- gaps found by mutation testing -------------------------------------------------------
+
+import os  # noqa: E402
+import tempfile  # noqa: E402
+
+
+def test_the_temporary_store_is_never_in_the_working_directory():
+    be = CaseBackend(Config(backend="case"), flows=FLOWS)
+    path = os.path.abspath(be.store.path)
+    assert path.startswith(os.path.abspath(tempfile.gettempdir()) + os.sep)
+    assert os.path.dirname(path) != os.getcwd()
+
+
+def test_flow_at_without_a_match(tmp_path):
+    store = FlowStore(str(tmp_path / "case.db"))
+    store.write(FLOWS, {}, [])
+    assert store.flow_at("10.0.0.1", H, T + 11) is None
+
+
+def test_threat_line_nodes_and_edges_in_detail(tmp_path):
+    # X reaches A before the selected hop and B reaches X after it: X is on both sides.
+    A, B, X = "10.0.0.1", "10.0.0.2", "10.0.0.3"
+    flows = [flow(X, A, 1, T), flow(A, B, 2, T + 10), flow(A, B, 2, T + 20), flow(B, X, 3, T + 30)]
+    be = CaseBackend(Config(backend="case"), flows=flows)
+    r = be.threat_line(A, B, utc(T + 10), utc(T + 20), timedelta(days=1), 6, [], 300)
+    nodes = {n["id"]: n for n in r["nodes"]}
+    assert nodes[A] == {"id": A, "role": "selected", "time": "2024-05-01T12:00:20.000Z", "hops": 0}
+    assert nodes[B] == {"id": B, "role": "selected", "time": "2024-05-01T12:00:10.000Z", "hops": 0}
+    assert nodes[X]["role"] == "both"
+    edges = {(e["source"], e["target"]): e for e in r["edges"]}
+    assert (edges[(A, B)]["role"], edges[(A, B)]["count"]) == ("selected", 2)
+    assert not r["truncated"]
+
+
+def test_threat_line_truncated_on_one_side_only():
+    A, B = "10.0.0.1", "10.0.0.2"
+    flows = [flow("10.0.0.11", A, 1, T), flow("10.0.0.12", A, 1, T), flow(A, B, 2, T + 10),
+             flow(B, "10.0.0.21", 3, T + 20)]
+    be = CaseBackend(Config(backend="case"), flows=flows)
+    r = be.threat_line(A, B, utc(T + 10), utc(T + 10), timedelta(days=1), 6, [], 2)
+    assert r["truncated"] is True            # up hit the cap; down did not
+
+
+def test_ports_rank_by_use_then_number():
+    flows = [flow("10.0.0.1", H, 3389, T + i) for i in range(3)] + [flow("10.0.0.1", H, 445, T + 5)] + \
+            [flow("10.0.0.1", H, p, T + 6) for p in (8080, 22, 80, 53, 25)]
+    be = CaseBackend(Config(backend="case"), flows=flows)
+    [peer] = be.neighbors(H, "in", utc(T), utc(T + 60), 10, "top", [])["peers"]
+    assert peer["ports"] == [3389, 22, 25, 53, 80]
+
+
+def test_flow_durations_keep_microseconds():
+    f = Flow("10.0.0.1", H, 50000, 445, "tcp", T, T + 1.2345678, 2, 120, "x")
+    be = CaseBackend(Config(backend="case"), flows=[f])
+    [row] = be.flows("10.0.0.1", H, utc(T), utc(T), 0, 10)["flows"]
+    assert row["duration"] == 1.234568
+
+
+def test_the_time_range_allows_the_ui_rounding_at_its_start(client):
+    # Flows start at whole seconds plus nothing; a range starting at that millisecond keeps them,
+    # and one a millisecond later doesn't (UI times are rounded down to the millisecond).
+    base = f"/api/neighbors?ip={H}&direction=in&ts=2024-05-01T13:00:00Z&window=24h"
+    peers = lambda q: {p["peer"] for p in client.get(base + q).get_json()["peers"]}  # noqa: E731
+    assert "10.0.0.2" in peers("&range_from=2024-05-01T12:00:40.000Z")
+    assert "10.0.0.2" not in peers("&range_from=2024-05-01T12:00:40.002Z")
+
+
+def test_attack_paths_preview_ten_per_pair(tmp_path):
+    flows = [flow("10.4.0.2", f"10.4.1.{i}", 445, T + i) for i in range(12)] + \
+            [flow(f"10.4.1.{i}", "10.5.0.3", 3389, T + 100 + i) for i in range(12)]
+    cfg = Config(backend="case", compromised_file=str(tmp_path / "c.json"))
+    c = create_app(cfg, CaseBackend(cfg, flows=flows), ExcludeStore(str(tmp_path / "ex.json"))).test_client()
+    c.post("/api/compromised", json={"ip": "10.4.0.2"}, headers=WRITE)
+    c.post("/api/compromised", json={"ip": "10.5.0.3"}, headers=WRITE)
+    [pair] = c.get("/api/paths").get_json()["pairs"]
+    assert len(pair["paths"]) == 10 and pair["truncated"] is True
+    r = c.get("/api/paths?src=10.4.0.2&dst=10.5.0.3").get_json()
+    assert len(r["paths"]) == 12 and r["truncated"] is False
+
+
+def test_threat_line_cap_from_the_config(tmp_path):
+    flows = [flow("10.0.0.11", "10.0.0.1", 1, T), flow("10.0.0.12", "10.0.0.1", 1, T),
+             flow("10.0.0.1", "10.0.0.2", 2, T + 10)]
+    cfg = Config(backend="case", compromised_file=str(tmp_path / "c.json"), threat_max_hosts=2)
+    c = create_app(cfg, CaseBackend(cfg, flows=flows), ExcludeStore(str(tmp_path / "ex.json"))).test_client()
+    r = c.get("/api/threatline?a=10.0.0.1&b=10.0.0.2&from=2024-05-01T12:00:10Z").get_json()
+    assert r["truncated"] is True and len([n for n in r["nodes"] if n["role"] == "up"]) == 1
+
+
+def test_hop_limits_accepted_by_the_api(chain_client):
+    for hops, status in ((1, 200), (20, 200), (0, 400), (21, 400)):
+        r = chain_client.get(f"/api/paths?hops={hops}")
+        assert r.status_code == status, hops
+    assert chain_client.get("/api/paths?hops=21").get_json()["error"] == "hops must be between 1 and 20"
+
+
+def test_search_bounds_allow_the_ui_rounding(tmp_path):
+    # The second hop starts 0.4 ms into a millisecond; a range starting at that millisecond
+    # (as the UI writes it) must keep it.
+    flows = [flow("10.0.0.1", "10.0.0.2", 445, T), flow("10.0.0.2", "10.0.0.3", 445, T + 60.0004)]
+    cfg = Config(backend="case", compromised_file=str(tmp_path / "c.json"))
+    c = create_app(cfg, CaseBackend(cfg, flows=flows), ExcludeStore(str(tmp_path / "ex.json"))).test_client()
+    r = c.get("/api/paths?src=10.0.0.2&dst=10.0.0.3&range_from=2024-05-01T12:01:00.000Z").get_json()
+    assert len(r["paths"]) == 1
+    r = c.get("/api/threatline?a=10.0.0.1&b=10.0.0.2&from=2024-05-01T12:00:00Z"
+              "&range_from=2024-05-01T12:00:00.000Z&range_to=2024-05-01T12:01:00.000Z").get_json()
+    assert "10.0.0.3" in {n["id"] for n in r["nodes"]}
+
+
+def test_database_errors_name_the_problem(tmp_path):
+    with pytest.raises(SourceError, match="can't write the case database"):
+        CaseBackend(Config(backend="case", case_db=str(tmp_path)), flows=FLOWS)     # a directory
+    be = CaseBackend(Config(backend="case"), flows=FLOWS)
+    with pytest.raises(ValidationError, match=f"no flows from 10.0.0.1 to {H} in that time range"):
+        be.threat_line("10.0.0.1", H, utc(T + 1000), utc(T + 1000), timedelta(days=1), 6, [], 300)
