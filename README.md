@@ -17,7 +17,7 @@ Data sources: Zeek `conn` records in Security Onion's Elasticsearch (`event.data
 |---|---|
 | Launch from SOC | Two SOC actions on an IP value: *inbound (past)* and *outbound (future)*. You can switch direction on the map. |
 | Peer selection | **Top N** (most connections) or **Bottom N** (rarest). Default N = 50. Bottom N is **exact**: it counts every distinct peer, up to 10,000 (`TB_RARE_SCAN_CAP`). Beyond that the map shows a warning that the list may be incomplete. |
-| Exclude list | Shared across all analysts and editable in the UI (side panel, or right-click a host). Takes IPs, CIDRs or domain names (see [Domain names](#domain-names-on-the-exclude-list)). Applied to both Top and Bottom. Stored in `/data/exclude.json`. No audit trail. |
+| Exclude list | Shared across all analysts and editable in the UI (side panel, or right-click a host). Takes IPs, CIDRs or domain names (see [Domain names](#domain-names-on-the-exclude-list)). Applied to both Top and Bottom. Stored in `/data/exclude.json`. No audit trail. Invalid entries from a hand edit are skipped with a warning; a file that is not valid JSON is reported and never overwritten. |
 | Time window | 24h per hop by default. Adjustable on the map, up to `TB_MAX_WINDOW` (30d). |
 | Time range | Optional *Range from* / *Range to* (UTC) on the map. It limits everything: expansions, the default anchor, flow lists, threat lines, attack paths and SOC pivots. Kept in the map's URL. |
 | Flow list | Clicking a connection lists its flows oldest first, 50 per page, with start, protocol, ports, duration, packets and bytes. Security Onion returns at most the first 10,000 flows of a connection; narrow the time range to page past them. |
@@ -35,8 +35,10 @@ python -m threatbridge --case /cases/incident-42/      # files or directories, i
 - **Inputs.** tcpdump captures in classic pcap format, and nfcapd files.
   - Supported pcap link types: Ethernet, Linux `any` (SLL/SLL2), raw IP and loopback, with µs or ns timestamps.
   - pcapng is not supported; convert it with `editcap -F pcap in.pcapng out.pcap`.
-  - Directories are searched recursively; other files are skipped.
-  - nfcapd files are read with the `nfdump` binary (tested with 1.7.3). Set `TB_NFDUMP` if it is not on `PATH`.
+  - Directories are searched recursively; other files are skipped. A file named more than once (directly, through its directory, or through a symlink) is read once.
+  - A capture cut off mid-packet (tcpdump killed) is read up to its last whole packet.
+  - Packets cut by the snap length (`tcpdump -s`) still count, as long as the ports were captured. IPv4 and IPv6 fragments after the first are skipped.
+  - nfcapd files are read with the `nfdump` binary (tested with 1.7.3). Set `TB_NFDUMP` if it is not on `PATH`. The file nfcapd is still writing (`nfcapd.current.*`) is skipped.
 - **One edge per connection,** from initiator to responder, like a Zeek conn record.
   - A TCP connection ends at a RST, at a new SYN after a FIN, or after 5 minutes idle. UDP and ICMP end after 1 minute idle.
   - Rotated captures (`tcpdump -C` / `-G`) are read in capture order, so a connection that spans files stays one flow.
@@ -50,7 +52,7 @@ python -m threatbridge --case /cases/incident-42/      # files or directories, i
 
 Enter a name such as `updates.example.com` and it stands for every address it resolved to.
 
-- **Capture answers:** what the name pointed to during the incident, taken from the DNS answers in the pcaps (UDP port 53). CNAME chains are followed: a name and its aliases share all addresses in the answer.
+- **Capture answers:** what the name pointed to during the incident, taken from the DNS answers in the pcaps (UDP port 53). CNAME chains are followed: a name and its aliases share all addresses in the answer. Answer records for names outside the question's chain are ignored, so a crafted response can't tie a benign name to an attacker's address.
 - **Live lookup:** done through the system resolver and cached for 5 minutes (`TB_DNS_TTL`, `TB_DNS_TIMEOUT`).
   - A name behind a CDN may resolve differently now than during the incident, which is why the capture answers come first.
   - Set `TB_LIVE_DNS=false` on an isolated analysis machine; otherwise each lookup waits for its timeout (2 s).
@@ -93,12 +95,12 @@ The searches are exact under that rule. An attacker may have reached a host at s
   - Expanding the busiest host took 0.26 s.
 - **Storage.** The flows go into a SQLite file. The map and searches use a graph holding one edge per host pair, with the start times of that pair's flows.
   - Without `--db` (`TB_CASE_DB`) the file is temporary. With it, the case reopens without re-reading the evidence until a file is added or changed.
-  - Nothing is written to the evidence directories. Keep the `--db` file with your working files.
+  - Nothing is written to the evidence directories. Keep the `--db` file with your working files. Next to it, `<file>.lock` lets several workers share it: one builds it, the others wait and reuse it.
 - **Memory and time in testing:**
   - Typical traffic: 975k flows between 2,910 hosts take about 75 MB once loaded.
   - Worst case: every flow between a different pair of hosts. A 93 MB capture of 1.25M minimum-size packets took 58 s to build, 24 s to reopen with `--db`, and about 1 GB of RAM.
 - **Don't load overlapping evidence.** A pcap and NetFlow of the same traffic are counted twice.
-- **The command above serves plain HTTP on 127.0.0.1.** To share the map, run it under gunicorn with mutual TLS, as for Security Onion. Use `TB_BACKEND=case TB_CASE_PATHS=/cases/incident-42 TB_WORKERS=1`; each worker loads its own copy of the data.
+- **The command above serves plain HTTP on 127.0.0.1.** To share the map, run it under gunicorn with mutual TLS, as for Security Onion. Use `TB_BACKEND=case TB_CASE_PATHS=/cases/incident-42 TB_WORKERS=1`; each worker loads its own copy of the data (with `TB_CASE_DB` set, they share the parsed flows).
 
 ## Deploy on the Security Onion manager
 
