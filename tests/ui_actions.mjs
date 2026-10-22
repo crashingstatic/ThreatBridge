@@ -4,28 +4,16 @@
 //   python tests/make_case.py DIR
 //   TB_MAX_PATHS=11 python -m threatbridge --case DIR --port 5056
 //   TB_URL=http://127.0.0.1:5056 node tests/ui_actions.mjs [screenshot-dir]
-import { chromium } from "playwright";
 import assert from "node:assert/strict";
-import { saveCoverage, startCoverage } from "./ui_coverage.mjs";
+import { finish, launch } from "./ui_helpers.mjs";
 
 const BASE = process.env.TB_URL || "http://127.0.0.1:5056";
 const SHOTS = process.argv[2];
-const browser = await chromium.launch(
-  process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {});
-const page = await browser.newPage({ viewport: { width: 1400, height: 850 } });
-await startCoverage(page);
-const errors = [];
-page.on("console", (m) => m.type() === "error" && !/status of (400|502)|ERR_FAILED/.test(m.text()) && errors.push(m.text()));
-page.on("pageerror", (e) => errors.push(String(e)));
+// The errors this test provokes on purpose (HTTP 400 and 502, an aborted request) are expected.
+const { browser, page, errors, at } = await launch({ expected: /status of (400|502)|ERR_FAILED/ });
 
 const cyEval = (fn, arg) => page.evaluate(fn, arg);
 const ids = () => cyEval(() => window.threatbridge.cy.nodes().map((n) => n.id()).sort());
-const at = (selector, kind) => cyEval(([sel, k]) => {
-  const el = window.threatbridge.cy.$(sel)[0];
-  const p = k === "edge" ? el.renderedMidpoint() : el.renderedPosition();
-  const box = document.getElementById("cy").getBoundingClientRect();
-  return { x: p.x + box.left, y: p.y + box.top };
-}, [selector, kind]);
 const node = (ip) => `node[id = "${ip}"]`;
 const edge = (a, b) => `edge[id = "${a}->${b}"]`;
 const menu = async (selector, item) => {
@@ -199,6 +187,5 @@ try {
   assert.deepEqual(errors, [], "browser console errors");
   console.log("UI actions test passed");
 } finally {
-  await saveCoverage(page, "actions");
-  await browser.close();
+  await finish(browser, page, "actions");
 }

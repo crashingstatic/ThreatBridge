@@ -5,12 +5,16 @@
   const $ = (id) => document.getElementById(id);
   const statusEl = $("status");
   const menu = $("menu");
-  let iocTime = null; // anchor of the root (IOC) event; upper bound for SOC pivots
-  let cfg = {};       // /api/config
+  let iocTime = null;          // anchor of the root (IOC) event; upper bound for SOC pivots
+  let cfg = {};                // /api/config
   let compromised = new Map(); // ip -> {time, note}
+  let detailsFor = null;       // host shown in the details panel
+  let flowsFor = null;         // connection whose flows the details panel lists
+  const FLOW_PAGE = 50;
+  const WRITE_HEADERS = { "Content-Type": "application/json", "X-ThreatBridge": "1" };
   const COLORS = { root: "#e5484d", in: "#3e9bff", out: "#f5a524", node: "#9aa7bd",
                    up: "#a78bfa", down: "#2dd4bf", attack: "#ff4d5e", compromised: "#b4232a",
-                  route: "#f472b6" };
+                   route: "#f472b6" };
 
   const cy = cytoscape({
     container: $("cy"),
@@ -32,7 +36,7 @@
       { selector: "edge[direction = 'out']", style: { "line-color": COLORS.out, "target-arrow-color": COLORS.out } },
       { selector: "node[?compromised]", style: {
           "background-color": COLORS.compromised, "border-width": 3, "border-color": "#ff8a8a" } },
-      // Attack paths between compromised hosts, and the threat line through a clicked edge.
+      // Attack paths, paths between two hosts, and the threat line through a clicked edge.
       { selector: "edge.attack", style: {
           "line-color": COLORS.attack, "target-arrow-color": COLORS.attack, width: 6, "z-index": 10 } },
       { selector: "edge.route", style: {
@@ -195,10 +199,6 @@
     body.append(dl);
   }
 
-  let detailsFor = null; // host shown in the details panel
-  let flowsFor = null;   // connection whose flows the details panel lists
-  const FLOW_PAGE = 50;
-
   function refreshDetails(ip) {
     const n = cy.getElementById(ip);
     if (detailsFor === ip && n.nonempty()) nodeDetails(n);
@@ -230,7 +230,7 @@
     loadFlows(flowsFor, 0).catch((err) => setStatus(err.message, true));
   }
 
-  // ---- a connection's flows, oldest first, a page at a time -------------------
+  // ---- a connection's flows, oldest first, a page at a time -----------------
   async function loadFlows(conn, offset) {
     const params = withRange(new URLSearchParams({ src: conn.src, dst: conn.dst, from: conn.from,
                                                    to: conn.to, offset, limit: FLOW_PAGE }));
@@ -288,7 +288,7 @@
     section.replaceChildren(title, pager, list);
   }
 
-  // ---- context menu -------------------------------------------------------
+  // ---- context menu ---------------------------------------------------------
   function hideMenu() { menu.hidden = true; menu.replaceChildren(); }
 
   function showMenu(x, y, items) {
@@ -395,7 +395,7 @@
     $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") start(); });
   }
 
-  // ---- shared exclude list -------------------------------------------------
+  // ---- shared exclude list --------------------------------------------------
   // What a domain entry stands for: DNS answers seen in the capture, and a live lookup.
   function resolutionText(r) {
     const list = (ips) => (ips.length > 4 ? `${ips.slice(0, 4).join(", ")} +${ips.length - 4} more`
@@ -427,8 +427,6 @@
       ul.append(li);
     }
   }
-
-  const WRITE_HEADERS = { "Content-Type": "application/json", "X-ThreatBridge": "1" };
 
   async function addExclude(entry) {
     const r = await getJSON("/api/excludes", { method: "POST", headers: WRITE_HEADERS,
@@ -463,7 +461,7 @@
       .catch((err) => setStatus(err.message, true));
   });
 
-  // ---- threat line through a clicked edge (PCAP/NetFlow cases) ---------------
+  // ---- threat line through a clicked edge (PCAP/NetFlow cases) --------------
   // Earlier hosts that could have led to the edge's source, and later hosts its target
   // could have reached, following time order with at most `window` between hops.
   async function showThreatLine(e) {
@@ -634,7 +632,7 @@
     if (!quiet) setStatus(`${paths.length}${more} attack path(s) between ${compromised.size} compromised host(s)`);
   }
 
-  // ---- every path between two hosts ------------------------------------------
+  // ---- every path between two hosts -----------------------------------------
   function compromiseTime(ip) {
     const h = compromised.get(ip);
     return (h && h.time) || "";
@@ -716,7 +714,7 @@
     if (q.get("window")) $("window").value = q.get("window");
     if (q.get("range_from")) $("range-from").value = q.get("range_from");
     if (q.get("range_to")) $("range-to").value = q.get("range_to");
-    const dir = q.get("dir") || q.get("direction");
+    const dir = q.get("dir");
     if (dir === "in" || dir === "out") $("direction").value = dir;
     const order = q.get("order");
     if (order === "top" || order === "bottom") $("order").value = order;

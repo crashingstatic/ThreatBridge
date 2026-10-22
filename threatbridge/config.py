@@ -24,6 +24,11 @@ def _env_list(name, default):
     return [v.strip() for v in value.split(",") if v.strip()]
 
 
+DATASETS = ("conn", "zeek.conn")
+PACKETS_FIELDS = ("client.packets", "server.packets")
+BYTES_FIELDS = ("client.ip_bytes", "server.ip_bytes")
+
+
 @dataclass
 class Config:
     backend: str = "elastic"  # "elastic", "case" or "demo"
@@ -42,7 +47,7 @@ class Config:
     es_index: str = "logs-*"
     es_timeout: int = 30
     # Only count connection records. Empty list disables the filter.
-    datasets: list = field(default_factory=lambda: ["conn", "zeek.conn"])
+    datasets: list = field(default_factory=lambda: list(DATASETS))
 
     # ECS field names
     f_src: str = "source.ip"
@@ -55,8 +60,8 @@ class Config:
     f_sport: str = "source.port"
     f_proto: str = "network.transport"
     f_duration: str = "event.duration"
-    f_packets: list = field(default_factory=lambda: ["client.packets", "server.packets"])
-    f_bytes: list = field(default_factory=lambda: ["client.ip_bytes", "server.ip_bytes"])
+    f_packets: list = field(default_factory=lambda: list(PACKETS_FIELDS))
+    f_bytes: list = field(default_factory=lambda: list(BYTES_FIELDS))
 
     # SOC pivot. {query} is replaced with the URL-encoded OQL query.
     soc_url: str = "https://securityonion"
@@ -92,17 +97,17 @@ class Config:
     @classmethod
     def from_env(cls):
         return cls(
-            backend=_env("TB_BACKEND", "elastic"),
+            backend=_env("TB_BACKEND", cls.backend),
             case_paths=[p for p in (_env("TB_CASE_PATHS") or "").split(os.pathsep) if p],
             case_db=_env("TB_CASE_DB"),
             es_url=_env("TB_ES_URL", cls.es_url),
             es_user=_env("TB_ES_USER"),
             es_pass=_env("TB_ES_PASS"),
-            es_verify=_env_bool("TB_ES_VERIFY", True),
+            es_verify=_env_bool("TB_ES_VERIFY", cls.es_verify),
             es_ca=_env("TB_ES_CA"),
             es_index=_env("TB_ES_INDEX", cls.es_index),
             es_timeout=int(_env("TB_ES_TIMEOUT", cls.es_timeout)),
-            datasets=_env_list("TB_DATASETS", ["conn", "zeek.conn"]),
+            datasets=_env_list("TB_DATASETS", DATASETS),
             f_src=_env("TB_FIELD_SRC", cls.f_src),
             f_dst=_env("TB_FIELD_DST", cls.f_dst),
             f_ts=_env("TB_FIELD_TS", cls.f_ts),
@@ -111,11 +116,11 @@ class Config:
             f_sport=_env("TB_FIELD_SPORT", cls.f_sport),
             f_proto=_env("TB_FIELD_PROTO", cls.f_proto),
             f_duration=_env("TB_FIELD_DURATION", cls.f_duration),
-            f_packets=_env_list("TB_FIELD_PACKETS", ["client.packets", "server.packets"]),
-            f_bytes=_env_list("TB_FIELD_BYTES", ["client.ip_bytes", "server.ip_bytes"]),
+            f_packets=_env_list("TB_FIELD_PACKETS", PACKETS_FIELDS),
+            f_bytes=_env_list("TB_FIELD_BYTES", BYTES_FIELDS),
             soc_url=_env("TB_SOC_URL", cls.soc_url).rstrip("/"),
             soc_path=_env("TB_SOC_PATH", cls.soc_path),
-            pivot_time_clause=_env_bool("TB_PIVOT_TIME_CLAUSE", True),
+            pivot_time_clause=_env_bool("TB_PIVOT_TIME_CLAUSE", cls.pivot_time_clause),
             default_window=_env("TB_WINDOW", cls.default_window),
             max_window=_env("TB_MAX_WINDOW", cls.max_window),
             default_limit=int(_env("TB_LIMIT", cls.default_limit)),
@@ -123,7 +128,7 @@ class Config:
             rare_scan_cap=int(_env("TB_RARE_SCAN_CAP", cls.rare_scan_cap)),
             exclude_file=_env("TB_EXCLUDE_FILE", cls.exclude_file),
             compromised_file=_env("TB_COMPROMISED_FILE", cls.compromised_file),
-            live_dns=_env_bool("TB_LIVE_DNS", True),
+            live_dns=_env_bool("TB_LIVE_DNS", cls.live_dns),
             dns_ttl=int(_env("TB_DNS_TTL", cls.dns_ttl)),
             dns_timeout=float(_env("TB_DNS_TIMEOUT", cls.dns_timeout)),
             threat_hops=int(_env("TB_THREAT_HOPS", cls.threat_hops)),

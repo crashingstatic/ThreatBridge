@@ -1,23 +1,37 @@
-"""Post-mortem ("case") backend: graph queries and the HTTP API on top of it."""
+"""Post-mortem ("case") backend: the flow store, graph queries and the HTTP API on top of them."""
+import os
+import sqlite3
+import tempfile
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from evidence import ACK, SYN, tcp, udp, write_pcap
+from threatbridge import sources
+from threatbridge import store as store_mod
 from threatbridge.app import create_app
-from threatbridge.backends import CaseBackend
+from threatbridge.backends import CaseBackend, DemoBackend
 from threatbridge.config import Config
 from threatbridge.excludes import ExcludeStore
 from threatbridge.graph import build_graph
-from threatbridge.store import FlowStore
-from threatbridge.model import Flow
+from threatbridge.model import Flow, SourceError
+from threatbridge.query import ValidationError
+from threatbridge.store import FlowStore, NotAStore
+
 
 T = 1_714_564_800.0
 H = "10.0.0.9"   # host under investigation
+WRITE = {"X-ThreatBridge": "1"}
 
 
 def flow(src, dst, dport, start, proto="tcp", sport=50000):
     return Flow(src, dst, sport, dport, proto, start, start + 1, 2, 120, "x.pcap")
+
+
+def utc(epoch):
+    return datetime.fromtimestamp(epoch, timezone.utc)
 
 
 FLOWS = [
@@ -35,15 +49,14 @@ def backend():
     return CaseBackend(Config(backend="case"), flows=FLOWS)
 
 
-def utc(epoch):
-    return datetime.fromtimestamp(epoch, timezone.utc)
+def case_client(tmp_path, flows, **cfg_args):
+    """An API client on a case backend holding `flows`."""
+    cfg = Config(backend="case", compromised_file=str(tmp_path / "c.json"), **cfg_args)
+    return create_app(cfg, CaseBackend(cfg, flows=flows),
+                      ExcludeStore(str(tmp_path / "ex.json"))).test_client()
 
 
-def test_graph_keeps_every_flow():
-    g = build_graph((f.src, f.dst, f.start) for f in FLOWS)
-    assert g.number_of_edges() == 7                            # host pairs
-    assert list(g["10.0.0.1"][H]["times"]) == [T + 10, T + 20, T + 30]
-
+# ---- the flow store -----------------------------------------------------------------------
 
 def test_store_queries(tmp_path):
     store = FlowStore(str(tmp_path / "case.db"))
@@ -74,14 +87,68 @@ def test_store_pages_a_connections_flows_oldest_first(tmp_path):
     assert store.flows("10.0.0.1", H, T + 11, T + 29, 0, 9) == [FLOWS[1]]
 
 
+def test_flows_with_the_same_start_page_without_gaps(tmp_path):
+    same = [Flow("10.0.0.1", H, 50000 + i, 445, "tcp", T, T + 1, 2, 120, "x") for i in range(5)]
+    store = FlowStore(str(tmp_path / "case.db"))
+    store.write(same, {}, [])
+    pages = [store.flows("10.0.0.1", H, T, T, off, 2) for off in (0, 2, 4)]
+    assert sorted(f.sport for page in pages for f in page) == [50000 + i for i in range(5)]
+
+
+def test_flow_at_without_a_match(tmp_path):
+    store = FlowStore(str(tmp_path / "case.db"))
+    store.write(FLOWS, {}, [])
+    assert store.flow_at("10.0.0.1", H, T + 11) is None
+
+
+def test_reuse_keeps_dns_and_ignores_file_order(tmp_path):
+    store = FlowStore(str(tmp_path / "case.db"))
+    dns = {"x.example": {"10.0.0.1": [T, T + 1]}}
+    files = [("/e/a.pcap", 1, 1), ("/e/b.pcap", 2, 2)]
+    store.write(FLOWS, dns, files)
+    again = FlowStore(store.path)
+    assert again.matches(files[::-1]) and again.dns() == dns
+    assert not again.matches(files[:1]) and not again.matches(files + [("/e/c.pcap", 3, 3)])
+
+
 def test_store_refuses_to_overwrite_other_databases(tmp_path):
-    import sqlite3
-    from threatbridge.store import NotAStore
     path = str(tmp_path / "app.db")
     sqlite3.connect(path).execute("CREATE TABLE users (name TEXT)").connection.commit()
     with pytest.raises(NotAStore):
         FlowStore(path).write(FLOWS, {}, [])
     assert sqlite3.connect(path).execute("SELECT name FROM sqlite_master").fetchall() == [("users",)]
+
+
+def test_a_non_sqlite_file_is_never_overwritten(tmp_path):
+    notes = tmp_path / "notes.txt"
+    notes.write_text("analyst notes, not a database\n" * 20)
+    with pytest.raises(NotAStore):
+        FlowStore(str(notes)).write(FLOWS, {}, [])
+    assert notes.read_text() == "analyst notes, not a database\n" * 20
+    cfg = Config(backend="case", case_db=str(notes))
+    with pytest.raises(SourceError, match="not a ThreatBridge case database"):
+        CaseBackend(cfg, flows=FLOWS)
+
+
+def test_an_interrupted_build_is_not_reused(tmp_path, monkeypatch):
+    path = str(tmp_path / "case.db")
+    monkeypatch.setattr(store_mod, "_INDEXES", "CREATE INDEX broken ON nowhere (x);")
+    with pytest.raises(sqlite3.Error):
+        FlowStore(path).write(FLOWS, {}, [("/e/cap.pcap", 10, 5)])     # dies building the index
+    assert not FlowStore(path).matches([("/e/cap.pcap", 10, 5)])
+
+
+# ---- case backend queries -----------------------------------------------------------------
+
+def test_graph_keeps_every_flow():
+    g = build_graph((f.src, f.dst, f.start) for f in FLOWS)
+    assert g.number_of_edges() == 7                            # host pairs
+    assert list(g["10.0.0.1"][H]["times"]) == [T + 10, T + 20, T + 30]
+
+
+def test_summary(backend):
+    assert backend.summary() == {"flows": 9, "hosts": 7, "start": "2024-05-01T12:00:10.000Z",
+                                 "end": "2024-05-01T13:23:21.000Z", "dns_names": 0}
 
 
 def test_neighbors_inbound(backend):
@@ -104,16 +171,49 @@ def test_neighbors_order_limit_exclude_and_self(backend):
     assert [p["peer"] for p in out["peers"]] == ["10.0.0.20"]  # self-connection skipped
 
 
-def test_summary(backend):
-    assert backend.summary() == {"flows": 9, "hosts": 7, "start": "2024-05-01T12:00:10.000Z",
-                                 "end": "2024-05-01T13:23:21.000Z", "dns_names": 0}
+def test_neighbor_ties_are_ordered_by_address():
+    flows = [flow(p, H, 445, T + i) for i, p in enumerate(["10.0.0.30", "10.0.0.4", "fe80::1", "10.0.0.200"])]
+    be = CaseBackend(Config(backend="case"), flows=flows)
+    for order in ("top", "bottom"):
+        res = be.neighbors(H, "in", utc(T), utc(T + 60), 10, order, [])
+        assert [p["peer"] for p in res["peers"]] == sorted(p["peer"] for p in res["peers"])
 
+
+def test_case_window_math_matches_flow_starts(backend):
+    # A flow starting exactly at the window edge is included (same as the Elasticsearch range).
+    res = backend.neighbors(H, "in", utc(T + 10), utc(T + 10), 10, "top", [])
+    assert [p["peer"] for p in res["peers"]] == ["10.0.0.1"]
+
+
+def test_ports_rank_by_use_then_number():
+    flows = [flow("10.0.0.1", H, 3389, T + i) for i in range(3)] + [flow("10.0.0.1", H, 445, T + 5)] + \
+            [flow("10.0.0.1", H, p, T + 6) for p in (8080, 22, 80, 53, 25)]
+    be = CaseBackend(Config(backend="case"), flows=flows)
+    [peer] = be.neighbors(H, "in", utc(T), utc(T + 60), 10, "top", [])["peers"]
+    assert peer["ports"] == [3389, 22, 25, 53, 80]
+
+
+def test_flow_durations_keep_microseconds():
+    f = Flow("10.0.0.1", H, 50000, 445, "tcp", T, T + 1.2345678, 2, 120, "x")
+    be = CaseBackend(Config(backend="case"), flows=[f])
+    [row] = be.flows("10.0.0.1", H, utc(T), utc(T), 0, 10)["flows"]
+    assert row["duration"] == 1.234568
+
+
+def test_the_store_answers_from_other_threads(backend):
+    out = []
+    t = threading.Thread(target=lambda: out.append(backend.flows(
+        "10.0.0.1", H, utc(T), utc(T + 100), 0, 10)["total"]))
+    t.start()
+    t.join()
+    assert out == [3]
+
+
+# ---- the API in case mode -----------------------------------------------------------------
 
 @pytest.fixture
-def client(tmp_path, backend):
-    cfg = Config(backend="case", compromised_file=str(tmp_path / "compromised.json"))
-    app = create_app(cfg, backend, ExcludeStore(str(tmp_path / "ex.json")))
-    return app.test_client()
+def client(tmp_path):
+    return case_client(tmp_path, FLOWS)
 
 
 def test_api_config_and_default_anchor(client, backend):
@@ -196,15 +296,29 @@ def test_api_neighbors_from_pcap_directory(tmp_path):
     assert [(p["peer"], p["ports"]) for p in res["peers"]] == [("10.0.0.53", [53])]
 
 
-def test_case_window_math_matches_flow_starts(backend):
-    # A flow starting exactly at the window edge is included (same as the Elasticsearch range).
-    res = backend.neighbors(H, "in", utc(T + 10), utc(T + 10), 10, "top", [])
-    assert [p["peer"] for p in res["peers"]] == ["10.0.0.1"]
+def test_an_empty_case_works_end_to_end(tmp_path):
+    c = case_client(tmp_path, [])
+    assert c.get("/api/config").get_json()["case"] == {
+        "flows": 0, "hosts": 0, "start": None, "end": None, "dns_names": 0}
+    assert c.get(f"/api/resolve?ip={H}&direction=in").status_code == 200
+    assert c.get(f"/api/neighbors?ip={H}&ts=2024-05-01T12:00:00Z").get_json()["peers"] == []
+    assert c.get(f"/api/flows?src=10.0.0.1&dst={H}&from=2024-05-01T12:00:00Z").get_json()["total"] == 0
+    assert c.get("/api/paths").get_json() == {"pairs": []}
+    assert c.get(f"/api/paths?src=10.0.0.1&dst={H}").get_json()["paths"] == []
+    assert c.get(f"/api/threatline?a=10.0.0.1&b={H}&from=2024-05-01T12:00:00Z").status_code == 400
 
 
-# ---- compromised hosts, threat lines, attack paths ---------------------------------------
+def test_analysis_needs_case_backend(tmp_path):
+    cfg = Config(backend="demo", compromised_file=str(tmp_path / "c.json"))
+    c = create_app(cfg, DemoBackend(cfg), ExcludeStore(str(tmp_path / "ex.json"))).test_client()
+    assert c.get("/api/config").get_json()["analysis"] is False
+    assert c.get("/api/paths").status_code == 501
+    assert c.get(f"/api/paths?src=10.0.0.5&dst={H}").status_code == 501
+    assert c.get(f"/api/threatline?a=10.0.0.5&b={H}&from=2024-05-01T12:10:00Z").status_code == 501
 
-WRITE = {"X-ThreatBridge": "1"}
+
+# ---- threat lines -------------------------------------------------------------------------
+
 CHAIN = [flow("203.0.113.66", "10.0.0.5", 443, T), flow("10.0.0.5", H, 445, T + 600),
          flow(H, "10.0.0.20", 3389, T + 1200), flow(H, "10.0.0.20", 3389, T + 1300),
          flow("10.0.0.20", "10.0.0.30", 22, T - 600)]   # before the chain: not on it
@@ -212,25 +326,7 @@ CHAIN = [flow("203.0.113.66", "10.0.0.5", 443, T), flow("10.0.0.5", H, 445, T + 
 
 @pytest.fixture
 def chain_client(tmp_path):
-    cfg = Config(backend="case", compromised_file=str(tmp_path / "compromised.json"))
-    app = create_app(cfg, CaseBackend(cfg, flows=CHAIN),
-                     ExcludeStore(str(tmp_path / "ex.json")))
-    return app.test_client()
-
-
-def test_compromised_hosts_crud(chain_client):
-    c = chain_client
-    assert c.get("/api/compromised").get_json() == {"hosts": []}
-    assert c.post("/api/compromised", json={"ip": H}).status_code == 403      # CSRF header
-    r = c.post("/api/compromised", json={"ip": H, "time": "2024-05-01T12:10:00Z", "note": "EDR"},
-               headers=WRITE).get_json()
-    assert r["hosts"] == [{"ip": H, "time": "2024-05-01T12:10:00.000Z", "note": "EDR"}]
-    r = c.post("/api/compromised", json={"ip": H, "time": ""}, headers=WRITE).get_json()
-    assert r["hosts"] == [{"ip": H, "time": None, "note": ""}]               # re-mark replaces
-    assert c.post("/api/compromised", json={"ip": "nope"}, headers=WRITE).status_code == 400
-    assert c.post("/api/compromised", json={"ip": H, "time": "soon"}, headers=WRITE).status_code == 400
-    r = c.delete("/api/compromised", json={"ip": H}, headers=WRITE).get_json()
-    assert r["hosts"] == []
+    return case_client(tmp_path, CHAIN)
 
 
 def test_threatline_api(chain_client):
@@ -257,6 +353,65 @@ def test_threatline_validation(chain_client, query, status):
     assert chain_client.get(f"/api/threatline?{query}").status_code == status
 
 
+def test_threatline_to_before_from(chain_client):
+    r = chain_client.get(f"/api/threatline?a=10.0.0.5&b={H}&from=2024-05-01T12:10:00Z&to=2024-05-01T12:00:00Z")
+    assert r.status_code == 400 and r.get_json()["error"] == "to is before from"
+
+
+def test_a_threat_line_needs_flows_in_its_time_range(backend):
+    with pytest.raises(ValidationError, match=f"no flows from 10.0.0.1 to {H} in that time range"):
+        backend.threat_line("10.0.0.1", H, utc(T + 1000), utc(T + 1000), timedelta(days=1), 6, [], 300)
+
+
+def test_threat_line_nodes_and_edges_in_detail():
+    # X reaches A before the selected hop and B reaches X after it: X is on both sides.
+    A, B, X = "10.0.0.1", "10.0.0.2", "10.0.0.3"
+    flows = [flow(X, A, 1, T), flow(A, B, 2, T + 10), flow(A, B, 2, T + 20), flow(B, X, 3, T + 30)]
+    be = CaseBackend(Config(backend="case"), flows=flows)
+    r = be.threat_line(A, B, utc(T + 10), utc(T + 20), timedelta(days=1), 6, [], 300)
+    nodes = {n["id"]: n for n in r["nodes"]}
+    assert nodes[A] == {"id": A, "role": "selected", "time": "2024-05-01T12:00:20.000Z", "hops": 0}
+    assert nodes[B] == {"id": B, "role": "selected", "time": "2024-05-01T12:00:10.000Z", "hops": 0}
+    assert nodes[X]["role"] == "both"
+    edges = {(e["source"], e["target"]): e for e in r["edges"]}
+    assert (edges[(A, B)]["role"], edges[(A, B)]["count"]) == ("selected", 2)
+    assert not r["truncated"]
+
+
+def test_threat_line_truncated_on_one_side_only():
+    A, B = "10.0.0.1", "10.0.0.2"
+    flows = [flow("10.0.0.11", A, 1, T), flow("10.0.0.12", A, 1, T), flow(A, B, 2, T + 10),
+             flow(B, "10.0.0.21", 3, T + 20)]
+    be = CaseBackend(Config(backend="case"), flows=flows)
+    r = be.threat_line(A, B, utc(T + 10), utc(T + 10), timedelta(days=1), 6, [], 2)
+    assert r["truncated"] is True            # up hit the cap; down did not
+
+
+def test_threat_line_cap_from_the_config(tmp_path):
+    flows = [flow("10.0.0.11", "10.0.0.1", 1, T), flow("10.0.0.12", "10.0.0.1", 1, T),
+             flow("10.0.0.1", "10.0.0.2", 2, T + 10)]
+    c = case_client(tmp_path, flows, threat_max_hosts=2)
+    r = c.get("/api/threatline?a=10.0.0.1&b=10.0.0.2&from=2024-05-01T12:00:10Z").get_json()
+    assert r["truncated"] is True and len([n for n in r["nodes"] if n["role"] == "up"]) == 1
+
+
+# ---- compromised hosts and attack paths ---------------------------------------------------
+
+def test_compromised_hosts_crud(chain_client):
+    c = chain_client
+    assert c.get("/api/compromised").get_json() == {"hosts": []}
+    assert c.post("/api/compromised", json={"ip": H}).status_code == 403      # CSRF header
+    r = c.post("/api/compromised", json={"ip": H, "time": "2024-05-01T12:10:00Z", "note": "EDR"},
+               headers=WRITE).get_json()
+    assert r["hosts"] == [{"ip": H, "time": "2024-05-01T12:10:00.000Z", "note": "EDR"}]
+    r = c.post("/api/compromised", json={"ip": H, "time": ""}, headers=WRITE).get_json()
+    assert r["hosts"] == [{"ip": H, "time": None, "note": ""}]               # re-mark replaces
+    assert c.post("/api/compromised", json={"ip": "nope"}, headers=WRITE).status_code == 400
+    assert c.post("/api/compromised", json={"ip": H, "time": "soon"}, headers=WRITE).status_code == 400
+    r = c.delete("/api/compromised", json={"ip": H}, headers=WRITE).get_json()
+    assert r["hosts"] == []
+
+
 def test_attack_paths_update_with_marked_hosts(chain_client):
     c = chain_client
     assert c.get("/api/paths").get_json() == {"pairs": []}
@@ -271,6 +426,18 @@ def test_attack_paths_update_with_marked_hosts(chain_client):
     # Marked compromised before the chain reached it: no path any more.
     c.post("/api/compromised", json={"ip": "10.0.0.20", "time": "2024-05-01T12:15:00Z"}, headers=WRITE)
     assert c.get("/api/paths").get_json() == {"pairs": []}
+
+
+def test_attack_paths_preview_ten_per_pair(tmp_path):
+    flows = [flow("10.4.0.2", f"10.4.1.{i}", 445, T + i) for i in range(12)] + \
+            [flow(f"10.4.1.{i}", "10.5.0.3", 3389, T + 100 + i) for i in range(12)]
+    c = case_client(tmp_path, flows)
+    c.post("/api/compromised", json={"ip": "10.4.0.2"}, headers=WRITE)
+    c.post("/api/compromised", json={"ip": "10.5.0.3"}, headers=WRITE)
+    [pair] = c.get("/api/paths").get_json()["pairs"]
+    assert len(pair["paths"]) == 10 and pair["truncated"] is True
+    r = c.get("/api/paths?src=10.4.0.2&dst=10.5.0.3").get_json()
+    assert len(r["paths"]) == 12 and r["truncated"] is False
 
 
 def test_time_range_limits_threat_lines_and_attack_paths(chain_client):
@@ -291,9 +458,20 @@ def test_time_range_limits_threat_lines_and_attack_paths(chain_client):
     assert len(c.get("/api/paths?range_to=2024-05-01T12:20:00Z").get_json()["pairs"]) == 1
 
 
+def test_hop_limits_accepted_by_the_api(chain_client):
+    for hops, status in ((1, 200), (20, 200), (0, 400), (21, 400)):
+        r = chain_client.get(f"/api/paths?hops={hops}")
+        assert r.status_code == status, hops
+    assert chain_client.get("/api/paths?hops=21").get_json()["error"] == "hops must be between 1 and 20"
+
+
+# ---- paths between two hosts --------------------------------------------------------------
+
 # 10.4.0.2 is compromised; 10.5.0.3, on another subnet, matches a different IOC. Ways across:
 # through the jump host 10.9.0.1, through the file server 10.4.0.9, or through both.
 A, B, JUMP, FS = "10.4.0.2", "10.5.0.3", "10.9.0.1", "10.4.0.9"
+
+
 LATERAL = [flow(A, JUMP, 445, T + 100), flow(JUMP, B, 3389, T + 200), flow(A, FS, 445, T + 50),
            flow(FS, JUMP, 22, T + 80), flow(FS, B, 445, T + 5000),
            flow(B, A, 445, T + 10),                     # B connecting to A: no hop A -> B
@@ -302,11 +480,7 @@ LATERAL = [flow(A, JUMP, 445, T + 100), flow(JUMP, B, 3389, T + 200), flow(A, FS
 
 @pytest.fixture
 def lateral(tmp_path):
-    def client(**cfg_args):
-        cfg = Config(backend="case", compromised_file=str(tmp_path / "c.json"), **cfg_args)
-        return create_app(cfg, CaseBackend(cfg, flows=LATERAL),
-                          ExcludeStore(str(tmp_path / "ex.json"))).test_client()
-    return client
+    return lambda **cfg_args: case_client(tmp_path, LATERAL, **cfg_args)
 
 
 def route(path):
@@ -348,22 +522,13 @@ def test_paths_between_validation(lateral, query):
     assert lateral().get(f"/api/paths?{query}").status_code == 400
 
 
-def test_analysis_needs_case_backend(tmp_path):
-    from threatbridge.backends import DemoBackend
-    cfg = Config(backend="demo", compromised_file=str(tmp_path / "c.json"))
-    c = create_app(cfg, DemoBackend(cfg), ExcludeStore(str(tmp_path / "ex.json"))).test_client()
-    assert c.get("/api/config").get_json()["analysis"] is False
-    assert c.get("/api/paths").status_code == 501
-    assert c.get(f"/api/paths?src=10.0.0.5&dst={H}").status_code == 501
-    assert c.get(f"/api/threatline?a=10.0.0.5&b={H}&from=2024-05-01T12:10:00Z").status_code == 501
-
+# ---- times the UI rounds to the millisecond -----------------------------------------------
 
 def test_submillisecond_times_survive_the_round_trip(tmp_path):
     # The UI only ever sees times rounded down to the millisecond.
     t = T + 0.000731
     flows = [flow("10.0.0.5", H, 445, t), flow(H, "10.0.0.20", 3389, t + 0.25)]
-    cfg = Config(backend="case", compromised_file=str(tmp_path / "c.json"))
-    c = create_app(cfg, CaseBackend(cfg, flows=flows), ExcludeStore(str(tmp_path / "ex.json"))).test_client()
+    c = case_client(tmp_path, flows)
     r = c.get(f"/api/threatline?a=10.0.0.5&b={H}&from=2024-05-01T12:00:00.000Z"
               "&to=2024-05-01T12:00:00.000Z")
     assert r.status_code == 200 and {n["id"] for n in r.get_json()["nodes"]} == {"10.0.0.5", H, "10.0.0.20"}
@@ -372,8 +537,30 @@ def test_submillisecond_times_survive_the_round_trip(tmp_path):
     assert len(c.get("/api/paths").get_json()["pairs"]) == 1
 
 
+def test_the_time_range_allows_the_ui_rounding_at_its_start(client):
+    # Flows start at whole seconds plus nothing; a range starting at that millisecond keeps them,
+    # and one a millisecond later doesn't (UI times are rounded down to the millisecond).
+    base = f"/api/neighbors?ip={H}&direction=in&ts=2024-05-01T13:00:00Z&window=24h"
+    peers = lambda q: {p["peer"] for p in client.get(base + q).get_json()["peers"]}  # noqa: E731
+    assert "10.0.0.2" in peers("&range_from=2024-05-01T12:00:40.000Z")
+    assert "10.0.0.2" not in peers("&range_from=2024-05-01T12:00:40.002Z")
+
+
+def test_search_bounds_allow_the_ui_rounding(tmp_path):
+    # The second hop starts 0.4 ms into a millisecond; a range starting at that millisecond
+    # (as the UI writes it) must keep it.
+    flows = [flow("10.0.0.1", "10.0.0.2", 445, T), flow("10.0.0.2", "10.0.0.3", 445, T + 60.0004)]
+    c = case_client(tmp_path, flows)
+    r = c.get("/api/paths?src=10.0.0.2&dst=10.0.0.3&range_from=2024-05-01T12:01:00.000Z").get_json()
+    assert len(r["paths"]) == 1
+    r = c.get("/api/threatline?a=10.0.0.1&b=10.0.0.2&from=2024-05-01T12:00:00Z"
+              "&range_from=2024-05-01T12:00:00.000Z&range_to=2024-05-01T12:01:00.000Z").get_json()
+    assert "10.0.0.3" in {n["id"] for n in r["nodes"]}
+
+
+# ---- the case database (--db, TB_CASE_DB) -------------------------------------------------
+
 def test_case_db_is_reused_until_the_evidence_changes(tmp_path, monkeypatch):
-    from threatbridge import sources
     d = tmp_path / "case"
     d.mkdir()
     write_pcap(d / "cap.pcap", [(T, tcp("10.0.0.5", H, 50000, 445, SYN)),
@@ -391,73 +578,8 @@ def test_case_db_is_reused_until_the_evidence_changes(tmp_path, monkeypatch):
     assert CaseBackend(cfg).summary()["flows"] == 2           # new file: rebuilt
 
 
-# ---- edge cases: the store and the case backend ------------------------------------------
-
-import sqlite3  # noqa: E402
-import threading  # noqa: E402
-
-from threatbridge.model import SourceError  # noqa: E402
-from threatbridge.query import ValidationError  # noqa: E402
-from threatbridge.store import NotAStore  # noqa: E402
-
-
-def test_a_non_sqlite_file_is_never_overwritten(tmp_path):
-    notes = tmp_path / "notes.txt"
-    notes.write_text("analyst notes, not a database\n" * 20)
-    with pytest.raises(NotAStore):
-        FlowStore(str(notes)).write(FLOWS, {}, [])
-    assert notes.read_text() == "analyst notes, not a database\n" * 20
-    cfg = Config(backend="case", case_db=str(notes))
-    with pytest.raises(SourceError, match="not a ThreatBridge case database"):
-        CaseBackend(cfg, flows=FLOWS)
-
-
-def test_db_in_a_missing_directory_is_a_clear_error(tmp_path):
-    cfg = Config(backend="case", case_db=str(tmp_path / "nowhere" / "case.db"))
-    with pytest.raises(SourceError, match="nowhere"):
-        CaseBackend(cfg, flows=FLOWS)
-
-
-def test_an_interrupted_build_is_not_reused(tmp_path, monkeypatch):
-    from threatbridge import store as store_mod
-    path = str(tmp_path / "case.db")
-    monkeypatch.setattr(store_mod, "_INDEXES", "CREATE INDEX broken ON nowhere (x);")
-    with pytest.raises(sqlite3.Error):
-        FlowStore(path).write(FLOWS, {}, [("/e/cap.pcap", 10, 5)])     # dies building the index
-    assert not FlowStore(path).matches([("/e/cap.pcap", 10, 5)])
-
-
-def test_reuse_keeps_dns_and_ignores_file_order(tmp_path):
-    store = FlowStore(str(tmp_path / "case.db"))
-    dns = {"x.example": {"10.0.0.1": [T, T + 1]}}
-    files = [("/e/a.pcap", 1, 1), ("/e/b.pcap", 2, 2)]
-    store.write(FLOWS, dns, files)
-    again = FlowStore(store.path)
-    assert again.matches(files[::-1]) and again.dns() == dns
-    assert not again.matches(files[:1]) and not again.matches(files + [("/e/c.pcap", 3, 3)])
-
-
-def test_flows_with_the_same_start_page_without_gaps(tmp_path):
-    same = [Flow("10.0.0.1", H, 50000 + i, 445, "tcp", T, T + 1, 2, 120, "x") for i in range(5)]
-    store = FlowStore(str(tmp_path / "case.db"))
-    store.write(same, {}, [])
-    pages = [store.flows("10.0.0.1", H, T, T, off, 2) for off in (0, 2, 4)]
-    assert sorted(f.sport for page in pages for f in page) == [50000 + i for i in range(5)]
-
-
-def test_the_store_answers_from_other_threads(backend):
-    out = []
-    t = threading.Thread(target=lambda: out.append(backend.flows(
-        "10.0.0.1", H, utc(T), utc(T + 100), 0, 10)["total"]))
-    t.start()
-    t.join()
-    assert out == [3]
-
-
 def test_two_loaders_sharing_a_db_read_the_evidence_once(tmp_path, monkeypatch):
     # gunicorn starts several workers; with TB_CASE_DB they share one file.
-    from threatbridge import sources
-    import time as time_mod
     d = tmp_path / "case"
     d.mkdir()
     write_pcap(d / "cap.pcap", [(T, tcp("10.0.0.5", H, 50000, 445, SYN)),
@@ -466,7 +588,7 @@ def test_two_loaders_sharing_a_db_read_the_evidence_once(tmp_path, monkeypatch):
 
     def slow_read(*a, **k):
         reads.append(1)
-        time_mod.sleep(0.5)
+        time.sleep(0.5)
         return real_read(*a, **k)
     monkeypatch.setattr(sources, "read", slow_read)
     cfg = Config(backend="case", case_paths=[str(d)], case_db=str(tmp_path / "case.db"))
@@ -485,31 +607,15 @@ def test_two_loaders_sharing_a_db_read_the_evidence_once(tmp_path, monkeypatch):
     assert errors == [] and results == [1, 1] and len(reads) == 1
 
 
-def test_an_empty_case_works_end_to_end(tmp_path):
-    cfg = Config(backend="case", compromised_file=str(tmp_path / "c.json"))
-    c = create_app(cfg, CaseBackend(cfg, flows=[]), ExcludeStore(str(tmp_path / "ex.json"))).test_client()
-    assert c.get("/api/config").get_json()["case"] == {
-        "flows": 0, "hosts": 0, "start": None, "end": None, "dns_names": 0}
-    assert c.get(f"/api/resolve?ip={H}&direction=in").status_code == 200
-    assert c.get(f"/api/neighbors?ip={H}&ts=2024-05-01T12:00:00Z").get_json()["peers"] == []
-    assert c.get(f"/api/flows?src=10.0.0.1&dst={H}&from=2024-05-01T12:00:00Z").get_json()["total"] == 0
-    assert c.get("/api/paths").get_json() == {"pairs": []}
-    assert c.get(f"/api/paths?src=10.0.0.1&dst={H}").get_json()["paths"] == []
-    assert c.get(f"/api/threatline?a=10.0.0.1&b={H}&from=2024-05-01T12:00:00Z").status_code == 400
+def test_db_in_a_missing_directory_is_a_clear_error(tmp_path):
+    cfg = Config(backend="case", case_db=str(tmp_path / "nowhere" / "case.db"))
+    with pytest.raises(SourceError, match="nowhere"):
+        CaseBackend(cfg, flows=FLOWS)
 
 
-def test_neighbor_ties_are_ordered_by_address(tmp_path):
-    flows = [flow(p, H, 445, T + i) for i, p in enumerate(["10.0.0.30", "10.0.0.4", "fe80::1", "10.0.0.200"])]
-    be = CaseBackend(Config(backend="case"), flows=flows)
-    for order in ("top", "bottom"):
-        res = be.neighbors(H, "in", utc(T), utc(T + 60), 10, order, [])
-        assert [p["peer"] for p in res["peers"]] == sorted(p["peer"] for p in res["peers"])
-
-
-# ---- gaps found by mutation testing -------------------------------------------------------
-
-import os  # noqa: E402
-import tempfile  # noqa: E402
+def test_database_errors_name_the_problem(tmp_path):
+    with pytest.raises(SourceError, match="can't write the case database"):
+        CaseBackend(Config(backend="case", case_db=str(tmp_path)), flows=FLOWS)     # a directory
 
 
 def test_the_temporary_store_is_never_in_the_working_directory():
@@ -517,112 +623,3 @@ def test_the_temporary_store_is_never_in_the_working_directory():
     path = os.path.abspath(be.store.path)
     assert path.startswith(os.path.abspath(tempfile.gettempdir()) + os.sep)
     assert os.path.dirname(path) != os.getcwd()
-
-
-def test_flow_at_without_a_match(tmp_path):
-    store = FlowStore(str(tmp_path / "case.db"))
-    store.write(FLOWS, {}, [])
-    assert store.flow_at("10.0.0.1", H, T + 11) is None
-
-
-def test_threat_line_nodes_and_edges_in_detail(tmp_path):
-    # X reaches A before the selected hop and B reaches X after it: X is on both sides.
-    A, B, X = "10.0.0.1", "10.0.0.2", "10.0.0.3"
-    flows = [flow(X, A, 1, T), flow(A, B, 2, T + 10), flow(A, B, 2, T + 20), flow(B, X, 3, T + 30)]
-    be = CaseBackend(Config(backend="case"), flows=flows)
-    r = be.threat_line(A, B, utc(T + 10), utc(T + 20), timedelta(days=1), 6, [], 300)
-    nodes = {n["id"]: n for n in r["nodes"]}
-    assert nodes[A] == {"id": A, "role": "selected", "time": "2024-05-01T12:00:20.000Z", "hops": 0}
-    assert nodes[B] == {"id": B, "role": "selected", "time": "2024-05-01T12:00:10.000Z", "hops": 0}
-    assert nodes[X]["role"] == "both"
-    edges = {(e["source"], e["target"]): e for e in r["edges"]}
-    assert (edges[(A, B)]["role"], edges[(A, B)]["count"]) == ("selected", 2)
-    assert not r["truncated"]
-
-
-def test_threat_line_truncated_on_one_side_only():
-    A, B = "10.0.0.1", "10.0.0.2"
-    flows = [flow("10.0.0.11", A, 1, T), flow("10.0.0.12", A, 1, T), flow(A, B, 2, T + 10),
-             flow(B, "10.0.0.21", 3, T + 20)]
-    be = CaseBackend(Config(backend="case"), flows=flows)
-    r = be.threat_line(A, B, utc(T + 10), utc(T + 10), timedelta(days=1), 6, [], 2)
-    assert r["truncated"] is True            # up hit the cap; down did not
-
-
-def test_ports_rank_by_use_then_number():
-    flows = [flow("10.0.0.1", H, 3389, T + i) for i in range(3)] + [flow("10.0.0.1", H, 445, T + 5)] + \
-            [flow("10.0.0.1", H, p, T + 6) for p in (8080, 22, 80, 53, 25)]
-    be = CaseBackend(Config(backend="case"), flows=flows)
-    [peer] = be.neighbors(H, "in", utc(T), utc(T + 60), 10, "top", [])["peers"]
-    assert peer["ports"] == [3389, 22, 25, 53, 80]
-
-
-def test_flow_durations_keep_microseconds():
-    f = Flow("10.0.0.1", H, 50000, 445, "tcp", T, T + 1.2345678, 2, 120, "x")
-    be = CaseBackend(Config(backend="case"), flows=[f])
-    [row] = be.flows("10.0.0.1", H, utc(T), utc(T), 0, 10)["flows"]
-    assert row["duration"] == 1.234568
-
-
-def test_the_time_range_allows_the_ui_rounding_at_its_start(client):
-    # Flows start at whole seconds plus nothing; a range starting at that millisecond keeps them,
-    # and one a millisecond later doesn't (UI times are rounded down to the millisecond).
-    base = f"/api/neighbors?ip={H}&direction=in&ts=2024-05-01T13:00:00Z&window=24h"
-    peers = lambda q: {p["peer"] for p in client.get(base + q).get_json()["peers"]}  # noqa: E731
-    assert "10.0.0.2" in peers("&range_from=2024-05-01T12:00:40.000Z")
-    assert "10.0.0.2" not in peers("&range_from=2024-05-01T12:00:40.002Z")
-
-
-def test_attack_paths_preview_ten_per_pair(tmp_path):
-    flows = [flow("10.4.0.2", f"10.4.1.{i}", 445, T + i) for i in range(12)] + \
-            [flow(f"10.4.1.{i}", "10.5.0.3", 3389, T + 100 + i) for i in range(12)]
-    cfg = Config(backend="case", compromised_file=str(tmp_path / "c.json"))
-    c = create_app(cfg, CaseBackend(cfg, flows=flows), ExcludeStore(str(tmp_path / "ex.json"))).test_client()
-    c.post("/api/compromised", json={"ip": "10.4.0.2"}, headers=WRITE)
-    c.post("/api/compromised", json={"ip": "10.5.0.3"}, headers=WRITE)
-    [pair] = c.get("/api/paths").get_json()["pairs"]
-    assert len(pair["paths"]) == 10 and pair["truncated"] is True
-    r = c.get("/api/paths?src=10.4.0.2&dst=10.5.0.3").get_json()
-    assert len(r["paths"]) == 12 and r["truncated"] is False
-
-
-def test_threat_line_cap_from_the_config(tmp_path):
-    flows = [flow("10.0.0.11", "10.0.0.1", 1, T), flow("10.0.0.12", "10.0.0.1", 1, T),
-             flow("10.0.0.1", "10.0.0.2", 2, T + 10)]
-    cfg = Config(backend="case", compromised_file=str(tmp_path / "c.json"), threat_max_hosts=2)
-    c = create_app(cfg, CaseBackend(cfg, flows=flows), ExcludeStore(str(tmp_path / "ex.json"))).test_client()
-    r = c.get("/api/threatline?a=10.0.0.1&b=10.0.0.2&from=2024-05-01T12:00:10Z").get_json()
-    assert r["truncated"] is True and len([n for n in r["nodes"] if n["role"] == "up"]) == 1
-
-
-def test_hop_limits_accepted_by_the_api(chain_client):
-    for hops, status in ((1, 200), (20, 200), (0, 400), (21, 400)):
-        r = chain_client.get(f"/api/paths?hops={hops}")
-        assert r.status_code == status, hops
-    assert chain_client.get("/api/paths?hops=21").get_json()["error"] == "hops must be between 1 and 20"
-
-
-def test_search_bounds_allow_the_ui_rounding(tmp_path):
-    # The second hop starts 0.4 ms into a millisecond; a range starting at that millisecond
-    # (as the UI writes it) must keep it.
-    flows = [flow("10.0.0.1", "10.0.0.2", 445, T), flow("10.0.0.2", "10.0.0.3", 445, T + 60.0004)]
-    cfg = Config(backend="case", compromised_file=str(tmp_path / "c.json"))
-    c = create_app(cfg, CaseBackend(cfg, flows=flows), ExcludeStore(str(tmp_path / "ex.json"))).test_client()
-    r = c.get("/api/paths?src=10.0.0.2&dst=10.0.0.3&range_from=2024-05-01T12:01:00.000Z").get_json()
-    assert len(r["paths"]) == 1
-    r = c.get("/api/threatline?a=10.0.0.1&b=10.0.0.2&from=2024-05-01T12:00:00Z"
-              "&range_from=2024-05-01T12:00:00.000Z&range_to=2024-05-01T12:01:00.000Z").get_json()
-    assert "10.0.0.3" in {n["id"] for n in r["nodes"]}
-
-
-def test_database_errors_name_the_problem(tmp_path):
-    with pytest.raises(SourceError, match="can't write the case database"):
-        CaseBackend(Config(backend="case", case_db=str(tmp_path)), flows=FLOWS)     # a directory
-    be = CaseBackend(Config(backend="case"), flows=FLOWS)
-    with pytest.raises(ValidationError, match=f"no flows from 10.0.0.1 to {H} in that time range"):
-        be.threat_line("10.0.0.1", H, utc(T + 1000), utc(T + 1000), timedelta(days=1), 6, [], 300)
-
-
-def test_threatline_to_before_from(chain_client):
-    r = chain_client.get(f"/api/threatline?a=10.0.0.5&b={H}&from=2024-05-01T12:10:00Z&to=2024-05-01T12:00:00Z")
-    assert r.status_code == 400 and r.get_json()["error"] == "to is before from"

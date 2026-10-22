@@ -9,6 +9,8 @@ import time
 
 import dpkt
 
+from threatbridge import sources
+
 MAC = bytes.fromhex("001122334455")
 SYN, ACK, FIN, RST, PSH = (dpkt.tcp.TH_SYN, dpkt.tcp.TH_ACK, dpkt.tcp.TH_FIN, dpkt.tcp.TH_RST,
                            dpkt.tcp.TH_PUSH)
@@ -84,11 +86,16 @@ def write_pcap(path, packets, linktype=1, nano=False):
             w.writepkt(bytes(frame), ts=ts)
 
 
+def load(paths, dns=None):
+    """Flows from every pcap and nfcapd file under `paths`, read as the case backend reads them."""
+    return sources.read(sources.find(paths), dns)
+
+
 def ip_bytes(packets):
     return sum(p[2] for _, p in packets if not isinstance(p, bytes))
 
 
-# ---- NetFlow ---------------------------------------------------------------------------
+# ---- NetFlow ------------------------------------------------------------------------------
 
 def netflow_v5(records, unix_secs, uptime_ms=10_000_000):
     """One NetFlow v5 export packet. records: (src, dst, sport, dport, proto, packets, bytes,

@@ -2,27 +2,14 @@
 // paths between two hosts, flow list, domain excludes and the time range.
 //   python tests/make_case.py DIR && python -m threatbridge --case DIR --port 5056
 //   TB_URL=http://127.0.0.1:5056 node tests/ui_case.mjs [screenshot-dir]
-import { chromium } from "playwright";
 import assert from "node:assert/strict";
-import { saveCoverage, startCoverage } from "./ui_coverage.mjs";
+import { finish, launch } from "./ui_helpers.mjs";
 
 const BASE = process.env.TB_URL || "http://127.0.0.1:5056";
 const SHOTS = process.argv[2];
-const browser = await chromium.launch(
-  process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {});
-const page = await browser.newPage({ viewport: { width: 1400, height: 850 } });
-await startCoverage(page);
-const errors = [];
-page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
-page.on("pageerror", (e) => errors.push(String(e)));
+const { browser, page, errors, at } = await launch();
 
 const cyEval = (fn, arg) => page.evaluate(fn, arg);
-const at = (selector, kind) => cyEval(([sel, k]) => {
-  const el = window.threatbridge.cy.$(sel)[0];
-  const p = k === "edge" ? el.renderedMidpoint() : el.renderedPosition();
-  const box = document.getElementById("cy").getBoundingClientRect();
-  return { x: p.x + box.left, y: p.y + box.top };
-}, [selector, kind]);
 const classes = (id) => cyEval((i) => window.threatbridge.cy.getElementById(i).classes(), id);
 const menuClick = async (text) => {
   const item = page.locator("#menu li", { hasText: text });
@@ -125,6 +112,5 @@ try {
   assert.deepEqual(errors, [], "browser console errors");
   console.log("Case-mode UI test passed");
 } finally {
-  await saveCoverage(page, "case");
-  await browser.close();
+  await finish(browser, page, "case");
 }

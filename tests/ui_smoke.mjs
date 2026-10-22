@@ -1,33 +1,17 @@
 // Headless browser smoke test against a demo-backend server.
 //   TB_URL=http://127.0.0.1:5055 node tests/ui_smoke.mjs [screenshot-dir]
-// Needs the `playwright` npm package. Set CHROMIUM_PATH to use a preinstalled browser.
-import { chromium } from "playwright";
+// Needs the `playwright` npm package (see ui_helpers.mjs).
 import assert from "node:assert/strict";
-import { saveCoverage, startCoverage } from "./ui_coverage.mjs";
+import { finish, launch } from "./ui_helpers.mjs";
 
 const BASE = process.env.TB_URL || "http://127.0.0.1:5055";
 const SHOTS = process.argv[2];
 const SOC = "https://so.example";   // must match TB_SOC_URL of the server under test
 const IOC = "10.0.0.5", IOC_TIME = "2024-05-01T12:00:00Z";
 
-const browser = await chromium.launch(
-  process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {});
-const ctx = await browser.newContext({ viewport: { width: 1400, height: 850 },
-                                      permissions: ["clipboard-read", "clipboard-write"] });
+const { browser, ctx, page, errors, at } = await launch(
+  { context: { permissions: ["clipboard-read", "clipboard-write"] } });
 await ctx.route(`${SOC}/**`, (r) => r.fulfill({ body: "SOC stub" }));
-const page = await ctx.newPage();
-await startCoverage(page);
-const errors = [];
-page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
-page.on("pageerror", (e) => errors.push(String(e)));
-
-// Screen coordinates of a graph element (node centre or edge midpoint).
-const at = (selector, kind) => page.evaluate(([sel, k]) => {
-  const el = window.threatbridge.cy.$(sel)[0];
-  const p = k === "edge" ? el.renderedMidpoint() : el.renderedPosition();
-  const box = document.getElementById("cy").getBoundingClientRect();
-  return { x: p.x + box.left, y: p.y + box.top, id: el.id() };
-}, [selector, kind]);
 const menuItems = () => page.$$eval("#menu li", (l) => l.map((x) => x.textContent));
 
 try {
@@ -100,6 +84,5 @@ try {
   assert.deepEqual(errors, [], "browser console errors");
   console.log("UI smoke test passed");
 } finally {
-  await saveCoverage(page, "smoke");
-  await browser.close();
+  await finish(browser, page, "smoke");
 }

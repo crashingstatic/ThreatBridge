@@ -3,18 +3,20 @@ import time
 
 import pytest
 
-from evidence import dns_answer, tcp, udp, write_pcap, SYN
-from threatbridge import sources
+from evidence import SYN, dns_answer, load, tcp, udp, write_pcap
 from threatbridge.app import create_app
-from threatbridge.backends import CaseBackend
 from threatbridge.config import Config
 from threatbridge.domains import DomainResolver, system_lookup
-from threatbridge.excludes import ExcludeStore
 from threatbridge.query import ValidationError, is_domain, parse_exclude
+
 
 T = 1_714_564_800.0
 C, RESOLVER = "10.0.0.9", "10.0.0.53"
+PASSIVE = {"www.example.com": {"93.184.216.34": [T, T]},
+           "a.cdn.example.net": {"192.0.2.1": [T, T]}, "b.cdn.example.net": {"192.0.2.2": [T, T]}}
 
+
+# ---- validation ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("raw,expected", [
     ("10.0.0.7/24", "10.0.0.0/24"), ("10.0.0.7", "10.0.0.7"), ("2001:db8::1", "2001:db8::1"),
@@ -33,6 +35,8 @@ def test_parse_exclude_rejects(bad):
         parse_exclude(bad)
 
 
+# ---- answers seen in the capture ----------------------------------------------------------
+
 def test_dns_answers_are_collected_from_pcaps(tmp_path):
     write_pcap(tmp_path / "dns.pcap", [
         (T, udp(C, RESOLVER, 40000, 53, b"q")),
@@ -46,7 +50,7 @@ def test_dns_answers_are_collected_from_pcaps(tmp_path):
         (T + 80, udp(RESOLVER, C, 53, 40003, b"\x00garbage")),
     ])
     dns = {}
-    flows = sources.load([str(tmp_path)], dns=dns)
+    flows = load([str(tmp_path)], dns=dns)
     assert len(flows) == 4                     # DNS traffic is still traffic
     assert dns["www.example.com"] == {"93.184.216.34": [T + 0.01, T + 0.01],
                                       "2001:db8::34": [T + 0.01, T + 0.01],
@@ -55,9 +59,19 @@ def test_dns_answers_are_collected_from_pcaps(tmp_path):
     assert "gone.example.com" not in dns       # NXDOMAIN
 
 
-PASSIVE = {"www.example.com": {"93.184.216.34": [T, T]},
-           "a.cdn.example.net": {"192.0.2.1": [T, T]}, "b.cdn.example.net": {"192.0.2.2": [T, T]}}
+def test_wildcards_match_whole_labels_only():
+    r = DomainResolver({"a.example.com": {"192.0.2.1": [T, T]}, "badexample.com": {"192.0.2.2": [T, T]},
+                        "example.com": {"192.0.2.3": [T, T]}}, live=False)
+    assert r.captured("*.example.com") == ["192.0.2.1"]
 
+
+def test_capture_answers_are_in_address_order():
+    seen = {"192.0.2.10": [T, T], "192.0.2.9": [T, T], "2001:db8::1": [T, T], "10.0.0.1": [T, T]}
+    r = DomainResolver({"x.example": seen}, live=False)
+    assert r.captured("x.example") == ["10.0.0.1", "192.0.2.9", "192.0.2.10", "2001:db8::1"]
+
+
+# ---- live lookups -------------------------------------------------------------------------
 
 def test_resolver_combines_capture_and_live_dns():
     calls = []
@@ -95,14 +109,34 @@ def test_resolver_caches_for_ttl_and_times_out():
     assert time.monotonic() - t < 0.8          # lookups run in parallel
 
 
+def test_live_answers_expire_exactly_at_the_ttl():
+    now, calls = [0.0], []
+    r = DomainResolver({}, ttl=300, lookup=lambda n: calls.append(n) or ["192.0.2.9"], clock=lambda: now[0])
+    r.expand(["x.example"])
+    now[0] = 299.9
+    r.expand(["x.example"])
+    now[0] = 300.0
+    r.expand(["x.example"])
+    assert len(calls) == 2
+
+
 def test_live_dns_can_be_disabled():
     r = DomainResolver(PASSIVE, live=False, lookup=lambda n: pytest.fail("looked up"))
     assert r.expand(["www.example.com"]) == ["93.184.216.34"]
 
 
+def test_a_lookup_failing_oddly_never_breaks_the_map():
+    def lookup(name):
+        raise UnicodeError("label empty or too long")
+    d = DomainResolver({}, lookup=lookup).describe(["x.example"])
+    assert d["x.example"]["dns"] == [] and d["x.example"]["error"].startswith("DNS lookup failed")
+
+
 def test_system_lookup_localhost():
     assert "127.0.0.1" in system_lookup("localhost")
 
+
+# ---- on the map and in the searches -------------------------------------------------------
 
 def test_domain_excludes_apply_to_maps_and_paths(tmp_path):
     d = tmp_path / "case"
@@ -126,37 +160,3 @@ def test_domain_excludes_apply_to_maps_and_paths(tmp_path):
     assert {p["peer"] for p in c.get(q).get_json()["peers"]} == {"10.0.0.5"}
     r = c.get(f"/api/threatline?a=10.0.0.5&b={C}&from=2024-05-01T12:00:02Z").get_json()
     assert "10.0.0.77" not in {n["id"] for n in r["nodes"]}
-
-
-# ---- edge cases ---------------------------------------------------------------------------
-
-def test_a_lookup_failing_oddly_never_breaks_the_map():
-    def lookup(name):
-        raise UnicodeError("label empty or too long")
-    d = DomainResolver({}, lookup=lookup).describe(["x.example"])
-    assert d["x.example"]["dns"] == [] and d["x.example"]["error"].startswith("DNS lookup failed")
-
-
-def test_wildcards_match_whole_labels_only():
-    r = DomainResolver({"a.example.com": {"192.0.2.1": [T, T]}, "badexample.com": {"192.0.2.2": [T, T]},
-                        "example.com": {"192.0.2.3": [T, T]}}, live=False)
-    assert r.captured("*.example.com") == ["192.0.2.1"]
-
-
-# ---- gaps found by mutation testing -------------------------------------------------------
-
-def test_live_answers_expire_exactly_at_the_ttl():
-    now, calls = [0.0], []
-    r = DomainResolver({}, ttl=300, lookup=lambda n: calls.append(n) or ["192.0.2.9"], clock=lambda: now[0])
-    r.expand(["x.example"])
-    now[0] = 299.9
-    r.expand(["x.example"])
-    now[0] = 300.0
-    r.expand(["x.example"])
-    assert len(calls) == 2
-
-
-def test_capture_answers_are_in_address_order():
-    seen = {"192.0.2.10": [T, T], "192.0.2.9": [T, T], "2001:db8::1": [T, T], "10.0.0.1": [T, T]}
-    r = DomainResolver({"x.example": seen}, live=False)
-    assert r.captured("x.example") == ["10.0.0.1", "192.0.2.9", "192.0.2.10", "2001:db8::1"]

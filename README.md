@@ -88,18 +88,14 @@ The searches are exact under that rule. An attacker may have reached a host at s
   - A path never visits a host twice. Each is listed with one chain of flows that proves it: the earliest arrival, and before each hop the latest flow that leads to it.
   - The IOC times are optional. With a time for the first host, its first hop must start within the Window after it; with one for the second, the path must reach it by then.
   - Shortest paths first, up to 500 (`TB_MAX_PATHS`). When there are more, the panel says so; narrow them with the Window, the hop limit, the time range or the exclude list.
-- **Timing in testing** (`TB_PERF=1 pytest tests/test_perf.py`, also run in CI):
-  - *An office-like week*: 1M flows, 2,500 hosts, three servers everyone talks to, and one connection with 100k flows.
-    - Expanding the busiest host took 0.2 s, and the last page of that connection's flows 0.01 s.
-    - A threat line through that connection took 0.75 s; every path between two busy hosts, 0.1 s.
-    - Attack paths among the ten busiest hosts took 0.35 s. With an IOC time on each it took 5 s, recomputed in the background while the map stays usable.
-  - *An earlier benchmark*: 975k flows between 2,910 hosts. Attack paths among its 10 busiest hosts took 0.18 s, and every path between two of them at most 0.07 s.
+- **Timing in testing** (`TB_PERF=1 pytest -s tests/test_perf.py`, also run in CI) on an office-like week: 1M flows, 2,500 hosts, three servers everyone talks to, and one connection with 100k flows.
+  - Expanding the busiest host took 0.15 s, and the last page of that connection's flows 0.01 s.
+  - A threat line through that connection took 0.6 s; every path between two busy hosts, 0.08 s.
+  - Attack paths among the ten busiest hosts took 0.33 s. With an IOC time on each they took 4.9 s, recomputed in the background while the map stays usable.
 - **Storage.** The flows go into a SQLite file. The map and searches use a graph holding one edge per host pair, with the start times of that pair's flows.
   - Without `--db` (`TB_CASE_DB`) the file is temporary. With it, the case reopens without re-reading the evidence until a file is added or changed.
   - Nothing is written to the evidence directories. Keep the `--db` file with your working files. Next to it, `<file>.lock` lets several workers share it: one builds it, the others wait and reuse it.
-- **Memory and time in testing:**
-  - Typical traffic: 975k flows between 2,910 hosts take about 75 MB once loaded.
-  - Worst case: every flow between a different pair of hosts. A 93 MB capture of 1.25M minimum-size packets took 58 s to build, 24 s to reopen with `--db`, and about 1 GB of RAM.
+- **Loading time and memory in testing** (same test): the worst case is every flow between a different pair of hosts. A 93 MiB capture of 1.25M minimum-size packets took 35 s to build and 13 s to reopen with `--db`, and peaked at 1.6 GiB of memory.
 - **Don't load overlapping evidence.** A pcap and NetFlow of the same traffic are counted twice.
 - **The command above serves plain HTTP on 127.0.0.1.** To share the map, run it under gunicorn with mutual TLS, as for Security Onion. Use `TB_BACKEND=case TB_CASE_PATHS=/cases/incident-42 TB_WORKERS=1`; each worker loads its own copy of the data (with `TB_CASE_DB` set, they share the parsed flows).
 
@@ -181,7 +177,7 @@ Requirement IDs, current status and design decisions: [docs/REQUIREMENTS.md](doc
 pip install -r requirements.txt pytest
 python -m pytest
 TB_BACKEND=demo python -m threatbridge --port 5055   # fake data, plain HTTP, localhost only
-TB_PERF=1 python -m pytest -s tests/test_perf.py    # PRF-1/2/3: 1.25M flows, a busy week; ~1 minute
+TB_PERF=1 python -m pytest -s tests/test_perf.py    # PRF-1/2/3: 1.25M flows, a busy week; about a minute
 ```
 
 The nfcapd test needs `nfdump` installed (`apt install nfdump`); without it, it is skipped locally.
@@ -216,7 +212,7 @@ Run it again after changing the analysis or the readers, and look at the new sur
 | Shellcheck | `scripts/`, `deploy/`, `tests/` shell scripts |
 | Security scan | `pip-audit` (known-vulnerable dependencies), `bandit -ll` (medium+ Python security issues) |
 | Docker build + mTLS | Generates a throwaway PKI, builds and starts the container with `deploy/run.sh` (demo backend), then `tests/mtls_check.sh`. No cert and foreign-CA certs must be refused, a valid cert accepted, and writes without the CSRF header rejected. |
-| UI tests | Headless Chromium. Both scripts fail on any console/CSP error, and screenshots are uploaded as an artifact. `tests/ui_smoke.mjs` (demo backend) loads the map as a SOC action would, expands a hop, right-clicks an edge, checks the SOC pivot URL and round-trips the exclude list. `tests/ui_case.mjs` runs post-mortem mode on a pcap made by `tests/make_case.py`: it traces a threat line, marks two hosts compromised, checks the attack path, then unmarks one. `tests/ui_actions.mjs` covers the rest: opening without parameters, errors, left-click expansion, every host-menu action, the compromised form, "Show all" paths, paging flows, a time range from the URL, a failing server, Fit and Clear. The job ends with `tests/js_coverage.mjs`, which lists what of `app.js` no browser test ran. |
+| UI tests | Headless Chromium. Every script fails on any unexpected console/CSP error, and screenshots are uploaded as an artifact. `tests/ui_smoke.mjs` (demo backend) loads the map as a SOC action would, expands a hop, right-clicks an edge, checks the SOC pivot URL and round-trips the exclude list. `tests/ui_case.mjs` runs post-mortem mode on a pcap made by `tests/make_case.py`: it traces a threat line, marks two hosts compromised, checks the attack path, then unmarks one. `tests/ui_actions.mjs` covers the rest: opening without parameters, errors, left-click expansion, every host-menu action, the compromised form, "Show all" paths, paging flows, a time range from the URL, a failing server, Fit and Clear. The job ends with `tests/js_coverage.mjs`, which lists what of `app.js` no browser test ran. |
 
 CI cannot reach a real Security Onion, so the items under *Things to verify on your install* still need a manual check.
 
@@ -230,15 +226,12 @@ Layout:
 | `threatbridge/store.py` | The flows, in SQLite: counts, ports and details behind each edge |
 | `threatbridge/graph.py` | The NetworkX `DiGraph`: one edge per host pair, with that pair's flow start times |
 | `threatbridge/analysis.py` | Time-ordered searches: threat lines and attack paths |
-| `threatbridge/excludes.py`, `compromised.py` | Shared lists, stored as JSON files |
+| `threatbridge/excludes.py`, `compromised.py`, `jsonstore.py` | Shared lists, stored as JSON files that several workers can write |
 | `threatbridge/domains.py` | Domain names on the exclude list, resolved from the capture and live DNS |
 | `threatbridge/backends.py` | The data backends behind the map: Elasticsearch, case (files) and demo |
-| `threatbridge/app.py` | The HTTP API |
+| `threatbridge/config.py` | Settings from the `TB_*` environment variables |
+| `threatbridge/app.py` | The HTTP API and the command line |
 | `threatbridge/static/` | The Cytoscape.js UI, vendored so it works air-gapped |
-
-## Legacy
-
-The original offline PCAP visualiser (Tkinter/Scapy/Bokeh) is in `legacy/PCAPMap.py`.
 
 ## License
 

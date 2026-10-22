@@ -126,10 +126,8 @@ class ElasticBackend:
             raise ValidationError(f"Security Onion lists only the first {ES_MAX_RESULTS} flows of "
                                   "a connection; narrow the time range to see later ones")
         hits = self._post(es_flows_body(self.cfg, src, dst, start, end, offset, limit)).get("hits", {})
-        total = hits.get("total", 0)   # {"value": n}; a plain n before Elasticsearch 7
         flows = [self._flow(h) for h in hits.get("hits", [])]
-        return {"total": total.get("value", 0) if isinstance(total, dict) else int(total),
-                "flows": [f for f in flows if f]}
+        return {"total": hits.get("total", {}).get("value", 0), "flows": [f for f in flows if f]}
 
     def _flow(self, hit):
         """One hit as a flow, or None if it has no time: better left out than shown at a

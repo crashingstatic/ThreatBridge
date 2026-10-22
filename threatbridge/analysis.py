@@ -165,6 +165,40 @@ def threat_line(g, a, b, first, last, window, max_hops, blocked=frozenset(), max
 MAX_STEPS = 500_000   # hops tried per search, so a pathological graph can't hang a request
 
 
+def spread_into(g, b, tb, max_hops, blocked=frozenset(), slack=0.0, bounds=(-INF, INF)):
+    """What the path search needs to prune with: the hosts that might still reach b by tb, each
+    with the fewest hops to b and the latest time a hop into it could start.
+
+    Both are optimistic (hops ignore time, times ignore the Window), so pruning on them never
+    loses a path; paths_between() checks every hop exactly."""
+    deadline = min(INF if tb is None else tb + slack, bounds[1])
+    hops, frontier = {b: 0}, [b]
+    for k in range(1, max_hops):                 # fewest hops to b, time ignored
+        nxt = []
+        for y in frontier:
+            for x in g._pred[y]:
+                if x not in hops and x not in blocked:
+                    hops[x] = k
+                    nxt.append(x)
+        frontier = nxt
+    if deadline == INF:                          # no deadline: time can't rule anything out
+        return Reach(False, {h: [(-INF, INF)] for h in hops}, hops=hops)
+    latest, heap = {b: deadline}, [(-deadline, b)]
+    while heap:                                  # latest departure towards b, Window ignored
+        t, y = heapq.heappop(heap)
+        if -t < latest[y]:
+            continue
+        for x, edge in g._pred[y].items():
+            if x == y or x not in hops:
+                continue
+            s = last_between(edge["times"], bounds[0], -t)
+            if s is not None and s > latest.get(x, -INF):
+                latest[x] = s
+                heapq.heappush(heap, (-s, x))
+    return Reach(False, {h: [(-INF, t)] for h, t in latest.items()},
+                 hops={h: hops[h] for h in latest})
+
+
 def paths_between(g, a, b, ta, tb, window, max_hops, blocked=frozenset(), data_start=None,
                   slack=0.0, bounds=(-INF, INF), max_paths=None, into_b=None):
     """Every path a -> ... -> b, no host twice, whose hops chain under the time rule: the
@@ -172,7 +206,7 @@ def paths_between(g, a, b, ta, tb, window, max_hops, blocked=frozenset(), data_s
 
     ta None: the first hop may happen at any time from data_start. tb None: no deadline.
     `slack` widens both (times entered in the UI are rounded to the millisecond).
-    into_b: spread() backward from b, to share between searches towards the same b.
+    into_b: spread_into() for b, to share between searches towards the same b.
 
     Returns ([[Hop, ...], ...], truncated). Paths come shortest first, then by arrival at b.
     Each is shown by one chain of flows: the earliest arrival at b, and before each hop the
@@ -183,7 +217,7 @@ def paths_between(g, a, b, ta, tb, window, max_hops, blocked=frozenset(), data_s
     if ta is None and data_start is None:
         return [], False
     if into_b is None:
-        into_b = spread_into(g, b, tb, window, max_hops, blocked, slack, bounds)
+        into_b = spread_into(g, b, tb, max_hops, blocked, slack, bounds)
     start = [(data_start, INF)] if ta is None else [(ta - slack, ta + window)]
     start = _clip(start, bounds)
     found, steps = [], 0
@@ -234,41 +268,6 @@ def paths_between(g, a, b, ta, tb, window, max_hops, blocked=frozenset(), data_s
     return found[:max_paths] if max_paths else found, truncated
 
 
-def spread_into(g, b, tb, window, max_hops, blocked=frozenset(), slack=0.0, bounds=(-INF, INF)):
-    """What the path search needs to prune with: the hosts that might still reach b by tb, each
-    with the fewest hops to b and the latest time a hop into it could start.
-
-    Both are optimistic (hops ignore time, times ignore the Window), so pruning on them never
-    loses a path; paths_between() checks every hop exactly. Exact sets (a backward spread())
-    would prune a little more but cost seconds per host on a busy case."""
-    deadline = min(INF if tb is None else tb + slack, bounds[1])
-    hops, frontier = {b: 0}, [b]
-    for k in range(1, max_hops):                 # fewest hops to b, time ignored
-        nxt = []
-        for y in frontier:
-            for x in g._pred[y]:
-                if x not in hops and x not in blocked:
-                    hops[x] = k
-                    nxt.append(x)
-        frontier = nxt
-    if deadline == INF:                          # no deadline: time can't rule anything out
-        return Reach(False, {h: [(-INF, INF)] for h in hops}, hops=hops)
-    latest, heap = {b: deadline}, [(-deadline, b)]
-    while heap:                                  # latest departure towards b, Window ignored
-        t, y = heapq.heappop(heap)
-        if -t < latest[y]:
-            continue
-        for x, edge in g._pred[y].items():
-            if x == y or x not in hops:
-                continue
-            s = last_between(edge["times"], bounds[0], -t)
-            if s is not None and s > latest.get(x, -INF):
-                latest[x] = s
-                heapq.heappush(heap, (-s, x))
-    return Reach(False, {h: [(-INF, t)] for h, t in latest.items()},
-                 hops={h: hops[h] for h in latest})
-
-
 def _chain(g, hosts, entered, window):
     """One chain of flows along `hosts`: the earliest arrival at the last host, and before
     each hop the latest flow that fits (within `window` before it, and allowed for that hop)."""
@@ -295,7 +294,7 @@ def attack_paths(g, compromised, window, max_hops, blocked=frozenset(), data_sta
     for b, tb in sorted(compromised.items()):
         if b not in g or b in blocked:
             continue
-        into_b = spread_into(g, b, tb, window, max_hops, blocked, slack, bounds)
+        into_b = spread_into(g, b, tb, max_hops, blocked, slack, bounds)
         for a, ta in sorted(compromised.items()):
             paths, cut = paths_between(g, a, b, ta, tb, window, max_hops, blocked, data_start,
                                        slack, bounds, max_paths, into_b)

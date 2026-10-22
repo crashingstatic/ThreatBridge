@@ -1,8 +1,12 @@
 .git
 certs
-legacy
 tests
+mutants
+node_modules
 *.pyc
 __pycache__
+*.db
+*.db.lock
 exclude.json*
+compromised.json*
 deploy/threatbridge.env

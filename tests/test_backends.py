@@ -1,0 +1,293 @@
+"""The Elasticsearch (Security Onion) and demo backends. The case backend is in test_case.py."""
+from datetime import datetime, timedelta, timezone
+
+import pytest
+import requests
+
+from threatbridge import backends
+from threatbridge import query as q
+from threatbridge.app import create_app
+from threatbridge.backends import BackendError, DemoBackend, ElasticBackend
+from threatbridge.config import Config
+
+
+T0 = datetime(2024, 5, 1, 12, 0, tzinfo=timezone.utc)
+T1 = T0 + timedelta(hours=1)
+
+
+# ---- fake Elasticsearch sessions ----------------------------------------------------------
+
+class FakeResp:
+    status_code = 200
+
+    def __init__(self, body):
+        self._body = body
+
+    def json(self):
+        return self._body
+
+
+class FakeES:
+    """Serves composite pages over `counts`, then a details terms agg."""
+
+    def __init__(self, counts):
+        self.counts = sorted(counts.items())
+        self.calls = []
+
+    def post(self, url, json, timeout, params):
+        self.calls.append(json)
+        aggs = json["aggs"]
+        if "scan" in aggs:
+            comp = aggs["scan"]["composite"]
+            start = comp.get("after", {}).get("idx", 0)
+            page = self.counts[start:start + comp["size"]]
+            body = {"buckets": [{"key": {"peer": p}, "doc_count": c} for p, c in page]}
+            if page:
+                body["after_key"] = {"idx": start + len(page)}
+            return FakeResp({"aggregations": {"scan": body}})
+        wanted = next(f["terms"] for f in json["query"]["bool"]["filter"]
+                      if "terms" in f and "source.ip" in f["terms"])["source.ip"]
+        d = dict(self.counts)
+        return FakeResp({"aggregations": {"peers": {"buckets": [
+            {"key": p, "doc_count": d[p], "first_seen": {"value_as_string": "a"},
+             "last_seen": {"value_as_string": "b"}, "ports": {"buckets": [{"key": 443}]}}
+            for p in wanted]}}})
+
+
+class FlowsES:
+    def __init__(self, hits, total):
+        self.body = {"hits": {"total": {"value": total}, "hits": [{"fields": h} for h in hits]}}
+
+    def post(self, url, json, timeout, params):
+        return FakeResp(self.body)
+
+
+class OddES:
+    """A session whose answer is not what Elasticsearch normally sends."""
+
+    def __init__(self, body=None, text="<html>proxy login</html>"):
+        self.body, self.text = body, text
+
+    def post(self, url, json, timeout, params):
+        resp = FakeResp(self.body)
+        if self.body is None:
+            def bad_json():
+                raise ValueError("Expecting value: line 1 column 1 (char 0)")
+            resp.json = bad_json
+        return resp
+
+
+class RecordingES:
+    """Records requests; answers with `body` (or raises `error`)."""
+
+    def __init__(self, body=None, status=200, error=None):
+        self.body, self.status, self.error, self.calls = body or {}, status, error, []
+
+    def post(self, url, json, timeout, params):
+        self.calls.append({"url": url, "json": json, "timeout": timeout, "params": params})
+        if self.error:
+            raise self.error
+        resp = FakeResp(self.body)
+        resp.status_code = self.status
+        return resp
+
+
+class SequenceES(RecordingES):
+    def __init__(self, bodies):
+        super().__init__()
+        self.bodies = list(bodies)
+
+    def post(self, url, json, timeout, params):
+        self.body = self.bodies.pop(0)
+        return super().post(url, json, timeout, params)
+
+
+def _elastic(counts, cap=10000):
+    be = ElasticBackend(Config(rare_scan_cap=cap))
+    be.session = FakeES(counts)
+    return be
+
+
+# ---- Elasticsearch: peers -----------------------------------------------------------------
+
+def test_elastic_top_peers():
+    es = RecordingES({"aggregations": {
+        "peers": {"buckets": [
+            {"key": "10.0.0.7", "doc_count": 9, "first_seen": {"value": 1714564800000.0},
+             "last_seen": {"value_as_string": "2024-05-01T12:30:00.000Z"},
+             "ports": {"buckets": [{"key": 443}, {"key": 80}]}},
+            {"key": "10.0.0.8", "doc_count": 1, "first_seen": {"value": None}, "last_seen": {}}]},
+        "distinct": {"value": 42}}})
+    be = ElasticBackend(Config(es_url="https://es.example:9200/", es_index="logs-zeek-*", es_timeout=7))
+    be.session = es
+    res = be.neighbors("10.0.0.5", "in", T0, T1, 2, "top", [])
+    assert res == {"peers": [
+        {"peer": "10.0.0.7", "count": 9, "first_seen": "2024-05-01T12:00:00.000Z",
+         "last_seen": "2024-05-01T12:30:00.000Z", "ports": [443, 80]},
+        {"peer": "10.0.0.8", "count": 1, "first_seen": None, "last_seen": None, "ports": []}],
+        "distinct_peers": 42, "truncated": False}
+    [call] = es.calls
+    assert call["url"] == "https://es.example:9200/logs-zeek-*/_search"
+    assert (call["timeout"], call["params"]) == (7, {"ignore_unavailable": "true"})
+    assert call["json"] == q.es_top_body(be.cfg, "10.0.0.5", "in", T0, T1, 2, [])
+
+
+def test_rarest_is_exact_across_pages():
+    counts = {f"10.0.{i // 250}.{i % 250}": 2500 - i for i in range(2500)}
+    res = _elastic(counts).neighbors("10.9.9.9", "in", T0, T0, 3, "bottom", [])
+    assert [p["count"] for p in res["peers"]] == [1, 2, 3]
+    assert res["distinct_peers"] == 2500 and res["truncated"] is False
+
+
+def test_rarest_truncates_at_cap():
+    counts = {f"10.0.{i // 250}.{i % 250}": 5 for i in range(2500)}
+    res = _elastic(counts, cap=1500).neighbors("10.9.9.9", "in", T0, T0, 5, "bottom", [])
+    assert res["truncated"] is True and res["distinct_peers"] == 1500
+
+
+def test_rarest_asks_about_the_right_host_and_direction():
+    be = _elastic({"10.0.0.7": 3, "10.0.0.8": 1})
+    be.neighbors("10.9.9.9", "in", T0, T1, 1, "bottom", ["10.200.0.0/16"])
+    first, more, details = be.session.calls            # two scan pages (the second is empty)
+    assert first == q.es_scan_body(be.cfg, "10.9.9.9", "in", T0, T1, ["10.200.0.0/16"], 1000)
+    assert more == q.es_scan_body(be.cfg, "10.9.9.9", "in", T0, T1, ["10.200.0.0/16"], 1000, {"idx": 2})
+    assert details == q.es_details_body(be.cfg, "10.9.9.9", "in", T0, T1, ["10.0.0.8"], ["10.200.0.0/16"])
+
+
+def test_rarest_details_answer_without_peers():
+    be = ElasticBackend(Config())
+    be.session = SequenceES([{"aggregations": {"scan": {"buckets": [{"key": {"peer": "10.0.0.7"}, "doc_count": 1}],
+                                                        "after_key": {"peer": "10.0.0.7"}}}},
+                             {"aggregations": {"scan": {"buckets": []}}},
+                             {"aggregations": {}}])                 # details: nothing came back
+    assert be.neighbors("10.0.0.5", "in", T0, T1, 5, "bottom", []) == {
+        "peers": [], "distinct_peers": 1, "truncated": False}
+
+
+@pytest.mark.parametrize("order", ["top", "bottom"])
+def test_elastic_answers_with_parts_missing(order):
+    be = ElasticBackend(Config())
+    be.session = RecordingES({})                                  # no aggregations at all
+    assert be.neighbors("10.0.0.5", "in", T0, T1, 5, order, [])["peers"] == []
+    be.session = RecordingES({"aggregations": {"peers": {"buckets": [{"key": "10.0.0.7", "doc_count": 2}]},
+                                               "scan": {"buckets": [{"key": {"peer": "10.0.0.7"}, "doc_count": 2}]}}})
+    [p] = be.neighbors("10.0.0.5", "in", T0, T1, 5, order, [])["peers"]
+    assert (p["first_seen"], p["last_seen"], p["ports"]) == (None, None, [])
+
+
+# ---- Elasticsearch: a connection's flows --------------------------------------------------
+
+def test_elastic_flows_read_fields_and_stop_at_the_result_window():
+    be = ElasticBackend(Config())
+    be.session = FlowsES([
+        {"@timestamp": ["2024-05-01T12:00:00.123456Z"], "source.port": [50000],
+         "destination.port": [445], "network.transport": ["tcp"], "event.duration": [1.5],
+         "client.packets": [3], "server.packets": [4], "client.ip_bytes": [300]},
+        {"@timestamp": ["2024-05-01T12:00:01Z"], "event.duration": ["n/a"]}], total=7)
+    res = be.flows("10.0.0.1", "10.0.0.2", T0, T0, 0, 50)
+    assert res["total"] == 7
+    assert res["flows"][0] == {"start": "2024-05-01T12:00:00.123Z", "duration": 1.5, "sport": 50000,
+                               "dport": 445, "proto": "tcp", "packets": 7, "bytes": 300}
+    assert res["flows"][1]["packets"] is None and res["flows"][1]["sport"] is None
+    assert res["flows"][1]["duration"] is None                      # not a number: left out
+    with pytest.raises(q.ValidationError, match="narrow the time range"):
+        be.flows("10.0.0.1", "10.0.0.2", T0, T0, 9990, 50)
+
+
+def test_elastic_flows_request_and_limits():
+    es = RecordingES({"hits": {}})
+    be = ElasticBackend(Config())
+    be.session = es
+    assert be.flows("10.0.0.1", "10.0.0.2", T0, T1, 9950, 50) == {"total": 0, "flows": []}   # last allowed page
+    assert es.calls[0]["json"] == q.es_flows_body(be.cfg, "10.0.0.1", "10.0.0.2", T0, T1, 9950, 50)
+
+
+def test_elastic_flow_hits_with_parts_missing():
+    # No @timestamp among the fields: the hit's sort value (epoch ms of @timestamp) places it.
+    # With no time at all the hit is left out rather than shown at a made-up time.
+    be = ElasticBackend(Config())
+    be.session = RecordingES({"hits": {"total": {"relation": "gte"}, "hits": [
+        {"sort": [1714564800000]}, {}, {"fields": {"@timestamp": ["2024-05-01T12:00:01Z"]}}]}})
+    r = be.flows("10.0.0.1", "10.0.0.2", T0, T1, 0, 50)
+    assert r["total"] == 0
+    assert [f["start"] for f in r["flows"]] == ["2024-05-01T12:00:00.000Z", "2024-05-01T12:00:01.000Z"]
+
+
+def test_flows_answer_without_hits():
+    be = ElasticBackend(Config())
+    be.session = RecordingES({"took": 3})
+    assert be.flows("10.0.0.1", "10.0.0.2", T0, T1, 0, 50) == {"total": 0, "flows": []}
+
+
+# ---- Elasticsearch: connection and errors -------------------------------------------------
+
+def test_elastic_session_setup():
+    be = ElasticBackend(Config(es_user="svc", es_pass=None, es_ca="/etc/pki/ca.crt"))
+    assert be.session.auth == ("svc", "") and be.session.verify == "/etc/pki/ca.crt"
+    assert be.session.headers["Content-Type"] == "application/json"
+    be = ElasticBackend(Config(es_user="svc", es_pass="pw", es_verify=False))
+    assert be.session.auth == ("svc", "pw") and be.session.verify is False
+    assert ElasticBackend(Config()).session.auth is None
+
+
+@pytest.mark.parametrize("es,message", [
+    (RecordingES(error=requests.ConnectionError("down")), "Elasticsearch request failed: ConnectionError"),
+    (RecordingES(status=401), "Elasticsearch returned HTTP 401"),
+    (OddES(), "not JSON"),
+    (OddES(["a", "list"]), "not a JSON object"),
+])
+def test_elastic_errors_say_what_went_wrong(es, message):
+    be = ElasticBackend(Config())
+    be.session = es
+    with pytest.raises(BackendError, match=message):
+        be.neighbors("10.0.0.5", "in", T0, T1, 5, "top", [])
+
+
+def test_an_answer_that_is_not_json_is_a_backend_error():
+    be = ElasticBackend(Config())
+    be.session = OddES()
+    with pytest.raises(BackendError):
+        be.neighbors("10.0.0.5", "in", T0, T0, 5, "top", [])
+    with pytest.raises(BackendError):
+        be.flows("10.0.0.1", "10.0.0.2", T0, T0, 0, 50)
+
+
+def test_backend_failures_reach_the_client_as_502(tmp_path):
+    cfg = Config(backend="elastic", live_dns=False, exclude_file=str(tmp_path / "ex.json"),
+                 compromised_file=str(tmp_path / "c.json"))
+    be = ElasticBackend(cfg)
+    be.session = RecordingES(status=503)
+    c = create_app(cfg, be).test_client()
+    r = c.get("/api/neighbors?ip=10.0.0.5&ts=2024-05-01T12:00:00Z")
+    assert r.status_code == 502 and r.get_json() == {"error": "Elasticsearch returned HTTP 503"}
+    assert c.get("/healthz").get_json() == {"status": "ok", "backend": "elastic"}
+
+
+# ---- demo backend, and choosing a backend -------------------------------------------------
+
+@pytest.mark.parametrize("direction", ["in", "out"])
+def test_demo_edges_match_their_flow_lists(direction):
+    be = DemoBackend(Config())
+    start, end = T0 - timedelta(hours=24), T0
+    top = be.neighbors("10.0.0.5", direction, start, end, 50, "top", [])["peers"]
+    bottom = be.neighbors("10.0.0.5", direction, start, end, 50, "bottom", [])["peers"]
+    assert [p["count"] for p in top] == sorted((p["count"] for p in top), reverse=True)
+    assert [p["count"] for p in bottom] == sorted(p["count"] for p in bottom)
+    peers = [p["peer"] for p in top]
+    assert len(peers) == len(set(peers)) and "10.0.0.5" not in peers
+    for p in top:
+        src, dst = (p["peer"], "10.0.0.5") if direction == "in" else ("10.0.0.5", p["peer"])
+        first, last = q.parse_time(p["first_seen"]), q.parse_time(p["last_seen"])
+        assert start <= first <= last <= end
+        r = be.flows(src, dst, first, last, 0, 1000)
+        assert r["total"] == p["count"] == len(r["flows"])
+        assert (r["flows"][0]["start"], r["flows"][-1]["start"]) == (p["first_seen"], p["last_seen"])
+        assert all(p["first_seen"] <= f["start"] <= p["last_seen"] for f in r["flows"])
+
+
+def test_make_backend():
+    assert isinstance(backends.make_backend(Config(backend="demo")), DemoBackend)
+    es = backends.make_backend(Config(backend="elastic", es_timeout=9))
+    assert isinstance(es, ElasticBackend) and es.cfg.es_timeout == 9
+    with pytest.raises(ValueError, match="unknown backend 'nope'"):
+        backends.make_backend(Config(backend="nope"))

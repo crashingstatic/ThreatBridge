@@ -6,7 +6,7 @@ from ..model import SourceError
 from .netflow import read_nfcapd
 from .pcap import read_pcaps
 
-__all__ = ["SourceError", "find", "kind", "load", "manifest", "read"]
+__all__ = ["SourceError", "find", "manifest", "read"]
 
 log = logging.getLogger(__name__)
 
@@ -15,7 +15,7 @@ _PCAPNG_MAGIC = bytes.fromhex("0a0d0d0a")
 _NFCAPD_MAGIC = bytes.fromhex("0ca5")  # 0xA50C, little-endian
 
 
-def kind(path):
+def _kind(path):
     """"pcap", "nfcapd", or None for anything else."""
     with open(path, "rb") as fh:
         head = fh.read(4)
@@ -56,7 +56,7 @@ def find(paths):
         if real in seen:
             continue
         seen.add(real)
-        k = kind(path)
+        k = _kind(path)
         if k == "nfcapd" and _being_written(path):
             if explicit:
                 raise SourceError(f"{path}: nfcapd is still being written to; "
@@ -94,8 +94,3 @@ def read(found, dns=None):
         flows.extend(read_nfcapd(found["nfcapd"]))
     flows.sort(key=lambda f: (f.start, f.src, f.dst, f.sport, f.dport))
     return flows
-
-
-def load(paths, dns=None):
-    """Read every pcap and nfcapd file under `paths` (see find() and read())."""
-    return read(find(paths), dns)

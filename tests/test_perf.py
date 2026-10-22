@@ -1,9 +1,11 @@
 """PRF-1 / PRF-2: at least 1M flows, case built within 5 minutes for under 100 MB.
-PRF-3: on that case, every interactive query answers within a couple of seconds.
+PRF-3: on an office-like week of traffic, the queries an analyst waits on stay fast.
 
-Slow (about a minute and a half), so opt-in: TB_PERF=1 python -m pytest -s tests/test_perf.py
+Slow, so opt-in: TB_PERF=1 python -m pytest -s tests/test_perf.py
 """
 import os
+import random
+import resource
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -12,8 +14,9 @@ import pytest
 from evidence import write_bulk_pcap
 from threatbridge.backends import CaseBackend
 from threatbridge.config import Config
+from threatbridge.model import Flow
 
-N = 1_250_000  # ~97 MB of minimum-size packets, one flow each
+N = 1_250_000  # 93 MiB of minimum-size packets, one flow each
 
 
 @pytest.mark.skipif(os.environ.get("TB_PERF") != "1", reason="set TB_PERF=1 to run")
@@ -28,18 +31,16 @@ def test_million_flows_under_five_minutes(tmp_path):
     t = time.monotonic()
     CaseBackend(cfg)
     reopened = time.monotonic() - t
-    print(f"\n{N} flows, {path.stat().st_size / 2**20:.0f} MB: built in {built:.0f}s, "
-          f"reopened in {reopened:.0f}s")
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024     # this process so far
+    print(f"\n{N} flows, {path.stat().st_size / 2**20:.0f} MiB: built in {built:.0f}s, "
+          f"reopened in {reopened:.0f}s, peak memory {peak:.0f} MiB")
     assert backend.summary()["flows"] == N
     assert built < 300
-
 
 
 def busy_week(n=1_000_000, seed=3):
     """Office-like traffic over a week: 2,000 workstations and 500 outside hosts. Most flows go
     to a few servers (DC, DNS, proxy); one workstation-to-server pair carries 100k flows."""
-    import random
-    from threatbridge.model import Flow
     rng = random.Random(seed)
     t0, week = 1_714_564_800.0, 7 * 86400.0
     ws = [f"10.1.{i // 250}.{i % 250 + 1}" for i in range(2000)]

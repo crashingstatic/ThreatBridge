@@ -1,21 +1,22 @@
-// Merge the coverage written by the browser tests (see ui_coverage.mjs) and list the lines
-// of app.js that no test ran, grouped into blocks.
+// Merge the coverage written by the browser tests (see ui_helpers.mjs) and list the lines
+// of app.js that no test ran, grouped into blocks, then the functions that never ran.
 //   node tests/js_coverage.mjs DIR
 import { readdirSync, readFileSync } from "node:fs";
 
 const dir = process.argv[2];
-let source = null;
-let covered = null;
-for (const name of readdirSync(dir).filter((n) => n.endsWith(".json"))) {
-  for (const entry of JSON.parse(readFileSync(`${dir}/${name}`, "utf8"))) {
-    source = entry.source;
-    // Ranges nest; the innermost decides. Paint the largest first so inner ones win.
-    const counts = new Array(source.length).fill(1);
-    const ranges = entry.functions.flatMap((f) => f.ranges)
-      .sort((a, b) => (b.endOffset - b.startOffset) - (a.endOffset - a.startOffset));
-    for (const r of ranges) counts.fill(r.count > 0 ? 1 : 0, r.startOffset, r.endOffset);
-    covered = covered ? covered.map((c, i) => c || counts[i]) : counts;
-  }
+const entries = readdirSync(dir).filter((n) => n.endsWith(".json"))
+  .flatMap((name) => JSON.parse(readFileSync(`${dir}/${name}`, "utf8")));
+const source = entries[0].source;
+
+// Lines: a character ran if any test ran it. Ranges nest and the innermost decides, so paint
+// the largest first and let the inner ones overwrite them.
+const covered = new Array(source.length).fill(0);
+for (const entry of entries) {
+  const counts = new Array(source.length).fill(1);
+  const ranges = entry.functions.flatMap((f) => f.ranges)
+    .sort((a, b) => (b.endOffset - b.startOffset) - (a.endOffset - a.startOffset));
+  for (const r of ranges) counts.fill(r.count > 0 ? 1 : 0, r.startOffset, r.endOffset);
+  counts.forEach((c, i) => { covered[i] ||= c; });
 }
 const lines = source.split("\n");
 let offset = 0, total = 0, missed = 0, block = [];
@@ -37,12 +38,10 @@ console.log(`app.js: ${total - missed} of ${total} code lines ran (${(100 * (tot
 
 // Functions (event handlers included) that never ran in any test.
 const ran = new Map();
-for (const name of readdirSync(dir).filter((n) => n.endsWith(".json"))) {
-  for (const entry of JSON.parse(readFileSync(`${dir}/${name}`, "utf8"))) {
-    for (const f of entry.functions) {
-      const r = f.ranges[0];
-      ran.set(r.startOffset, (ran.get(r.startOffset) || 0) + r.count);
-    }
+for (const entry of entries) {
+  for (const f of entry.functions) {
+    const r = f.ranges[0];
+    ran.set(r.startOffset, (ran.get(r.startOffset) || 0) + r.count);
   }
 }
 const never = [...ran].filter(([, n]) => n === 0).map(([start]) => start).sort((a, b) => a - b);

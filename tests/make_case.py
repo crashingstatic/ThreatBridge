@@ -12,7 +12,7 @@ apart, to page through; and 12 two-hop routes 10.0.2.1 -> 10.0.2.10..21 -> 10.0.
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # for threatbridge
 from evidence import ACK, SYN, dns_answer, tcp, udp, write_pcap  # noqa: E402
 
 T = 1_714_564_800.0  # 2024-05-01T12:00:00Z

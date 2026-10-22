@@ -10,7 +10,7 @@ import time
 
 import pytest
 
-from evidence import ACK, SYN, have_nfdump, make_nfcapd, tcp, write_pcap
+from evidence import ACK, SYN, have_nfdump, load, make_nfcapd, tcp, write_pcap
 from threatbridge import sources
 from threatbridge.backends import CaseBackend
 from threatbridge.config import Config
@@ -21,7 +21,7 @@ T = 1_714_564_800.0
 FORK = multiprocessing.get_context("fork")   # gunicorn workers are forked processes too
 
 
-# ---- several processes ------------------------------------------------------------------
+# ---- several processes --------------------------------------------------------------------
 
 def _add_entries(path, worker):
     store = ExcludeStore(path)
@@ -83,14 +83,14 @@ def test_pcap_and_netflow_in_one_case(tmp_path):
     nf = make_nfcapd(d / "netflow", [("10.0.0.5", "10.0.0.20", 50001, 22, 6, 4, 400, t + 10, t + 11)], now)
     write_pcap(d / "cap.pcap", [(t, tcp("10.0.0.5", "10.0.0.9", 50000, 445, SYN)),
                                 (t + 0.001, tcp("10.0.0.9", "10.0.0.5", 445, 50000, SYN | ACK))])
-    flows = sources.load([str(d)])
+    flows = load([str(d)])
     assert [(f.src, f.dst, f.dport, f.source) for f in flows] == [
         ("10.0.0.5", "10.0.0.9", 445, str(d / "cap.pcap")), ("10.0.0.5", "10.0.0.20", 22, nf)]
     be = CaseBackend(Config(backend="case", case_paths=[str(d)]))
     assert be.summary()["flows"] == 2 and be.graph.has_edge("10.0.0.5", "10.0.0.20")
 
 
-# ---- the entry point --------------------------------------------------------------------
+# ---- the entry point ----------------------------------------------------------------------
 
 def run(*args):
     return subprocess.run([sys.executable, "-m", "threatbridge", *args], cwd=ROOT,

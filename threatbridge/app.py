@@ -1,4 +1,5 @@
 """ThreatBridge web service: temporal connection map for Security Onion IOCs."""
+import argparse
 import logging
 import os
 
@@ -35,13 +36,14 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
     resolver = resolver or DomainResolver(getattr(backend, "dns", None), live=cfg.live_dns,
                                           ttl=cfg.dns_ttl, timeout=cfg.dns_timeout)
 
+    max_window = parse_window(cfg.max_window)
+
     def exclusions():
         """The exclude list as IPs/CIDRs: domain names replaced by their addresses."""
         return resolver.expand(excludes.list())
 
     def excludes_body(entries, **extra):
         return jsonify(entries=entries, resolved=resolver.describe(entries), **extra)
-    max_window = parse_window(cfg.max_window)
 
     def window_arg(value):
         window = parse_window(value or cfg.default_window)
@@ -64,14 +66,28 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
         except ValueError:
             raise ValidationError(f"{name} must be an integer")
 
+    def time_arg(name):
+        """An optional time parameter: a datetime, or None when absent or blank."""
+        value = (request.args.get(name) or "").strip()
+        return parse_time(value) if value else None
+
     def range_arg():
         """The analyst's time range (range_from, range_to): datetimes, None for an open end.
         Every query is limited to it."""
-        lo, hi = (parse_time(request.args[k]) if (request.args.get(k) or "").strip() else None
-                  for k in ("range_from", "range_to"))
+        lo, hi = time_arg("range_from"), time_arg("range_to")
         if lo and hi and hi < lo:
             raise ValidationError("range_to is before range_from")
         return lo, hi
+
+    def from_to_args(what):
+        """The required `from` and optional `to` (default: `from`) of a connection's flows."""
+        if not request.args.get("from"):
+            raise ValidationError(f"from ({what}) is required")
+        first = parse_time(request.args["from"])
+        last = parse_time(request.args.get("to") or request.args["from"])
+        if last < first:
+            raise ValidationError("to is before from")
+        return first, last
 
     def hops_arg():
         hops = int_arg("hops", cfg.threat_hops)
@@ -184,12 +200,7 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
         """One page of the flows src -> dst that started within [from, to], oldest first."""
         args = request.args
         src, dst = parse_ip(args.get("src")), parse_ip(args.get("dst"))
-        if not args.get("from"):
-            raise ValidationError("from (start of the first flow) is required")
-        start, end = parse_time(args["from"]), parse_time(args.get("to") or args["from"])
-        if end < start:
-            raise ValidationError("to is before from")
-        start, end = clip(start, end, range_arg())
+        start, end = clip(*from_to_args("start of the first flow"), range_arg())
         offset = max(0, int_arg("offset", 0))
         limit = max(1, min(int_arg("limit", 50), MAX_FLOW_PAGE))
         res = (backend.flows(src, dst, start, end, offset, limit)
@@ -239,14 +250,8 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
         require("threat_line")
         args = request.args
         a, b = parse_ip(args.get("a")), parse_ip(args.get("b"))
-        if not args.get("from"):
-            raise ValidationError("from (start of the conversation) is required")
-        first = parse_time(args["from"])
-        last = parse_time(args.get("to") or args["from"])
-        if last < first:
-            raise ValidationError("to is before from")
         bounds = range_arg()
-        first, last = clip(first, last, bounds)
+        first, last = clip(*from_to_args("start of the conversation"), bounds)
         if last < first:
             raise ValidationError("the conversation is outside the time range")
         res = backend.threat_line(a, b, first, last, window_arg(args.get("window")),
@@ -267,9 +272,8 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
         a, b = parse_ip(args.get("src")), parse_ip(args.get("dst"))
         if a == b:
             raise ValidationError("src and dst are the same host")
-        ta, tb = (parse_time(args[k]) if (args.get(k) or "").strip() else None
-                  for k in ("src_time", "dst_time"))
-        res = backend.paths_between(a, b, ta, tb, window, hops, exclusions(), bounds, cfg.max_paths)
+        res = backend.paths_between(a, b, time_arg("src_time"), time_arg("dst_time"), window, hops,
+                                    exclusions(), bounds, cfg.max_paths)
         return jsonify(src=a, dst=b, **res)
 
     @app.get("/api/pivot")
@@ -279,8 +283,8 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
         lo, hi = range_arg()
         if b:
             b = parse_ip(b)
-            until = parse_time(request.args["until"]) if request.args.get("until") else None
-            q = soc_pivot_query(cfg, a, b, min((t for t in (until, hi) if t), default=None), lo)
+            until = min((t for t in (time_arg("until"), hi) if t), default=None)
+            q = soc_pivot_query(cfg, a, b, until, lo)
         else:
             q = soc_host_query(cfg, a, lo, hi)
         return jsonify(query=q, url=soc_url(cfg, q))
@@ -289,7 +293,6 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
 
 
 def main():
-    import argparse
     p = argparse.ArgumentParser(description="ThreatBridge temporal connection map")
     p.add_argument("--host", default=os.environ.get("TB_HOST", "127.0.0.1"))
     p.add_argument("--port", type=int, default=int(os.environ.get("TB_PORT", "5055")))
@@ -313,7 +316,3 @@ def main():
     except SourceError as e:
         p.exit(2, f"error: {e}\n")
     app.run(host=a.host, port=a.port)
-
-
-if __name__ == "__main__":
-    main()
