@@ -38,11 +38,14 @@ def parse_pipe_line(line):
     if len(f) != PIPE_FIELDS:
         raise SourceError(f"unexpected nfdump output ({len(f)} fields, expected {PIPE_FIELDS}); "
                           "tested with nfdump 1.7.3")
-    af = int(f[0])
-    proto = proto_name(int(f[3]))
-    sport, dport = (0, 0) if proto == "icmp" else (int(f[8]), int(f[13]))
-    return (int(f[1]) / 1000.0, int(f[2]) / 1000.0, proto, _address(af, f[4:8]), sport,
-            _address(af, f[9:13]), dport, int(f[20]), int(f[21]))
+    try:
+        af = int(f[0])
+        proto = proto_name(int(f[3]))
+        sport, dport = (0, 0) if proto == "icmp" else (int(f[8]), int(f[13]))
+        return (int(f[1]) / 1000.0, int(f[2]) / 1000.0, proto, _address(af, f[4:8]), sport,
+                _address(af, f[9:13]), dport, int(f[20]), int(f[21]))
+    except ValueError as e:
+        raise SourceError(f"unexpected nfdump output ({e}); tested with nfdump 1.7.3")
 
 
 def read_records(path):

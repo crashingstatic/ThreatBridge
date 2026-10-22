@@ -114,10 +114,25 @@ def _open(fh, path):
         raise SourceError(f"{path}: not a readable pcap file ({e})")
 
 
+def _packets(reader, path):
+    """(timestamp, frame) for each packet. A capture cut off inside a record (tcpdump killed
+    mid-write) ends at the last whole packet."""
+    packets = iter(reader)
+    while True:
+        try:
+            ts, buf = next(packets)
+        except StopIteration:
+            return
+        except (dpkt.Error, struct.error):
+            log.warning("%s: capture is cut off after its last whole packet", path)
+            return
+        yield float(ts), buf  # nanosecond captures come back as Decimal
+
+
 def _first_timestamp(path):
     with open(path, "rb") as fh:
-        for ts, _ in _open(fh, path):
-            return float(ts)
+        for ts, _ in _packets(_open(fh, path), path):
+            return ts
     return float("inf")
 
 
@@ -128,25 +143,33 @@ def _name(n):
 def record_dns(payload, ts, dns):
     """Add the A/AAAA answers of a DNS response to `dns`: {name: {ip: [first, last]}}.
 
-    Every name in the response (the question and each CNAME on the way) maps to every
-    address in its answer section."""
+    Every name on the chain from the question (the question and each CNAME on the way) maps
+    to every address the chain leads to. Answer records for other names are ignored: a
+    resolver wouldn't use them, and a crafted response could otherwise tie a benign name to
+    an attacker's address."""
     try:
         msg = dpkt.dns.DNS(payload)
     except (dpkt.Error, IndexError, struct.error, UnicodeDecodeError):
         return
     if msg.qr != dpkt.dns.DNS_R or msg.rcode != dpkt.dns.DNS_RCODE_NOERR:
         return
-    names, ips = {_name(q.name) for q in msg.qd}, set()
-    for rr in msg.an:
+    names = {_name(q.name) for q in msg.qd}
+    answers = [(_name(rr.name), rr) for rr in msg.an]
+    chained = True
+    while chained:              # follow CNAMEs from the question, in any order they come
+        chained = False
+        for owner, rr in answers:
+            if rr.type == dpkt.dns.DNS_CNAME and owner in names and _name(rr.cname) not in names:
+                names.add(_name(rr.cname))
+                chained = True
+    ips = set()
+    for owner, rr in answers:
+        if owner not in names:
+            continue
         if rr.type == dpkt.dns.DNS_A and len(rr.rdata) == 4:
             ips.add(socket.inet_ntop(socket.AF_INET, rr.rdata))
         elif rr.type == dpkt.dns.DNS_AAAA and len(rr.rdata) == 16:
             ips.add(socket.inet_ntop(socket.AF_INET6, rr.rdata))
-        elif rr.type == dpkt.dns.DNS_CNAME:
-            names.add(_name(rr.cname))
-        else:
-            continue
-        names.add(_name(rr.name))
     names.discard("")
     for name in names:
         seen = dns.setdefault(name, {})
@@ -165,8 +188,7 @@ def _read_one(path, tracker, dns):
         decode = _DECODERS.get(reader.datalink())
         if decode is None:
             raise SourceError(f"{path}: unsupported link type {reader.datalink()}")
-        for ts, buf in reader:
-            ts = float(ts)  # nanosecond captures come back as Decimal
+        for ts, buf in _packets(reader, path):
             packets += 1
             try:
                 ip = decode(buf)
@@ -179,6 +201,9 @@ def _read_one(path, tracker, dns):
                 src, dst = socket.inet_ntop(socket.AF_INET, ip.src), socket.inet_ntop(socket.AF_INET, ip.dst)
                 nbytes = ip.len or len(ip)
             elif isinstance(ip, dpkt.ip6.IP6):
+                frag = getattr(ip, "extension_hdrs", {}).get(dpkt.ip.IP_PROTO_FRAGMENT)
+                if frag is not None and frag.frag_off:
+                    continue  # as above: a later fragment is payload only
                 src, dst = socket.inet_ntop(socket.AF_INET6, ip.src), socket.inet_ntop(socket.AF_INET6, ip.dst)
                 nbytes = ip.plen + 40
             else:
@@ -191,6 +216,13 @@ def _read_one(path, tracker, dns):
                 sport, dport, flags = t.sport, t.dport, 0
                 if sport == 53 and dns is not None:
                     record_dns(t.data, ts, dns)
+            elif proto in ("tcp", "udp"):
+                # Header cut short by the snap length: the ports are its first 4 bytes.
+                if len(t) < 4:
+                    skipped += 1
+                    continue
+                sport, dport = struct.unpack("!HH", t[:4])
+                flags = t[13] if proto == "tcp" and len(t) > 13 else 0
             else:
                 sport = dport = flags = 0
             tracker.add(ts, src, dst, proto, sport, dport, nbytes, flags, path)

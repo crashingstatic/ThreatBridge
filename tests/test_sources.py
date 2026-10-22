@@ -202,3 +202,149 @@ def test_real_nfcapd_file(tmp_path):
 def test_flow_is_compact():
     f = Flow(C, S, 1, 2, "tcp", T, T, 1, 1, "x")
     assert not hasattr(f, "__dict__")
+
+
+# ---- edge cases ---------------------------------------------------------------------------
+
+import socket  # noqa: E402
+import struct  # noqa: E402
+
+import dpkt  # noqa: E402
+
+from evidence import MAC, dns_answer  # noqa: E402
+from threatbridge.sources.netflow import read_records  # noqa: E402
+from threatbridge.sources.pcap import record_dns  # noqa: E402
+
+
+def frame(pkt):
+    ip, etype, _ = pkt
+    return bytes(dpkt.ethernet.Ethernet(src=MAC, dst=MAC, type=etype, data=ip))
+
+
+def test_a_capture_cut_off_inside_a_record_keeps_what_came_before(tmp_path):
+    path = tmp_path / "cut.pcap"
+    write_pcap(path, handshake())
+    path.write_bytes(path.read_bytes() + b"\0" * 8)          # tcpdump killed mid-write
+    assert endpoints(sources.load([str(path)])) == [(C, 50000, S, 445, "tcp")]
+    only_junk = tmp_path / "junk.pcap"
+    write_pcap(only_junk, [])
+    only_junk.write_bytes(only_junk.read_bytes() + b"\0" * 8)
+    assert sources.load([str(only_junk)]) == []
+
+
+def test_header_only_capture_has_no_flows(tmp_path):
+    assert load_packets(tmp_path, []) == []
+
+
+def test_idle_timeout_is_exclusive(tmp_path):
+    q = lambda t: (t, udp(C, R, 53000, 53, b"q"))  # noqa: E731
+    flows = load_packets(tmp_path, [q(T), q(T + 60), q(T + 120.001)])   # 60 s apart: same flow
+    assert [(f.start, f.end) for f in flows] == [(T, T + 60), (T + 120.001, T + 120.001)]
+    [f] = pair_records([rec(C, 53000, R, 53, T, T, proto="udp"),
+                        rec(C, 53000, R, 53, T + 60, T + 60, proto="udp")])
+    assert f.end == T + 60
+    assert len(pair_records([rec(C, 53000, R, 53, T, T, proto="udp"),
+                             rec(C, 53000, R, 53, T + 60.001, T + 61, proto="udp")])) == 2
+
+
+def test_vlan_tagged_frames(tmp_path):
+    tagged = [(t, (lambda b: b[:12] + struct.pack("!HH", 0x8100, 42) + b[12:])(frame(p)))
+              for t, p in handshake()]
+    [f] = load_packets(tmp_path, tagged)
+    assert (f.src, f.dst, f.dport, f.packets) == (C, S, 445, 8)
+
+
+def test_ip_total_length_zero_is_counted_by_size(tmp_path):
+    # Captured on the sending host with segmentation offload: IPv4 total length reads 0.
+    pkt = tcp(C, S, 50000, 445, PSH | ACK, b"z" * 100)
+    raw = frame(pkt)
+    [f] = load_packets(tmp_path, [(T, raw[:16] + b"\0\0" + raw[18:])])
+    assert (f.sport, f.dport, f.bytes) == (50000, 445, 140)
+
+
+def test_a_transport_header_cut_by_the_snap_length(tmp_path):
+    # tcpdump -s: the ports (first 4 bytes) survive, so the packet still counts in its flow.
+    cut = frame(tcp(C, S, 50000, 445, SYN))[:14 + 20 + 8]
+    flows = load_packets(tmp_path, [(T, cut)] + handshake(t=T + 1))
+    assert endpoints(flows) == [(C, 50000, S, 445, "tcp")] and flows[0].packets == 9
+    # Too short to hold the ports: skipped, never a flow on port 0.
+    stub = frame(udp(C, R, 53000, 53, b"q"))[:14 + 20 + 2]
+    assert load_packets(tmp_path, [(T, stub)]) == []
+
+
+def ipv6_fragment(offset, payload, more=True):
+    src, dst = (socket.inet_pton(socket.AF_INET6, a) for a in ("2001:db8::5", "2001:db8::9"))
+    # next header, reserved, offset in 8-byte units << 3 | more-fragments flag, id
+    frag = struct.pack("!BBHI", 6, 0, ((offset // 8) << 3) | int(more), 9)
+    ip6 = dpkt.ip6.IP6(src=src, dst=dst, nxt=44, hlim=64, data=frag + payload)
+    ip6.plen = 8 + len(payload)
+    return bytes(dpkt.ethernet.Ethernet(src=MAC, dst=MAC, type=dpkt.ethernet.ETH_TYPE_IP6,
+                                        data=bytes(ip6)))
+
+
+def test_ipv6_fragments(tmp_path):
+    first = bytes(dpkt.tcp.TCP(sport=50000, dport=445, flags=SYN | ACK, off=5)) + b"a" * 32
+    flows = load_packets(tmp_path, [(T, ipv6_fragment(0, first)),
+                                    (T + 0.001, ipv6_fragment(1000, b"\xaa" * 48, more=False))])
+    # The first fragment carries the ports; a later one is payload only and adds no flow.
+    assert endpoints(flows) == [("2001:db8::9", 445, "2001:db8::5", 50000, "tcp")]
+
+
+def test_dns_answers_only_follow_the_question():
+    dns = {}
+    record_dns(dns_answer("evil.test", [
+        ("cdn.test", "A", "6.6.6.6"),                          # chain listed out of order
+        ("evil.test", "CNAME", "cdn.test"),
+        ("updates.example.com", "A", "6.6.6.7"),               # not part of the answer to evil.test
+    ]), T, dns)
+    assert dns == {"evil.test": {"6.6.6.6": [T, T]}, "cdn.test": {"6.6.6.6": [T, T]}}
+
+
+@pytest.mark.parametrize("line", [
+    "0|0|0|6|0|0|0|1|50000|0|0|0|2|445|0|0|0|0|0|0|1|1",        # unknown address family
+    "2|x|0|6|0|0|0|1|50000|0|0|0|2|445|0|0|0|0|0|0|1|1",        # not a number
+])
+def test_unreadable_nfdump_lines_are_source_errors(line):
+    with pytest.raises(SourceError, match="unexpected nfdump output"):
+        parse_pipe_line(line)
+
+
+def fake_nfdump(tmp_path, monkeypatch, script):
+    exe = tmp_path / "nfdump"
+    exe.write_text("#!/bin/sh\n" + script)
+    exe.chmod(0o755)
+    monkeypatch.setenv("TB_NFDUMP", str(exe))
+
+
+def test_nfdump_errors(tmp_path, monkeypatch):
+    fake_nfdump(tmp_path, monkeypatch, 'echo "Corrupt data file" >&2\nexit 3\n')
+    with pytest.raises(SourceError, match="nfdump failed: Corrupt data file"):
+        list(read_records("x"))
+    fake_nfdump(tmp_path, monkeypatch, 'echo "Summary: 1 flow"\nexec sleep 30\n')
+    t = time.monotonic()
+    with pytest.raises(SourceError, match="unexpected nfdump output"):
+        list(read_records("x"))
+    assert time.monotonic() - t < 5                          # nfdump is stopped, not waited for
+    monkeypatch.setenv("TB_NFDUMP", str(tmp_path / "missing"))
+    with pytest.raises(SourceError, match="nfdump not found"):
+        list(read_records("x"))
+
+
+def test_the_same_file_named_twice_is_read_once(tmp_path):
+    d = tmp_path / "case"
+    d.mkdir()
+    write_pcap(d / "cap.pcap", handshake())
+    os.symlink(d / "cap.pcap", tmp_path / "link.pcap")
+    paths = [str(d), str(d / "cap.pcap"), str(tmp_path / "link.pcap")]
+    assert sources.find(paths)["pcap"] == [str(d / "cap.pcap")]
+    assert len(sources.load(paths)) == 1
+
+
+def test_files_that_are_not_evidence(tmp_path):
+    (tmp_path / "empty").write_bytes(b"")
+    with pytest.raises(SourceError, match="not a pcap or nfcapd file"):
+        sources.find([str(tmp_path / "empty")])
+    live = tmp_path / "nfcapd.current.4242"
+    live.write_bytes(bytes.fromhex("0ca5") + b"\0" * 30)
+    with pytest.raises(SourceError, match="still being written"):
+        sources.find([str(live)])

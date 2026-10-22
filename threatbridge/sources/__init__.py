@@ -24,10 +24,12 @@ def kind(path):
     if head == _PCAPNG_MAGIC:
         raise SourceError(f"{path}: pcapng is not supported; convert it with: editcap -F pcap IN OUT")
     if head[:2] == _NFCAPD_MAGIC:
-        if os.path.basename(path).startswith("nfcapd.current."):
-            return None  # still being written by a running nfcapd
         return "nfcapd"
     return None
+
+
+def _being_written(path):
+    return os.path.basename(path).startswith("nfcapd.current.")  # by a running nfcapd
 
 
 def _files(paths):
@@ -46,11 +48,21 @@ def _files(paths):
 
 
 def find(paths):
-    """{"pcap": [...], "nfcapd": [...]}: the evidence files under `paths`."""
-    found = {"pcap": [], "nfcapd": []}
+    """{"pcap": [...], "nfcapd": [...]}: the evidence files under `paths`, each once however
+    many times it is named (directly, through its directory, or through a symlink)."""
+    found, seen = {"pcap": [], "nfcapd": []}, set()
     for path, explicit in _files(paths):
+        real = os.path.realpath(path)
+        if real in seen:
+            continue
+        seen.add(real)
         k = kind(path)
-        if k:
+        if k == "nfcapd" and _being_written(path):
+            if explicit:
+                raise SourceError(f"{path}: nfcapd is still being written to; "
+                                  "use the files it has already rotated")
+            log.info("skipping %s: nfcapd is still writing it", path)
+        elif k:
             found[k].append(path)
         elif explicit:
             raise SourceError(f"{path}: not a pcap or nfcapd file")
