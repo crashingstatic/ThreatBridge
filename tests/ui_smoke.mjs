@@ -2,7 +2,7 @@
 //   TB_URL=http://127.0.0.1:5055 node tests/ui_smoke.mjs [screenshot-dir]
 // Needs the `playwright` npm package (see ui_helpers.mjs).
 import assert from "node:assert/strict";
-import { finish, launch } from "./ui_helpers.mjs";
+import { checkpoint, finish, launch } from "./ui_helpers.mjs";
 
 const BASE = process.env.TB_URL || "http://127.0.0.1:5055";
 const SHOTS = process.argv[2];
@@ -48,8 +48,19 @@ try {
   const starts = await page.$$eval("#flows ol.flows li", (l) => l.map((x) => x.firstChild.textContent));
   assert.deepEqual(starts, [...starts].sort());
   assert.match(await page.textContent("#flows .pager span"), /^1–\d+ of [\d,]+$/);
-
   await popup.close();
+
+  // Each flow links to SOC's PCAP job for it; no download without a SOC API client.
+  const pcap = page.locator("#flows ol.flows li").first().locator("a", { hasText: "PCAP in SOC" });
+  const pcapUrl = new URL(await pcap.getAttribute("href"));
+  assert.equal(`${pcapUrl.origin}${pcapUrl.pathname}`, `${SOC}/joblookup`);
+  assert.match(pcapUrl.searchParams.get("esid"), /^demo[0-9a-f]{16}$/);
+  assert.equal(pcapUrl.searchParams.get("time"), starts[0]);
+  assert.equal(await pcap.getAttribute("target"), "_blank");
+  const [pcapPopup] = await Promise.all([ctx.waitForEvent("page"), pcap.click()]);
+  assert.ok(pcapPopup.url().startsWith(`${SOC}/joblookup?esid=`));
+  await pcapPopup.close();
+  assert.equal(await page.locator("#flows button", { hasText: "Download PCAP" }).count(), 0);
 
   // 3b. The same menu copies the query instead; the host menu opens the host in SOC.
   // (The status line now holds the long query and wraps, moving the map: find the edge again.)
@@ -80,7 +91,33 @@ try {
   await page.waitForFunction(() => document.getElementById("status").textContent
     .includes("2024-05-01T11:00:00.000Z → 2024-05-01T12:00:00.000Z"));
 
-  // 6. No CSP violations or script errors anywhere above.
+  // 6. With a SOC API client, ThreatBridge downloads a flow's PCAP itself.
+  await page.route("**/api/config", async (route) => {
+    const r = await route.fetch();
+    route.fulfill({ response: r, json: Object.assign(await r.json(), { pcap_download: true }) });
+  });
+  let asked = null;
+  await page.route("**/api/pcap", (route) => {
+    asked = route.request().postDataJSON();
+    route.fulfill({ status: 200, contentType: "application/vnd.tcpdump.pcap", body: Buffer.from("d4c3b2a1" + "00".repeat(20), "hex") });
+  });
+  await checkpoint(page, "smoke-1");
+  await page.goto(`${BASE}/?ip=${IOC}&ts=${IOC_TIME}&dir=in`);
+  await page.waitForFunction(() => window.threatbridge.cy.edges().length > 0);
+  const inbound = await at(`edge[direction='in'][target='${IOC}']`, "edge");
+  await page.mouse.click(inbound.x, inbound.y);
+  const download = page.locator("#flows ol.flows li").first().locator("button", { hasText: "Download PCAP" });
+  await download.waitFor();
+  const first = await page.$eval("#flows ol.flows li", (li) => li.firstChild.textContent);
+  const [file] = await Promise.all([page.waitForEvent("download"), download.click()]);
+  assert.equal(file.suggestedFilename(), `${inbound.id.replace("->", "_")}_${first}.pcap`.replace(/:/g, "-"));
+  assert.equal(asked.time, first);
+  assert.match(asked.id, /^demo[0-9a-f]{16}$/);
+  await page.waitForFunction(() => /: 24 B$/.test(document.getElementById("status").textContent));
+  await page.unroute("**/api/config");
+  await page.unroute("**/api/pcap");
+
+  // 7. No CSP violations or script errors anywhere above.
   assert.deepEqual(errors, [], "browser console errors");
   console.log("UI smoke test passed");
 } finally {

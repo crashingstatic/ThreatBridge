@@ -1,11 +1,14 @@
 """Read tcpdump captures (classic pcap format) into connection flows."""
 import logging
+import os
 import socket
 import struct
 
 import dpkt
 
 from ..model import Flow, SourceError, idle_timeout, looks_reversed, proto_name
+from ..progress import counted
+from .workers import in_order
 
 log = logging.getLogger(__name__)
 
@@ -114,7 +117,16 @@ def _open(fh, path):
         raise SourceError(f"{path}: not a readable pcap file ({e})")
 
 
-def _packets(reader, path):
+class _Counts:
+    """What reading one capture came to."""
+    __slots__ = ("packets", "skipped", "cut_off")
+
+    def __init__(self):
+        self.packets = self.skipped = 0
+        self.cut_off = False
+
+
+def _packets(reader, counts):
     """(timestamp, frame) for each packet. A capture cut off inside a record (tcpdump killed
     mid-write) ends at the last whole packet."""
     packets = iter(reader)
@@ -124,14 +136,14 @@ def _packets(reader, path):
         except StopIteration:
             return
         except (dpkt.Error, struct.error):
-            log.warning("%s: capture is cut off after its last whole packet", path)
+            counts.cut_off = True
             return
         yield float(ts), buf  # nanosecond captures come back as Decimal
 
 
 def _first_timestamp(path):
     with open(path, "rb") as fh:
-        for ts, _ in _packets(_open(fh, path), path):
+        for ts, _ in _packets(_open(fh, path), _Counts()):
             return ts
     return float("inf")
 
@@ -181,34 +193,40 @@ def record_dns(payload, ts, dns):
                 seen[ip] = [ts, ts]
 
 
-def _read_one(path, tracker, dns):
-    packets = skipped = 0
+REPORT_EVERY = 4096   # packets between progress reports
+
+
+def _decoded(path, dns, counts, report=None):
+    """The IP packets of one capture as (ts, IP version, IP protocol, src, dst, sport, dport,
+    IP-layer bytes, TCP flags), with the addresses as packed bytes. DNS answers over UDP go
+    into `dns` unless it is None. `report` is called with the bytes read since its last call."""
     with open(path, "rb") as fh:
         reader = _open(fh, path)
         decode = _DECODERS.get(reader.datalink())
         if decode is None:
             raise SourceError(f"{path}: unsupported link type {reader.datalink()}")
-        for ts, buf in _packets(reader, path):
-            packets += 1
+        offset = 0
+        for ts, buf in _packets(reader, counts):
+            counts.packets += 1
+            if report and not counts.packets % REPORT_EVERY:
+                report(fh.tell() - offset)
+                offset = fh.tell()
             try:
                 ip = decode(buf)
             except (dpkt.Error, IndexError, struct.error):
-                skipped += 1
+                counts.skipped += 1
                 continue
             if isinstance(ip, dpkt.ip.IP):
                 if ip.offset:
                     continue  # later fragments have no ports; only the first is counted
-                src, dst = socket.inet_ntop(socket.AF_INET, ip.src), socket.inet_ntop(socket.AF_INET, ip.dst)
-                nbytes = ip.len or len(ip)
+                version, nbytes = 4, ip.len or len(ip)
             elif isinstance(ip, dpkt.ip6.IP6):
                 frag = getattr(ip, "extension_hdrs", {}).get(dpkt.ip.IP_PROTO_FRAGMENT)
                 if frag is not None and frag.frag_off:
                     continue  # as above: a later fragment is payload only
-                src, dst = socket.inet_ntop(socket.AF_INET6, ip.src), socket.inet_ntop(socket.AF_INET6, ip.dst)
-                nbytes = ip.plen + 40
+                version, nbytes = 6, ip.plen + 40
             else:
                 continue  # ARP and other non-IP traffic
-            proto = proto_name(ip.p)
             t = ip.data
             if isinstance(t, dpkt.tcp.TCP):
                 sport, dport, flags = t.sport, t.dport, t.flags
@@ -216,24 +234,105 @@ def _read_one(path, tracker, dns):
                 sport, dport, flags = t.sport, t.dport, 0
                 if sport == 53 and dns is not None:
                     record_dns(t.data, ts, dns)
-            elif proto in ("tcp", "udp"):
+            elif ip.p in (dpkt.ip.IP_PROTO_TCP, dpkt.ip.IP_PROTO_UDP):
                 # Header cut short by the snap length: the ports are its first 4 bytes.
                 if len(t) < 4:
-                    skipped += 1
+                    counts.skipped += 1
                     continue
                 sport, dport = struct.unpack("!HH", t[:4])
-                flags = t[13] if proto == "tcp" and len(t) > 13 else 0
+                flags = t[13] if ip.p == dpkt.ip.IP_PROTO_TCP and len(t) > 13 else 0
             else:
                 sport = dport = flags = 0
-            tracker.add(ts, src, dst, proto, sport, dport, nbytes, flags, path)
-    log.info("%s: %d packets, %d undecodable", path, packets, skipped)
+            yield ts, version, ip.p, ip.src, ip.dst, sport, dport, nbytes, flags
+        if report:
+            report(fh.tell() - offset)
 
 
-def read_pcaps(paths, dns=None):
+class _Hosts:
+    """Packed addresses as text, each worked out once: the same hosts turn up again and again."""
+
+    def __init__(self):
+        self.text = {4: {}, 6: {}}
+
+    def __call__(self, version, packed):
+        known = self.text[version]
+        name = known.get(packed)
+        if name is None:
+            family, size = (socket.AF_INET, 4) if version == 4 else (socket.AF_INET6, 16)
+            name = known[packed] = socket.inet_ntop(family, packed[:size])
+        return name
+
+
+def _track(tracker, packets, path, hosts):
+    for ts, version, p, src, dst, sport, dport, nbytes, flags in packets:
+        tracker.add(ts, hosts(version, src), hosts(version, dst), proto_name(p), sport, dport,
+                    nbytes, flags, path)
+
+
+def _logged(path, counts):
+    if counts.cut_off:
+        log.warning("%s: capture is cut off after its last whole packet", path)
+    log.info("%s: %d packets, %d undecodable", path, counts.packets, counts.skipped)
+
+
+# A decoded packet as worker processes pass it back (see _decoded): addresses in 16 bytes,
+# an IPv4 address in the first 4.
+_PACKED = struct.Struct("<dBB16s16sHHIB")
+
+
+def _decode_file(path, want_dns):
+    """In a worker process: one capture's packets, packed, with its DNS answers and counts."""
+    dns = {} if want_dns else None
+    counts = _Counts()
+    packed = bytearray()
+    for packet in _decoded(path, dns, counts):
+        packed += _PACKED.pack(*packet)
+    return packed, dns, counts
+
+
+def _merge_dns(dns, more):
+    for name, seen in more.items():
+        known = dns.setdefault(name, {})
+        for ip, (first, last) in seen.items():
+            if ip in known:
+                known[ip][0] = min(known[ip][0], first)
+                known[ip][1] = max(known[ip][1], last)
+            else:
+                known[ip] = [first, last]
+
+
+def read_pcaps(paths, dns=None, workers=1, stage=None):
     """Flows from tcpdump captures. Files are read in capture order, so a connection that
     spans rotated files (tcpdump -C / -G) comes out as one flow. If `dns` is a dict, DNS
-    answers seen over UDP are added to it (see record_dns)."""
-    tracker = FlowTracker()
-    for path in sorted(paths, key=_first_timestamp):
-        _read_one(path, tracker, dns)
+    answers seen over UDP are added to it (see record_dns).
+
+    With several files and workers, that many worker processes decode files at once; the
+    connections are still followed packet by packet in capture order, so the flows are the
+    same. `stage` (see progress.py) is told the bytes read."""
+    stage = stage or (lambda amount=0, note=None: None)
+    tracker, hosts = FlowTracker(), _Hosts()
+    files = sorted(paths, key=_first_timestamp)
+    packets = 0
+    if workers <= 1 or len(files) <= 1:
+        for i, path in enumerate(files, 1):
+            counts = _Counts()
+            note = f"file {i} of {len(files)}"
+            _track(tracker, _decoded(path, dns, counts,
+                                     lambda n: stage(n, f"{note}, {packets + counts.packets:,} packets")),
+                   path, hosts)
+            packets += counts.packets
+            _logged(path, counts)
+        return tracker.finish()
+    decoded = in_order(_decode_file, files, workers, dns is not None)
+    for i, (path, (packed, file_dns, counts)) in enumerate(decoded, 1):
+        if dns is not None:
+            _merge_dns(dns, file_dns)
+        size, n = os.path.getsize(path), len(packed) // _PACKED.size
+        note = f"file {i} of {len(files)}, {packets + counts.packets:,} packets"
+        progress = (lambda k: stage(size * k / n, note)) if n else (lambda k: None)
+        _track(tracker, counted(_PACKED.iter_unpack(packed), progress, REPORT_EVERY), path, hosts)
+        if not n:
+            stage(size, note)
+        packets += counts.packets
+        _logged(path, counts)
     return tracker.finish()

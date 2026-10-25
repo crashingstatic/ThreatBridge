@@ -214,4 +214,4 @@ def test_resolver_settings_come_from_the_config(tmp_path, monkeypatch):
     cfg = Config(backend="demo", live_dns=False, dns_ttl=17, dns_timeout=0.25,
                  exclude_file=str(tmp_path / "ex.json"), compromised_file=str(tmp_path / "c.json"))
     create_app(cfg, DemoBackend(cfg))
-    assert made == {"live": False, "ttl": 17, "timeout": 0.25}
+    assert made == {"live": False, "ttl": 17, "timeout": 0.25, "answers": None}   # demo: no DNS records

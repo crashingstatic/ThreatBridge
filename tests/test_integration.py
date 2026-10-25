@@ -4,15 +4,18 @@ import json
 import multiprocessing
 import os
 import re
+import socket
 import subprocess
 import sys
 import time
+import urllib.request
 
 import pytest
 
 from evidence import ACK, SYN, have_nfdump, load, make_nfcapd, tcp, write_pcap
 from threatbridge import sources
-from threatbridge.backends import CaseBackend
+from threatbridge.app import create_app
+from threatbridge.backends import CaseBackend, DemoBackend
 from threatbridge.config import Config
 from threatbridge.excludes import ExcludeStore
 
@@ -104,6 +107,42 @@ def test_command_line():
     assert r.returncode == 2 and r.stderr.strip().endswith("error: /nonexistent/evidence: no such file or directory")
 
 
+def free_port():
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def test_serving_a_case_read_by_worker_processes(tmp_path):
+    # Several files: worker processes read them, and one server serves the case.
+    d = tmp_path / "case"
+    d.mkdir()
+    for i in range(3):
+        write_pcap(d / f"cap{i}.pcap", [(T + i, tcp("10.0.0.5", f"10.0.0.{9 + i}", 50000, 445, SYN)),
+                                        (T + i + 0.001, tcp(f"10.0.0.{9 + i}", "10.0.0.5", 445, 50000, SYN | ACK))])
+    port = free_port()
+    env = dict(os.environ, TB_READ_WORKERS="3", TB_LIVE_DNS="false",
+               TB_EXCLUDE_FILE=str(tmp_path / "ex.json"), TB_COMPROMISED_FILE=str(tmp_path / "c.json"))
+    proc = subprocess.Popen([sys.executable, "-m", "threatbridge", "--case", str(d), "--port", str(port)],
+                            cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    try:
+        deadline = time.monotonic() + 60
+        while True:
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/config", timeout=1) as r:
+                    case = json.load(r)["case"]
+                break
+            except OSError:
+                assert proc.poll() is None and time.monotonic() < deadline, "server did not start"
+                time.sleep(0.2)
+        assert (case["flows"], case["hosts"]) == (3, 4)
+    finally:
+        proc.terminate()
+        output = proc.communicate(timeout=30)[0]
+    assert "Reading 3 evidence file(s): done" in output
+    assert output.count("Running on") == 1, output
+
+
 # ---- shipped configuration ----------------------------------------------------------------
 
 def read(*parts):
@@ -158,3 +197,14 @@ def test_soc_actions_open_the_map_with_what_it_reads():
         [link] = a["links"]
         direction = "in" if "inbound" in a["name"] else "out"
         assert link == f"https://THREATBRIDGE_HOST:5443/?ip={{value}}&ts={{:soc_timestamp}}&dir={direction}"
+
+
+def test_every_endpoint_is_documented_and_every_documented_endpoint_exists(tmp_path):
+    cfg = Config(backend="demo", live_dns=False, exclude_file=str(tmp_path / "ex.json"),
+                 compromised_file=str(tmp_path / "c.json"))
+    app = create_app(cfg, DemoBackend(cfg))
+    served = {(m, r.rule) for r in app.url_map.iter_rules() for m in r.methods - {"HEAD", "OPTIONS"}
+              if not r.rule.startswith("/static/") and r.rule != "/"}   # the UI itself
+    documented = set(re.findall(r"^### `(GET|POST|DELETE) (/\S*)`$", read("docs", "API.md"), re.M))
+    assert served - documented == set(), "served but not in docs/API.md"
+    assert documented - served == set(), "in docs/API.md but not served"

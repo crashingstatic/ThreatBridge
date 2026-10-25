@@ -9,4 +9,5 @@ __pycache__
 *.db.lock
 exclude.json*
 compromised.json*
+sessions
 deploy/threatbridge.env

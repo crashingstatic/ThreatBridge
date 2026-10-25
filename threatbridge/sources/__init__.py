@@ -82,15 +82,17 @@ def manifest(found):
     return out
 
 
-def read(found, dns=None):
+def read(found, dns=None, workers=1, stage=None):
     """Flows from the files in `found`, sorted by start time.
 
     If `dns` is a dict, it is filled with the DNS answers seen in the pcaps:
-    {name: {ip: [first seen, last seen]}}. NetFlow carries no DNS content."""
+    {name: {ip: [first seen, last seen]}}. NetFlow carries no DNS content.
+    workers: how many files to read at once, in worker processes. `stage` (see progress.py)
+    is told the bytes read."""
     flows = []
     if found["pcap"]:
-        flows.extend(read_pcaps(found["pcap"], dns))
+        flows.extend(read_pcaps(found["pcap"], dns, workers, stage))
     if found["nfcapd"]:
-        flows.extend(read_nfcapd(found["nfcapd"]))
+        flows.extend(read_nfcapd(found["nfcapd"], workers, stage))
     flows.sort(key=lambda f: (f.start, f.src, f.dst, f.sport, f.dport))
     return flows

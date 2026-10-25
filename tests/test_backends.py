@@ -219,6 +219,37 @@ def test_flows_answer_without_hits():
     assert be.flows("10.0.0.1", "10.0.0.2", T0, T1, 0, 50) == {"total": 0, "flows": []}
 
 
+def test_elastic_flows_link_to_their_pcap():
+    be = ElasticBackend(Config(soc_url="https://so"))
+    be.session = RecordingES({"hits": {"total": {"value": 2}, "hits": [
+        {"_id": "P5mgnpEB0JpjNDZz1bIN", "fields": {"@timestamp": ["2024-05-01T12:00:00.123Z"]}},
+        {"fields": {"@timestamp": ["2024-05-01T12:00:01Z"]}}]}})
+    first, second = be.flows("10.0.0.1", "10.0.0.2", T0, T1, 0, 50)["flows"]
+    assert first["id"] == "P5mgnpEB0JpjNDZz1bIN"
+    assert first["soc_pcap"] == q.soc_pcap_url(be.cfg, "P5mgnpEB0JpjNDZz1bIN", "2024-05-01T12:00:00.123Z")
+    assert "id" not in second and "soc_pcap" not in second
+
+
+def test_elastic_dns_answers():
+    be = ElasticBackend(Config())
+    be.session = RecordingES({"aggregations": {"entries": {"buckets": {
+        "evil.test": {"doc_count": 3, "ips": {"buckets": [
+            {"key": "192.0.2.7", "doc_count": 2, "first": {"value": 1714564800000.0},
+             "last": {"value": 1714564860500.0}},
+            {"key": "2001:db8::7", "doc_count": 1, "first": {"value": None}, "last": {}}]}},
+        "*.cdn.test": {"doc_count": 0, "ips": {"buckets": []}}}}}})
+    assert be.dns_answers(["evil.test", "*.cdn.test", "gone.test"]) == {
+        "evil.test": {"192.0.2.7": [1714564800.0, 1714564860.5], "2001:db8::7": [None, None]},
+        "*.cdn.test": {}, "gone.test": {}}
+    [call] = be.session.calls
+    assert call["json"] == q.es_dns_body(be.cfg, ["evil.test", "*.cdn.test", "gone.test"])
+    be.session = RecordingES({})                                   # no aggregations at all
+    assert be.dns_answers(["x.test"]) == {"x.test": {}}
+    be.session = RecordingES(status=503)
+    with pytest.raises(BackendError, match="HTTP 503"):
+        be.dns_answers(["x.test"])
+
+
 # ---- Elasticsearch: connection and errors -------------------------------------------------
 
 def test_elastic_session_setup():
@@ -283,6 +314,8 @@ def test_demo_edges_match_their_flow_lists(direction):
         assert r["total"] == p["count"] == len(r["flows"])
         assert (r["flows"][0]["start"], r["flows"][-1]["start"]) == (p["first_seen"], p["last_seen"])
         assert all(p["first_seen"] <= f["start"] <= p["last_seen"] for f in r["flows"])
+        assert all(f["soc_pcap"] == q.soc_pcap_url(be.cfg, f["id"], f["start"]) for f in r["flows"])
+        assert len({f["id"] for f in r["flows"]}) == len(r["flows"])
 
 
 def test_make_backend():

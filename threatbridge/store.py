@@ -9,6 +9,7 @@ import sqlite3
 import threading
 
 from .model import Flow
+from .progress import QUIET, counted
 
 VERSION = "2"
 _SCHEMA = """
@@ -64,9 +65,10 @@ class FlowStore:
 
     # ---- building ---------------------------------------------------------------------
 
-    def write(self, flows, dns, evidence):
+    def write(self, flows, dns, evidence, progress=None):
         """Replace the contents with `flows`, the passive DNS map and the evidence manifest
-        [(path, size, mtime_ns)]."""
+        [(path, size, mtime_ns)]. `progress` (see progress.py) shows how far it has got."""
+        progress = progress or QUIET
         db = self._db()
         try:
             tables = {name for (name,) in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -79,15 +81,16 @@ class FlowStore:
         db.execute("PRAGMA journal_mode=OFF")  # a cache: if a build is interrupted, rebuild
         db.execute("PRAGMA synchronous=OFF")
         db.executescript(_DROP + _SCHEMA)
-        with db:
+        with db, progress.stage("Saving the flows", len(flows)) as stage:
             db.executemany("INSERT INTO flow VALUES (?,?,?,?,?,?,?,?,?,?)",
                            ((f.src, f.dst, f.sport, f.dport, f.proto, f.start, f.end, f.packets,
-                             f.bytes, f.source) for f in flows))
+                             f.bytes, f.source) for f in counted(flows, stage)))
             db.executemany("INSERT INTO dns VALUES (?,?,?,?)",
                            ((name, ip, t[0], t[1]) for name, seen in dns.items()
                             for ip, t in seen.items()))
             db.executemany("INSERT INTO evidence VALUES (?,?,?)", evidence)
-        db.executescript(_INDEXES)
+        with progress.stage("Indexing the flows"):
+            db.executescript(_INDEXES)
         with db:   # last: a build that stopped before here is never reused
             db.execute("INSERT INTO meta VALUES ('version', ?)", (VERSION,))
 

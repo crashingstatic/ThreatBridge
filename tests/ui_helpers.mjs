@@ -31,13 +31,23 @@ export async function launch({ context = {}, expected = null } = {}) {
   return { browser, ctx, page, errors, at };
 }
 
+async function saveCoverage(page, name) {
+  const entries = await page.coverage.stopJSCoverage();
+  mkdirSync(COVERAGE_DIR, { recursive: true });
+  writeFileSync(`${COVERAGE_DIR}/${name}.json`,
+                JSON.stringify(entries.filter((e) => e.url.endsWith("/static/app.js"))));
+}
+
+// Before loading the page again: coverage of the page loaded so far is lost on navigation,
+// so save it under `name` and start afresh.
+export async function checkpoint(page, name) {
+  if (!COVERAGE_DIR) return;
+  await saveCoverage(page, name);
+  await page.coverage.startJSCoverage({ resetOnNavigation: false });
+}
+
 // Save what the page ran of app.js (when JS_COVERAGE is set) and close the browser.
 export async function finish(browser, page, name) {
-  if (COVERAGE_DIR) {
-    const entries = await page.coverage.stopJSCoverage();
-    mkdirSync(COVERAGE_DIR, { recursive: true });
-    writeFileSync(`${COVERAGE_DIR}/${name}.json`,
-                  JSON.stringify(entries.filter((e) => e.url.endsWith("/static/app.js"))));
-  }
+  if (COVERAGE_DIR) await saveCoverage(page, name);
   await browser.close();
 }

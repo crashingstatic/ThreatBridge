@@ -16,6 +16,7 @@ exclude.json
 exclude.json.lock
 compromised.json
 compromised.json.lock
+sessions/
 *.db
 *.db.lock
 

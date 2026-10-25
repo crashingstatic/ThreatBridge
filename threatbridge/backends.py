@@ -5,7 +5,11 @@ where each peer is {"peer", "count", "first_seen", "last_seen", "ports"}.
 
 flows() returns {"total": int, "flows": [...]}: one page of a connection's flows, oldest
 first, each {"start", "duration", "sport", "dport", "proto", "packets", "bytes"} (duration in
-seconds; any but start may be None).
+seconds; any but start may be None). Flows from Security Onion also have "id" (the connection
+log's Elasticsearch ID) and "soc_pcap" (SOC's link to the flow's packets).
+
+dns_answers([entry, ...]) (Security Onion) returns {entry: {ip: [first seen, last seen]}}:
+what each domain entry resolved to in the sensors' DNS records.
 
 Times are ISO-8601 UTC strings.
 """
@@ -25,8 +29,9 @@ import requests
 
 from . import analysis, sources
 from .graph import build_graph, count_between
-from .query import (ValidationError, es_details_body, es_flows_body, es_scan_body, es_top_body,
-                    fmt_time, parse_time)
+from .progress import Progress, counted
+from .query import (ValidationError, es_details_body, es_dns_body, es_flows_body, es_scan_body,
+                    es_top_body, fmt_time, parse_time, soc_pcap_url)
 from .store import FlowStore, NotAStore
 
 log = logging.getLogger(__name__)
@@ -154,9 +159,20 @@ class ElasticBackend:
             start = datetime.fromtimestamp(hit["sort"][0] / 1000.0, timezone.utc)
         else:
             return None
-        return {"start": fmt_time(start), "duration": number(cfg.f_duration),
+        flow = {"start": fmt_time(start), "duration": number(cfg.f_duration),
                 "sport": one(cfg.f_sport), "dport": one(cfg.f_dport), "proto": one(cfg.f_proto),
                 "packets": total(cfg.f_packets), "bytes": total(cfg.f_bytes)}
+        if hit.get("_id"):
+            flow.update(id=hit["_id"], soc_pcap=soc_pcap_url(cfg, hit["_id"], flow["start"]))
+        return flow
+
+    def dns_answers(self, entries):
+        buckets = self._search(es_dns_body(self.cfg, entries)).get("entries", {}).get("buckets", {})
+        out = {}
+        for entry in entries:
+            out[entry] = {b["key"]: [_seconds(b.get("first")), _seconds(b.get("last"))]
+                          for b in buckets.get(entry, {}).get("ips", {}).get("buckets", [])}
+        return out
 
 
 class DemoBackend:
@@ -213,11 +229,20 @@ class DemoBackend:
         rows = [{"start": fmt_time(t), "duration": round(rng.expovariate(0.2), 3),
                  "sport": rng.randint(1024, 65535), "dport": rng.choice(self.PORTS), "proto": "tcp",
                  "packets": rng.randint(2, 400), "bytes": rng.randint(120, 500000)} for t in starts]
+        for i, row in enumerate(rows):   # links as Security Onion's flows have them
+            row["id"] = f"demo{hashlib.sha256(f'{src}>{dst}>{i}'.encode()).hexdigest()[:16]}"
+            row["soc_pcap"] = soc_pcap_url(self.cfg, row["id"], row["start"])
         return {"total": count, "flows": rows[offset:offset + limit]}
 
 
 def _utc(epoch):
     return datetime.fromtimestamp(epoch, timezone.utc)
+
+
+def _seconds(agg):
+    """An Elasticsearch min/max of a date field (epoch milliseconds) in epoch seconds."""
+    value = (agg or {}).get("value")
+    return value / 1000.0 if value is not None else None
 
 
 class CaseBackend:
@@ -228,13 +253,14 @@ class CaseBackend:
     the evidence files are unchanged; otherwise it lives in a temporary directory.
     """
 
-    def __init__(self, cfg, flows=None, dns=None):
+    def __init__(self, cfg, flows=None, dns=None, progress=None):
         self._tmp = None
         path = cfg.case_db
         if not path:
             self._tmp = tempfile.TemporaryDirectory(prefix="threatbridge-")
             path = os.path.join(self._tmp.name, "case.db")
         self.store = FlowStore(path)
+        self.progress = progress or Progress()
         t = time.monotonic()
         with _build_lock(cfg.case_db):
             if flows is not None:   # given directly (tests, scripts)
@@ -242,14 +268,14 @@ class CaseBackend:
                 self._write(flows, [])
                 self.graph = build_graph((f.src, f.dst, f.start) for f in flows)
             else:
-                self._load(cfg.case_paths)
+                self._load(cfg.case_paths, cfg.read_workers or os.cpu_count() or 1)
         self.flow_count, first, last = self.store.stats()
         self.span = (_utc(first), _utc(last)) if self.flow_count else None
         log.info("case ready: %d flows, %d hosts, %d host pairs, %d names in DNS answers, in %.1fs",
                  self.flow_count, self.graph.number_of_nodes(), self.graph.number_of_edges(),
                  len(self.dns), time.monotonic() - t)
 
-    def _load(self, paths):
+    def _load(self, paths, workers):
         found = sources.find(paths)
         evidence = sources.manifest(found)
         if self.store.matches(evidence):
@@ -257,14 +283,18 @@ class CaseBackend:
             self.dns = self.store.dns()
         else:
             self.dns = {}
-            flows = sources.read(found, self.dns)
+            total = sum(size for _, size, _ in evidence)
+            with self.progress.stage(f"Reading {len(evidence)} evidence file(s)", total) as stage:
+                flows = sources.read(found, self.dns, workers, stage)
             self._write(flows, evidence)
             del flows
-        self.graph = build_graph(self.store.pairs())
+        n = self.store.stats()[0]
+        with self.progress.stage("Building the graph", n) as stage:
+            self.graph = build_graph(counted(self.store.pairs(), stage))
 
     def _write(self, flows, evidence):
         try:
-            self.store.write(flows, self.dns, evidence)
+            self.store.write(flows, self.dns, evidence, self.progress)
         except NotAStore as e:
             raise sources.SourceError(str(e))
         except sqlite3.Error as e:

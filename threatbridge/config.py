@@ -25,6 +25,7 @@ def _env_list(name, default):
 
 
 DATASETS = ("conn", "zeek.conn")
+DNS_DATASETS = ("dns", "zeek.dns")
 PACKETS_FIELDS = ("client.packets", "server.packets")
 BYTES_FIELDS = ("client.ip_bytes", "server.ip_bytes")
 
@@ -37,6 +38,8 @@ class Config:
     case_paths: list = field(default_factory=list)
     # SQLite file for the case's flows, reused while the evidence is unchanged. None: temporary.
     case_db: str = None
+    # Evidence files read at once, in worker processes. 0: one per CPU.
+    read_workers: int = 0
 
     # Elasticsearch (Security Onion 2.4 stores Zeek conn logs here)
     es_url: str = "https://localhost:9200"
@@ -62,6 +65,11 @@ class Config:
     f_duration: str = "event.duration"
     f_packets: list = field(default_factory=lambda: list(PACKETS_FIELDS))
     f_bytes: list = field(default_factory=lambda: list(BYTES_FIELDS))
+    # Zeek DNS records: what domain names on the exclude list resolved to, as the sensors saw it.
+    # Empty dataset list disables the filter.
+    dns_datasets: list = field(default_factory=lambda: list(DNS_DATASETS))
+    f_dns_query: str = "dns.query.name"
+    f_dns_ip: str = "dns.resolved_ip"
 
     # SOC pivot. {query} is replaced with the URL-encoded OQL query.
     soc_url: str = "https://securityonion"
@@ -69,6 +77,13 @@ class Config:
     # Append "AND @timestamp:[<from> TO <to>]" to pivots: up to the IOC time, within the
     # analyst's time range.
     pivot_time_clause: bool = True
+    # SOC Connect API client (Security Onion Pro, 2.4.120+), for ThreatBridge to fetch a flow's
+    # PCAP from the sensor itself. Unset: flows link to SOC's PCAP job instead. soc_ca: the CA
+    # of SOC's certificate (default: es_ca). pcap_timeout: seconds to wait for the sensor.
+    soc_client_id: str = None
+    soc_client_secret: str = None
+    soc_ca: str = None
+    pcap_timeout: int = 90
 
     default_window: str = "24h"
     max_window: str = "30d"
@@ -82,6 +97,8 @@ class Config:
     exclude_file: str = "exclude.json"
     # Hosts marked as compromised, editable in the UI.
     compromised_file: str = "compromised.json"
+    # Saved maps, one JSON file each, shared by all analysts.
+    sessions_dir: str = "sessions"
     # Domain names on the exclude list are also looked up live (system resolver), cached for
     # dns_ttl seconds. Answers seen in the capture are always used.
     live_dns: bool = True
@@ -100,6 +117,7 @@ class Config:
             backend=_env("TB_BACKEND", cls.backend),
             case_paths=[p for p in (_env("TB_CASE_PATHS") or "").split(os.pathsep) if p],
             case_db=_env("TB_CASE_DB"),
+            read_workers=int(_env("TB_READ_WORKERS", cls.read_workers)),
             es_url=_env("TB_ES_URL", cls.es_url),
             es_user=_env("TB_ES_USER"),
             es_pass=_env("TB_ES_PASS"),
@@ -118,9 +136,16 @@ class Config:
             f_duration=_env("TB_FIELD_DURATION", cls.f_duration),
             f_packets=_env_list("TB_FIELD_PACKETS", PACKETS_FIELDS),
             f_bytes=_env_list("TB_FIELD_BYTES", BYTES_FIELDS),
+            dns_datasets=_env_list("TB_DNS_DATASETS", DNS_DATASETS),
+            f_dns_query=_env("TB_FIELD_DNS_QUERY", cls.f_dns_query),
+            f_dns_ip=_env("TB_FIELD_DNS_IP", cls.f_dns_ip),
             soc_url=_env("TB_SOC_URL", cls.soc_url).rstrip("/"),
             soc_path=_env("TB_SOC_PATH", cls.soc_path),
             pivot_time_clause=_env_bool("TB_PIVOT_TIME_CLAUSE", cls.pivot_time_clause),
+            soc_client_id=_env("TB_SOC_CLIENT_ID"),
+            soc_client_secret=_env("TB_SOC_CLIENT_SECRET"),
+            soc_ca=_env("TB_SOC_CA"),
+            pcap_timeout=int(_env("TB_PCAP_TIMEOUT", cls.pcap_timeout)),
             default_window=_env("TB_WINDOW", cls.default_window),
             max_window=_env("TB_MAX_WINDOW", cls.max_window),
             default_limit=int(_env("TB_LIMIT", cls.default_limit)),
@@ -128,6 +153,7 @@ class Config:
             rare_scan_cap=int(_env("TB_RARE_SCAN_CAP", cls.rare_scan_cap)),
             exclude_file=_env("TB_EXCLUDE_FILE", cls.exclude_file),
             compromised_file=_env("TB_COMPROMISED_FILE", cls.compromised_file),
+            sessions_dir=_env("TB_SESSIONS_DIR", cls.sessions_dir),
             live_dns=_env_bool("TB_LIVE_DNS", cls.live_dns),
             dns_ttl=int(_env("TB_DNS_TTL", cls.dns_ttl)),
             dns_timeout=float(_env("TB_DNS_TIMEOUT", cls.dns_timeout)),

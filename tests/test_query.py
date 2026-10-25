@@ -153,6 +153,34 @@ def test_es_flows_body():
     assert {"source.port", "event.duration", "client.packets", "server.ip_bytes"} <= set(body["fields"][1:])
 
 
+def test_es_dns_body_asks_about_every_entry_at_once():
+    body = q.es_dns_body(Config(), ["evil.test", "*.cdn.test"])
+    assert body["query"] == {"bool": {"filter": [{"exists": {"field": "dns.resolved_ip"}},
+                                                 {"terms": {"event.dataset": ["dns", "zeek.dns"]}}]}}
+    assert body["size"] == 0 and body["track_total_hits"] is False
+    entries = body["aggs"]["entries"]
+    assert entries["filters"]["filters"] == {
+        "evil.test": {"term": {"dns.query.name": {"value": "evil.test", "case_insensitive": True}}},
+        "*.cdn.test": {"wildcard": {"dns.query.name": {"value": "*.cdn.test", "case_insensitive": True}}}}
+    assert entries["aggs"] == {"ips": {"terms": {"field": "dns.resolved_ip", "size": q.DNS_ADDRESSES},
+                                       "aggs": {"first": {"min": {"field": "@timestamp"}},
+                                                "last": {"max": {"field": "@timestamp"}}}}}
+    cfg = Config(dns_datasets=[], f_dns_query="q", f_dns_ip="ip")
+    body = q.es_dns_body(cfg, ["x.test"])
+    assert body["query"]["bool"]["filter"] == [{"exists": {"field": "ip"}}]
+    assert body["aggs"]["entries"]["filters"]["filters"]["x.test"] == {"term": {"q": {"value": "x.test", "case_insensitive": True}}}
+
+
+def test_pcap_links_and_document_ids():
+    cfg = Config(soc_url="https://so")
+    assert q.soc_pcap_url(cfg, "P5mgnpEB0JpjNDZz1bIN", "2024-05-01T12:00:00.123Z") == \
+        "https://so/joblookup?esid=P5mgnpEB0JpjNDZz1bIN&time=2024-05-01T12%3A00%3A00.123Z"
+    assert q.parse_es_id("abc_-09XYZ") == "abc_-09XYZ" and q.parse_es_id("a" * 512) == "a" * 512
+    for bad in ("", "a b", "x&time=1", "../x", "a" * 513, 5, None):
+        with pytest.raises(q.ValidationError, match="invalid document ID"):
+            q.parse_es_id(bad)
+
+
 # ---- SOC pivots ---------------------------------------------------------------------------
 
 def test_pivot_query_both_directions_up_to_ioc():

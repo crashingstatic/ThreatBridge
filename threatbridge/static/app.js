@@ -65,6 +65,8 @@
     statusEl.classList.toggle("warn", !!isWarn && !isError);
   }
 
+  function fail(err) { setStatus(err.message, !err.cancelled); }
+
   // The analyst's time range (toolbar): sent with every query, which it limits. Blank = open.
   function withRange(params) {
     const lo = $("range-from").value.trim(), hi = $("range-to").value.trim();
@@ -73,12 +75,53 @@
     return params;
   }
 
-  async function getJSON(url, opts) {
-    const r = await fetch(url, Object.assign({ credentials: "same-origin" }, opts || {}));
-    let body = null;
-    try { body = await r.json(); } catch (_) { /* non-JSON error */ }
-    if (!r.ok) throw new Error((body && body.error) || `HTTP ${r.status}`);
-    return body;
+  // ---- requests: one still running after a second shows its time and can be cancelled ---
+  const inFlight = new Set();   // AbortControllers
+  let busySince = 0, busyTimer = null;
+
+  function showBusy() {
+    const secs = Math.floor((Date.now() - busySince) / 1000);
+    $("busy").hidden = !inFlight.size || secs < 1;
+    $("busy-text").textContent = `Working… ${secs} s`;
+    if (!inFlight.size) { clearInterval(busyTimer); busyTimer = null; }
+  }
+
+  // The response read as `read` ("json" or "blob"); an error answer becomes an Error with
+  // the server's message and the HTTP status.
+  async function request(url, opts, read) {
+    const controller = new AbortController();
+    if (!inFlight.size) { busySince = Date.now(); busyTimer = setInterval(showBusy, 250); }
+    inFlight.add(controller);
+    try {
+      const r = await fetch(url, Object.assign({ credentials: "same-origin", signal: controller.signal }, opts || {}));
+      if (!r.ok) {
+        let body = null;
+        try { body = await r.json(); } catch (_) { /* not JSON */ }
+        throw Object.assign(new Error((body && body.error) || `HTTP ${r.status}`), { status: r.status });
+      }
+      return await r[read]();
+    } catch (err) {
+      if (err.name === "AbortError") throw Object.assign(new Error("Cancelled"), { cancelled: true });
+      throw err;
+    } finally {
+      inFlight.delete(controller);
+      showBusy();
+    }
+  }
+
+  const getJSON = (url, opts) => request(url, opts, "json");
+
+  $("cancel").addEventListener("click", () => { for (const c of inFlight) c.abort(); });
+
+  // Offer `blob` to the analyst as a file called `name`.
+  function saveFile(blob, name) {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
   }
 
   // Tree by hop distance from the IOC host (top row), each host's peers placed under it.
@@ -169,11 +212,16 @@
     const ts = $("ts").value.trim();
     try {
       const res = await expandRoot(ip, ts, $("direction").value);
-      const q = withRange(new URLSearchParams({ ip: res.ip, ts: iocTime, dir: $("direction").value,
-                                                window: $("window").value.trim(), order: $("order").value }));
-      history.replaceState(null, "", `?${q}`);
+      rememberInUrl(res.ip);
       await refreshPaths(true);
-    } catch (err) { setStatus(err.message, true); }
+    } catch (err) { fail(err); }
+  }
+
+  // The map's root and settings in the page's URL, so a reload or a shared link reopens it.
+  function rememberInUrl(ip) {
+    const q = withRange(new URLSearchParams({ ip, ts: iocTime || "", dir: $("direction").value,
+                                              window: $("window").value.trim(), order: $("order").value }));
+    history.replaceState(null, "", `?${q}`);
   }
 
   async function expandRoot(ip, ts, direction) {
@@ -227,7 +275,7 @@
     ]);
     flowsFor = { src: e.data("source"), dst: e.data("target"),
                  from: e.data("first_seen"), to: e.data("last_seen") };
-    loadFlows(flowsFor, 0).catch((err) => setStatus(err.message, true));
+    loadFlows(flowsFor, 0).catch((err) => fail(err));
   }
 
   // ---- a connection's flows, oldest first, a page at a time -----------------
@@ -262,7 +310,7 @@
     const button = (label, offset, enabled) => {
       const b = document.createElement("button");
       b.type = "button"; b.textContent = label; b.disabled = !enabled;
-      b.addEventListener("click", () => loadFlows(conn, offset).catch((e) => setStatus(e.message, true)));
+      b.addEventListener("click", () => loadFlows(conn, offset).catch((e) => fail(e)));
       return b;
     };
     const last = Math.max(0, Math.floor((r.total - 1) / FLOW_PAGE) * FLOW_PAGE);
@@ -283,9 +331,38 @@
       li.textContent = f.start;
       small.textContent = flowMeta(f);
       li.append(small);
+      const actions = pcapActions(conn, f);
+      if (actions) li.append(actions);
       list.append(li);
     }
     section.replaceChildren(title, pager, list);
+  }
+
+  // A Security Onion flow's packets: SOC's own PCAP job, or downloaded through ThreatBridge.
+  function pcapActions(conn, f) {
+    if (!f.id || cfg.soc_pivots === false) return null;
+    const span = document.createElement("span");
+    span.className = "actions";
+    if (f.soc_pcap) {
+      const a = document.createElement("a");
+      a.href = f.soc_pcap; a.target = "_blank"; a.rel = "noopener noreferrer"; a.textContent = "PCAP in SOC";
+      span.append(a);
+    }
+    if (cfg.pcap_download) {
+      const b = document.createElement("button");
+      b.type = "button"; b.textContent = "Download PCAP";
+      b.addEventListener("click", () => downloadPcap(conn, f).catch(fail));
+      span.append(b);
+    }
+    return span;
+  }
+
+  async function downloadPcap(conn, f) {
+    setStatus(`Asking the sensor for the packets of ${conn.src} → ${conn.dst} at ${f.start}…`);
+    const blob = await request("/api/pcap", { method: "POST", headers: WRITE_HEADERS,
+                                              body: JSON.stringify({ id: f.id, time: f.start }) }, "blob");
+    saveFile(blob, `${conn.src}_${conn.dst}_${f.start}.pcap`.replace(/[:]/g, "-"));
+    setStatus(`PCAP of ${conn.src} → ${conn.dst} at ${f.start}: ${blob.size.toLocaleString("en-US")} B`);
   }
 
   // ---- context menu ---------------------------------------------------------
@@ -299,7 +376,7 @@
       else if (it.title) { li.className = "title"; li.textContent = it.title; }
       else {
         li.textContent = it.label;
-        li.addEventListener("click", () => { hideMenu(); Promise.resolve(it.action()).catch((e) => setStatus(e.message, true)); });
+        li.addEventListener("click", () => { hideMenu(); Promise.resolve(it.action()).catch((e) => fail(e)); });
       }
       menu.append(li);
     }
@@ -376,11 +453,11 @@
 
   cy.on("tap", "node", (evt) => {
     nodeDetails(evt.target);
-    expand(evt.target.id(), $("direction").value).catch((e) => setStatus(e.message, true));
+    expand(evt.target.id(), $("direction").value).catch((e) => fail(e));
   });
   cy.on("tap", "edge", (evt) => {
     edgeDetails(evt.target);
-    if (cfg.analysis) showThreatLine(evt.target).catch((e) => setStatus(e.message, true));
+    if (cfg.analysis) showThreatLine(evt.target).catch((e) => fail(e));
   });
   cy.on("tap", (evt) => { if (evt.target === cy) { hideMenu(); clearHighlight(); } });
   cy.on("cxttap", (evt) => { if (evt.target === cy) hideMenu(); });
@@ -422,7 +499,7 @@
         span.append(small);
       }
       const btn = document.createElement("button"); btn.type = "button"; btn.textContent = "Remove";
-      btn.addEventListener("click", () => removeExclude(entry).catch((e) => setStatus(e.message, true)));
+      btn.addEventListener("click", () => removeExclude(entry).catch((e) => fail(e)));
       li.append(span, btn);
       ul.append(li);
     }
@@ -458,7 +535,7 @@
     const v = $("exclude-input").value.trim();
     if (!v) return;
     addExclude(v).then(() => { $("exclude-input").value = ""; })
-      .catch((err) => setStatus(err.message, true));
+      .catch((err) => fail(err));
   });
 
   // ---- threat line through a clicked edge (PCAP/NetFlow cases) --------------
@@ -511,7 +588,7 @@
       const span = document.createElement("span");
       span.textContent = `${h.ip} @ ${h.time || "time unknown"}`;
       const btn = document.createElement("button"); btn.type = "button"; btn.textContent = "Remove";
-      btn.addEventListener("click", () => unmarkCompromised(h.ip).catch((e) => setStatus(e.message, true)));
+      btn.addEventListener("click", () => unmarkCompromised(h.ip).catch((e) => fail(e)));
       li.append(span, btn);
       ul.append(li);
     }
@@ -541,7 +618,7 @@
     if (!ip) return;
     markCompromised(ip, $("compromised-time").value.trim())
       .then(() => { $("compromised-ip").value = ""; $("compromised-time").value = ""; })
-      .catch((err) => setStatus(err.message, true));
+      .catch((err) => fail(err));
   });
 
   function pathElements(p) {
@@ -619,7 +696,7 @@
         const btn = document.createElement("button");
         btn.type = "button"; btn.textContent = "Show all";
         btn.addEventListener("click", () => findRoutesBetween(pair.from, pair.to)
-          .catch((e) => setStatus(e.message, true)));
+          .catch((e) => fail(e)));
         head.append(btn);
       }
       ul.append(head, ...pair.paths.map((p) => pathItem(p, "Attack path")));
@@ -687,7 +764,157 @@
 
   $("route-form").addEventListener("submit", (e) => {
     e.preventDefault();
-    findRoutes().catch((err) => setStatus(err.message, true));
+    findRoutes().catch((err) => fail(err));
+  });
+
+  // ---- saved maps: shared on the server, or as a file -----------------------
+  // A map document (version 1) keeps the hosts and their positions, the connections, the
+  // highlights, the view and the toolbar. Opening one takes only the fields below from it.
+  const MAP_VERSION = 1;
+  const NODE_FIELDS = ["anchor", "root", "depth", "expandedIn", "expandedOut"];
+  const EDGE_FIELDS = ["first_seen", "last_seen"];
+  const HIGHLIGHTS = ["up", "down", "line-selected", "faded", "attack", "route"];
+  const SETTINGS = ["ip", "ts", "direction", "window", "range-from", "range-to", "order", "limit",
+                    "route-src", "route-src-time", "route-dst", "route-dst-time"];
+
+  function pick(from, fields) {
+    const out = {};
+    for (const k of fields) {
+      const v = from[k];
+      if (typeof v === "string" || typeof v === "boolean" || Number.isFinite(v)) out[k] = v;
+    }
+    return out;
+  }
+
+  function mapDocument() {
+    return {
+      version: MAP_VERSION, iocTime,
+      settings: Object.fromEntries(SETTINGS.map((id) => [id, $(id).value])),
+      nodes: cy.nodes().map((n) => Object.assign({ id: n.id(), position: n.position(), classes: n.classes() },
+                                                 pick(n.data(), NODE_FIELDS))),
+      edges: cy.edges().map((e) => Object.assign({ source: e.data("source"), target: e.data("target"),
+                                                   direction: e.data("direction"), count: e.data("count"),
+                                                   ports: e.data("ports"), classes: e.classes() },
+                                                 pick(e.data(), EDGE_FIELDS))),
+      view: { zoom: cy.zoom(), pan: cy.pan() },
+    };
+  }
+
+  function highlight(el, classes) {
+    if (Array.isArray(classes)) el.addClass(classes.filter((c) => HIGHLIGHTS.includes(c)).join(" "));
+  }
+
+  async function openMap(doc, what) {
+    if (!doc || doc.version !== MAP_VERSION || !Array.isArray(doc.nodes) || !Array.isArray(doc.edges)) {
+      throw new Error(`${what} is not a ThreatBridge map`);
+    }
+    cy.elements().remove();
+    const settings = doc.settings || {};
+    for (const id of SETTINGS) if (typeof settings[id] === "string") $(id).value = settings[id];
+    iocTime = typeof doc.iocTime === "string" ? doc.iocTime : null;
+    cy.batch(() => {
+      for (const n of doc.nodes) {
+        if (typeof n.id !== "string" || !n.id || cy.getElementById(n.id).nonempty()) continue;
+        const data = pick(n, NODE_FIELDS);
+        const p = n.position || {};
+        const node = addNode(n.id, data.anchor || null, data);
+        node.position(Number.isFinite(p.x) && Number.isFinite(p.y) ? { x: p.x, y: p.y } : { x: 0, y: 0 });
+        highlight(node, n.classes);
+      }
+      for (const e of doc.edges) {
+        if (typeof e.source !== "string" || typeof e.target !== "string") continue;
+        if (cy.getElementById(e.source).empty() || cy.getElementById(e.target).empty()) continue;
+        const ports = Array.isArray(e.ports) ? e.ports.filter(Number.isInteger) : [];
+        const t = pick(e, EDGE_FIELDS);
+        const edge = mergeEdge(e.source, e.target, e.direction === "in" ? "in" : "out",
+                               Number.isFinite(e.count) ? e.count : 0, ports, t.first_seen, t.last_seen);
+        highlight(edge, e.classes);
+      }
+    });
+    const view = doc.view || {};
+    if (Number.isFinite(view.zoom) && view.pan && Number.isFinite(view.pan.x) && Number.isFinite(view.pan.y)) {
+      cy.viewport({ zoom: view.zoom, pan: { x: view.pan.x, y: view.pan.y } });
+    } else {
+      cy.fit(undefined, 40);
+    }
+    const root = cy.nodes("[?root]");
+    if (root.nonempty()) rememberInUrl(root.id());
+    await refreshPaths(true);
+    setStatus(`Opened ${what}: ${cy.nodes().length} host(s), ${cy.edges().length} connection(s)`);
+  }
+
+  function renderSessions(list) {
+    const ul = $("session-list");
+    ul.replaceChildren();
+    for (const saved of list) {
+      const li = document.createElement("li");
+      const span = document.createElement("span");
+      span.className = "session";
+      span.textContent = saved.name;
+      const small = document.createElement("small");
+      small.className = "resolved";
+      small.textContent = `saved ${saved.saved}`;
+      span.append(small);
+      span.addEventListener("click", () => openSession(saved.name).catch(fail));
+      const del = document.createElement("button");
+      del.type = "button"; del.textContent = "Delete";
+      del.addEventListener("click", () => deleteSession(saved.name).catch(fail));
+      li.append(span, del);
+      ul.append(li);
+    }
+    if (!list.length) ul.append(hintItem("No saved maps yet."));
+  }
+
+  async function saveSession(name, overwrite) {
+    const body = JSON.stringify({ name, map: mapDocument(), overwrite: !!overwrite });
+    try {
+      const r = await getJSON("/api/sessions", { method: "POST", headers: WRITE_HEADERS, body });
+      renderSessions(r.sessions);
+      setStatus(`${overwrite ? "Replaced" : "Saved"} the map "${r.name}" for everyone`);
+    } catch (err) {
+      if (err.status === 409 && !overwrite && confirm(`Replace the saved map "${name}"?`)) {
+        return saveSession(name, true);
+      }
+      throw err;
+    }
+    return null;
+  }
+
+  async function openSession(name) {
+    const r = await getJSON(`/api/sessions?${new URLSearchParams({ name })}`);
+    $("session-name").value = r.name;
+    await openMap(r.map, `"${r.name}" (saved ${r.saved})`);
+  }
+
+  async function deleteSession(name) {
+    if (!confirm(`Delete the saved map "${name}" for everyone?`)) return;
+    const r = await getJSON("/api/sessions", { method: "DELETE", headers: WRITE_HEADERS,
+                                               body: JSON.stringify({ name }) });
+    renderSessions(r.sessions);
+    setStatus(`Deleted the saved map "${name}"`);
+  }
+
+  $("session-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const name = $("session-name").value.trim();
+    if (!name) { setStatus("Enter a name for the map", true); return; }
+    saveSession(name).catch(fail);
+  });
+
+  $("session-download").addEventListener("click", () => {
+    const name = $("session-name").value.trim() || cy.nodes("[?root]").map((n) => n.id())[0] || "map";
+    saveFile(new Blob([JSON.stringify(mapDocument(), null, 1)], { type: "application/json" }),
+             `threatbridge-${name}.json`.replace(/[^\w.-]+/g, "_"));
+    setStatus("Saved the map to a file");
+  });
+
+  $("session-file").addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    let doc = null;
+    try { doc = JSON.parse(await file.text()); } catch (_) { /* reported below */ }
+    openMap(doc, file.name).catch(fail);
   });
 
   // ---- bootstrap from URL (Security Onion action link) ----------------------
@@ -708,6 +935,7 @@
     $("paths").hidden = !cfg.analysis;
     $("routes").hidden = !cfg.analysis;
     try { renderCompromised((await getJSON("/api/compromised")).hosts); } catch (_) { /* none */ }
+    getJSON("/api/sessions").then((r) => renderSessions(r.sessions)).catch(() => {});
     const q = new URLSearchParams(location.search);
     if (q.get("ip")) $("ip").value = q.get("ip");
     if (q.get("ts")) $("ts").value = q.get("ts");
@@ -719,6 +947,6 @@
     const order = q.get("order");
     if (order === "top" || order === "bottom") $("order").value = order;
     if (q.get("ip")) start();
-    else refreshPaths(true).catch((e) => setStatus(e.message, true));
+    else refreshPaths(true).catch((e) => fail(e));
   })();
 })();

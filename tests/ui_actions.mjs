@@ -1,16 +1,18 @@
 // Headless browser test of the map's actions in post-mortem mode, beyond ui_case.mjs:
 // opening without parameters, errors, left-click expansion, the host menu, the compromised
-// form, "Show all" paths, paging a connection's flows, the time range from the URL, Fit, Clear.
+// form, "Show all" paths, paging a connection's flows, the time range from the URL, a slow
+// request cancelled, saved maps (shared and as a file), Fit, Clear.
 //   python tests/make_case.py DIR
 //   TB_MAX_PATHS=11 python -m threatbridge --case DIR --port 5056
 //   TB_URL=http://127.0.0.1:5056 node tests/ui_actions.mjs [screenshot-dir]
 import assert from "node:assert/strict";
-import { finish, launch } from "./ui_helpers.mjs";
+import { readFile } from "node:fs/promises";
+import { checkpoint, finish, launch } from "./ui_helpers.mjs";
 
 const BASE = process.env.TB_URL || "http://127.0.0.1:5056";
 const SHOTS = process.argv[2];
-// The errors this test provokes on purpose (HTTP 400 and 502, an aborted request) are expected.
-const { browser, page, errors, at } = await launch({ expected: /status of (400|502)|ERR_FAILED/ });
+// The errors this test provokes on purpose (HTTP 400, 409 and 502, an aborted request) are expected.
+const { browser, page, errors, at } = await launch({ expected: /status of (400|409|502)|ERR_FAILED/ });
 
 const cyEval = (fn, arg) => page.evaluate(fn, arg);
 const ids = () => cyEval(() => window.threatbridge.cy.nodes().map((n) => n.id()).sort());
@@ -34,13 +36,17 @@ const pager = () => page.textContent("#flows .pager span");
 const shot = (name) => SHOTS && page.screenshot({ path: `${SHOTS}/${name}.png` });
 
 try {
-  // Start clean: no hosts left marked compromised by an earlier test on this server.
+  // Start clean: no hosts marked compromised or maps saved by an earlier test on this server.
   await page.goto(BASE);
   await page.evaluate(async () => {
+    const headers = { "Content-Type": "application/json", "X-ThreatBridge": "1" };
     const { hosts } = await (await fetch("/api/compromised")).json();
     for (const h of hosts) {
-      await fetch("/api/compromised", { method: "DELETE", body: JSON.stringify({ ip: h.ip }),
-        headers: { "Content-Type": "application/json", "X-ThreatBridge": "1" } });
+      await fetch("/api/compromised", { method: "DELETE", body: JSON.stringify({ ip: h.ip }), headers });
+    }
+    const { sessions } = await (await fetch("/api/sessions")).json();
+    for (const s of sessions) {
+      await fetch("/api/sessions", { method: "DELETE", body: JSON.stringify({ name: s.name }), headers });
     }
   });
 
@@ -50,6 +56,8 @@ try {
   assert.deepEqual(await ids(), []);
   await page.waitForSelector("#path-list li.hint");
   assert.equal(await page.textContent("#path-list li.hint"), "Mark at least two hosts as compromised.");
+  await page.waitForSelector("#session-list li.hint");
+  assert.equal(await page.textContent("#session-list li.hint"), "No saved maps yet.");
 
   // 2. Errors reach the status line, marked as errors.
   await page.fill("#ip", "not-an-ip");
@@ -154,6 +162,7 @@ try {
   await page.fill("#range-to", "");
 
   // 9. A map link that carries a time range.
+  await checkpoint(page, "actions-1");
   await page.goto(`${BASE}/?ip=10.0.1.2&dir=in&range_from=2024-05-01T13:00:00Z`);
   await waitStatus(/^10\.0\.1\.2: showing/);
   assert.equal(await page.inputValue("#range-from"), "2024-05-01T13:00:00Z");
@@ -170,7 +179,79 @@ try {
   await page.unroute("**/api/flows?*");
   await page.unroute("**/api/threatline?*");
 
-  // 11. Fit brings every host back into view; Clear empties the map.
+  // 11. A slow request shows how long it has taken, and Cancel stops it without an error.
+  await page.route("**/api/paths?*", async (route) => {
+    await new Promise((done) => setTimeout(done, 5000));
+    route.continue().catch(() => {});                       // cancelled meanwhile
+  });
+  await page.fill("#route-src", "10.0.2.1");
+  await page.fill("#route-dst", "10.0.2.2");
+  await page.click("#route-form button");
+  await page.waitForFunction(() => !document.getElementById("busy").hidden &&
+    /^Working… [1-4] s$/.test(document.getElementById("busy-text").textContent));
+  await page.click("#cancel");
+  await waitStatus(/^Cancelled$/);
+  assert.ok(!(await page.$eval("#status", (s) => s.classList.contains("error"))));
+  await page.waitForFunction(() => document.getElementById("busy").hidden);
+  await page.unroute("**/api/paths?*");
+
+  // 12. Save the map for everyone, change it, and open it again as it was.
+  await page.fill("#range-from", "");                          // set from the URL in step 9
+  await map("10.0.0.9", "in");
+  p = await at(edge("10.0.0.5", "10.0.0.9"), "edge");
+  await page.mouse.click(p.x, p.y);
+  await waitStatus(/^Threat line/);
+  const elements = () => cyEval(() => window.threatbridge.cy.elements().map((e) => [
+    e.id(), e.isNode() ? e.position() : [e.data("count"), e.data("ports"), e.data("first_seen")],
+    e.data("anchor") ?? null, e.data("root") ?? null, e.classes().sort()]).sort());
+  const before = await elements();
+  assert.ok(before.some(([, , , , classes]) => classes.includes("faded")), "the threat line is highlighted");
+  await page.fill("#session-name", "incident 42");
+  await page.click("#session-form button");
+  await waitStatus(/^Saved the map "incident 42" for everyone$/);
+  await page.waitForSelector("#session-list .session >> text=incident 42");
+  const [dialog] = await Promise.all([page.waitForEvent("dialog"),
+                                      page.click("#session-form button")]);   // the same name again
+  assert.equal(dialog.message(), 'Replace the saved map "incident 42"?');
+  await dialog.accept();
+  await waitStatus(/^Replaced the map "incident 42" for everyone$/);
+  assert.equal(await page.locator("#session-list li").count(), 1);
+  await page.click("#clear");
+  await page.fill("#window", "1h");
+  await page.click("#session-list .session >> text=incident 42");
+  await waitStatus(/^Opened "incident 42" \(saved .*\): \d+ host\(s\), \d+ connection\(s\)$/);
+  assert.deepEqual(await elements(), before);
+  assert.equal(await page.inputValue("#window"), "24h");
+  assert.match(page.url(), /ip=10\.0\.0\.9/);
+  await shot("saved-map");
+
+  // ... and as a file, to keep or pass on.
+  const [mapFile] = await Promise.all([page.waitForEvent("download"), page.click("#session-download")]);
+  assert.equal(mapFile.suggestedFilename(), "threatbridge-incident_42.json");
+  const doc = JSON.parse(await readFile(await mapFile.path(), "utf8"));
+  assert.equal(doc.version, 1);
+  await page.click("#clear");
+  await page.setInputFiles("#session-file", { name: "incident.json", mimeType: "application/json",
+                                              buffer: Buffer.from(JSON.stringify(doc)) });
+  await waitStatus(/^Opened incident\.json: /);
+  assert.deepEqual(await elements(), before);
+  await page.setInputFiles("#session-file", { name: "notes.json", mimeType: "application/json",
+                                              buffer: Buffer.from("not a map") });
+  await waitStatus(/^notes\.json is not a ThreatBridge map$/);
+  delete doc.view;                                             // no view saved: fit the map
+  await page.setInputFiles("#session-file", { name: "no-view.json", mimeType: "application/json",
+                                              buffer: Buffer.from(JSON.stringify(doc)) });
+  await waitStatus(/^Opened no-view\.json: /);
+  await page.fill("#session-name", "x".repeat(101));
+  await page.click("#session-form button");
+  await waitStatus(/^a map's name is 1 to 100 printable characters$/);
+  assert.ok(await page.$eval("#status", (el) => el.classList.contains("error")));
+  await page.fill("#session-name", "incident 42");
+  page.once("dialog", (d) => d.accept());
+  await page.click("#session-list li:has-text('incident 42') button");
+  await page.waitForSelector("#session-list li.hint");
+
+  // 13. Fit brings every host back into view; Clear empties the map.
   await cyEval(() => window.threatbridge.cy.pan({ x: -5000, y: -5000 }));
   await page.click("#fit");
   assert.ok(await cyEval(() => {

@@ -2,7 +2,7 @@
 import ipaddress
 import re
 from datetime import datetime, timedelta, timezone
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 DIRECTIONS = {
     # "in":  who connected TO the host, looking back in time from the anchor
@@ -224,6 +224,30 @@ def es_flows_body(cfg, src, dst, start, end, offset, size):
     }
 
 
+DNS_ADDRESSES = 1000   # addresses per domain entry from Zeek's DNS records
+
+
+def es_dns_body(cfg, entries):
+    """The addresses each domain entry ("name" or "*.suffix", subdomains only) resolved to in
+    the sensors' DNS records, with when each was first and last seen: one request for all."""
+    def match(entry):
+        kind = "wildcard" if entry.startswith("*.") else "term"
+        return {kind: {cfg.f_dns_query: {"value": entry, "case_insensitive": True}}}
+    filters = [{"exists": {"field": cfg.f_dns_ip}}]
+    if cfg.dns_datasets:
+        filters.append({"terms": {cfg.f_dataset: cfg.dns_datasets}})
+    return {
+        "size": 0,
+        "track_total_hits": False,
+        "query": {"bool": {"filter": filters}},
+        "aggs": {"entries": {
+            "filters": {"filters": {e: match(e) for e in entries}},
+            "aggs": {"ips": {"terms": {"field": cfg.f_dns_ip, "size": DNS_ADDRESSES},
+                             "aggs": {"first": {"min": {"field": cfg.f_ts}},
+                                      "last": {"max": {"field": cfg.f_ts}}}}}}},
+    }
+
+
 def _oql_value(ip):
     # Values are already validated IPs; quote so IPv6 colons are not parsed as syntax.
     return '"' + ip + '"'
@@ -256,3 +280,18 @@ def soc_host_query(cfg, ip, since=None, until=None):
 
 def soc_url(cfg, query):
     return cfg.soc_url + cfg.soc_path.replace("{query}", quote(query, safe=""))
+
+
+_ES_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,512}$")
+
+
+def parse_es_id(value):
+    """An Elasticsearch document ID, as Security Onion generates them."""
+    if not isinstance(value, str) or not _ES_ID_RE.match(value):
+        raise ValidationError(f"invalid document ID: {value!r}")
+    return value
+
+
+def soc_pcap_url(cfg, doc_id, start):
+    """SOC's own PCAP action for a connection log: SOC has the sensor extract the packets."""
+    return f"{cfg.soc_url}/joblookup?" + urlencode({"esid": doc_id, "time": start})

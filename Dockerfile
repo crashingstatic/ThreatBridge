@@ -10,6 +10,7 @@ COPY threatbridge ./threatbridge
 
 ENV TB_EXCLUDE_FILE=/data/exclude.json \
     TB_COMPROMISED_FILE=/data/compromised.json \
+    TB_SESSIONS_DIR=/data/sessions \
     TB_PORT=5443 \
     PYTHONUNBUFFERED=1
 USER threatbridge

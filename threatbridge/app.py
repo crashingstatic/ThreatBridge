@@ -3,7 +3,7 @@ import argparse
 import logging
 import os
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, Response, jsonify, request, send_from_directory
 
 from .backends import BackendError, make_backend
 from .compromised import CompromisedStore
@@ -13,8 +13,10 @@ from .excludes import ExcludeStore
 from .jsonstore import StoreError
 from .model import SourceError
 from .query import (DIRECTIONS, ORDERS, ValidationError, clip, fmt_time, parse_direction,
-                    parse_exclude, parse_ip, parse_order, parse_time, parse_window,
+                    parse_es_id, parse_exclude, parse_ip, parse_order, parse_time, parse_window,
                     soc_host_query, soc_pivot_query, soc_url, time_range)
+from .sessions import Conflict, NotFound, SessionStore
+from .soc import SocClient
 
 log = logging.getLogger("threatbridge")
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
@@ -27,14 +29,19 @@ class NotSupported(Exception):
     pass
 
 
-def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver=None):
+def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver=None, soc=None,
+               sessions=None):
     # Authentication is mutual TLS, enforced by gunicorn (see gunicorn.conf.py).
     cfg = cfg or Config.from_env()
     backend = backend or make_backend(cfg)
     excludes = excludes or ExcludeStore(cfg.exclude_file)
     compromised = compromised or CompromisedStore(cfg.compromised_file)
+    sessions = sessions or SessionStore(cfg.sessions_dir)
     resolver = resolver or DomainResolver(getattr(backend, "dns", None), live=cfg.live_dns,
-                                          ttl=cfg.dns_ttl, timeout=cfg.dns_timeout)
+                                          ttl=cfg.dns_ttl, timeout=cfg.dns_timeout,
+                                          answers=getattr(backend, "dns_answers", None))
+    if soc is None and cfg.backend == "elastic" and cfg.soc_client_id and cfg.soc_client_secret:
+        soc = SocClient(cfg)
 
     max_window = parse_window(cfg.max_window)
 
@@ -130,6 +137,14 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
     def _not_supported(e):
         return jsonify(error=str(e)), 501
 
+    @app.errorhandler(NotFound)
+    def _not_found(e):
+        return jsonify(error=str(e)), 404
+
+    @app.errorhandler(Conflict)
+    def _conflict(e):
+        return jsonify(error=str(e)), 409
+
     @app.errorhandler(StoreError)
     def _store_error(e):
         log.error("%s", e)
@@ -157,7 +172,7 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
                        rare_scan_cap=cfg.rare_scan_cap,
                        soc_pivots=cfg.backend != "case",
                        analysis=hasattr(backend, "threat_line"), threat_hops=cfg.threat_hops,
-                       live_dns=cfg.live_dns,
+                       live_dns=cfg.live_dns, pcap_download=soc is not None,
                        case=summary() if summary else None)
 
     @app.get("/api/resolve")
@@ -245,6 +260,27 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
         log.info("unmarked compromised: %s", body.get("ip"))
         return jsonify(hosts=hosts)
 
+    @app.get("/api/sessions")
+    def api_sessions():
+        """The saved maps, or with ?name= the one saved under that name."""
+        if "name" in request.args:
+            return jsonify(**sessions.get(request.args["name"]))
+        return jsonify(sessions=sessions.list())
+
+    @app.post("/api/sessions")
+    def api_sessions_save():
+        body = json_body()
+        saved = sessions.save(body.get("name"), body.get("map"), overwrite=body.get("overwrite") is True)
+        log.info("map saved: %s", saved["name"])
+        return jsonify(**saved, sessions=sessions.list())
+
+    @app.delete("/api/sessions")
+    def api_sessions_delete():
+        body = json_body()
+        sessions.delete(body.get("name"))
+        log.info("saved map deleted: %s", body.get("name"))
+        return jsonify(sessions=sessions.list())
+
     @app.get("/api/threatline")
     def api_threatline():
         require("threat_line")
@@ -275,6 +311,23 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
         res = backend.paths_between(a, b, time_arg("src_time"), time_arg("dst_time"), window, hops,
                                     exclusions(), bounds, cfg.max_paths)
         return jsonify(src=a, dst=b, **res)
+
+    @app.post("/api/pcap")
+    def api_pcap():
+        """The PCAP of one Security Onion flow ({"id", "time"} from the flow list), extracted by
+        its sensor through SOC's Connect API."""
+        if soc is None:
+            raise NotSupported("downloading PCAP needs Security Onion and a SOC API client: set "
+                               "TB_SOC_CLIENT_ID and TB_SOC_CLIENT_SECRET (Security Onion Pro)")
+        body = json_body()
+        doc_id = parse_es_id(body.get("id"))
+        if not (isinstance(body.get("time"), str) and body["time"].strip()):
+            raise ValidationError("time (the flow's start) is required")
+        when = fmt_time(parse_time(body["time"]))
+        chunks = soc.pcap(doc_id, when)
+        log.info("PCAP of %s (%s) from the sensor", doc_id, when)
+        return Response(chunks, mimetype="application/vnd.tcpdump.pcap", headers={
+            "Content-Disposition": f'attachment; filename="threatbridge-{doc_id}.pcap"'})
 
     @app.get("/api/pivot")
     def api_pivot():

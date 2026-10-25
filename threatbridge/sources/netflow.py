@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 
 from ..model import Flow, SourceError, idle_timeout, looks_reversed, proto_name
+from .workers import in_order
 
 log = logging.getLogger(__name__)
 
@@ -123,10 +124,19 @@ def pair_records(records):
     return flows
 
 
-def read_nfcapd(paths):
+def _file_records(path):
+    """One nfcapd file's records, each with the file it came from (run in a worker process)."""
+    return [r + (path,) for r in read_records(path)]
+
+
+def read_nfcapd(paths, workers=1, stage=None):
+    """Connections from nfcapd files: up to `workers` files are read at once, each by its own
+    nfdump. `stage` (see progress.py) is told the bytes read."""
+    stage = stage or (lambda amount=0, note=None: None)
+    files = sorted(paths)
     records = []
-    for path in sorted(paths):
-        n = len(records)
-        records.extend(r + (path,) for r in read_records(path))
-        log.info("%s: %d records", path, len(records) - n)
+    for i, (path, found) in enumerate(in_order(_file_records, files, workers), 1):
+        records.extend(found)
+        log.info("%s: %d records", path, len(found))
+        stage(os.path.getsize(path), f"file {i} of {len(files)}, {len(records):,} records")
     return pair_records(records)

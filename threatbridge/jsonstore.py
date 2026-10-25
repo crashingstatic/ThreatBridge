@@ -46,8 +46,13 @@ class JsonStore:
         return items
 
     def _save(self, items):
-        directory = os.path.dirname(os.path.abspath(self.path))
-        fd, tmp = tempfile.mkstemp(dir=directory, prefix=".tb-")
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump({self.key: items}, fh, indent=2)
-        os.replace(tmp, self.path)
+        write_atomically(self.path, json.dumps({self.key: items}, indent=2))
+
+
+def write_atomically(path, text):
+    """Replace the file at `path` with `text` in one step: readers see the old or the new
+    contents, never part of either."""
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(path)), prefix=".tb-")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    os.replace(tmp, path)

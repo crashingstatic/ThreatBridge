@@ -32,6 +32,7 @@
     <button id="go" type="button">Map</button>
     <button id="fit" type="button">Fit</button>
     <button id="clear" type="button">Clear</button>
+    <span id="busy" hidden><span id="busy-text"></span> <button id="cancel" type="button">Cancel</button></span>
     <span id="status" role="status"></span>
   </header>
   <main>
@@ -72,6 +73,20 @@
         </form>
         <p id="route-summary" class="hint"></p>
         <ul id="route-list" class="entries"></ul>
+      </section>
+      <section id="sessions">
+        <h2>Saved maps</h2>
+        <p class="hint">Maps saved here are shared with every analyst; click one to open it. A file
+          keeps a map for yourself or to pass on.</p>
+        <form id="session-form" class="entry-form">
+          <input id="session-name" placeholder="name, e.g. incident 42" spellcheck="false" autocomplete="off">
+          <button type="submit">Save</button>
+        </form>
+        <div class="file-buttons">
+          <button id="session-download" type="button">Save to file</button>
+          <label class="button">Open file <input id="session-file" type="file" accept=".json,application/json"></label>
+        </div>
+        <ul id="session-list" class="entries"></ul>
       </section>
       <section id="excludes">
         <h2>Shared exclude list</h2>

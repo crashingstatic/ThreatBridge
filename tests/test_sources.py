@@ -1,6 +1,7 @@
 """Evidence readers: finding the files, pcap decoding and connection tracking, DNS answers,
 NetFlow (nfdump)."""
 import os
+import random
 import socket
 import struct
 import time
@@ -9,9 +10,10 @@ import dpkt
 import pytest
 
 from evidence import (ACK, FIN, MAC, PSH, RST, SYN, dns_answer, have_nfdump, icmp_echo, ip_bytes, load,
-                      make_nfcapd, tcp, udp, write_pcap)
+                      make_nfcapd, tcp, udp, write_bulk_pcap, write_pcap)
 from threatbridge import model, sources
 from threatbridge.model import Flow, SourceError
+from threatbridge.sources import netflow, pcap, workers
 from threatbridge.sources.netflow import pair_records, parse_pipe_line, read_records
 from threatbridge.sources.pcap import record_dns
 
@@ -483,6 +485,131 @@ def test_real_nfcapd_file(tmp_path):
         (C, S, 445, "tcp", 18, 10500), (C, R, 53, "udp", 1, 70)]
     assert flows[0].start == t and flows[0].end == t + 10
     assert flows[0].source == path and os.path.basename(path).startswith("nfcapd.")
+
+
+# ---- reading files in parallel -----------------------------------------------------------
+
+def random_capture(seed):
+    """Packets on a few host pairs and ports: handshakes, data, FINs, RSTs, reused ports, idle
+    gaps longer than the timeouts, UDP, DNS answers and an IPv6 pair."""
+    rng = random.Random(seed)
+    pairs = [("10.0.0.5", "10.0.0.9"), ("10.0.0.6", "10.0.0.9"), ("2001:db8::5", "2001:db8::9")]
+    flags = [SYN, SYN | ACK, ACK, PSH | ACK, FIN | ACK, RST, RST | ACK]
+    t, packets = T, []
+    for _ in range(rng.randint(40, 160)):
+        t += rng.choice([0.001, 0.5, 30, 61, 299, 301, 900])
+        a, b = rng.choice(pairs)
+        a, b = (a, b) if rng.random() < 0.6 else (b, a)
+        ports = rng.choice([(50000, 445), (50001, 445), (50000, 22)])
+        sport, dport = ports if a < b else ports[::-1]
+        kind = rng.random()
+        if kind < 0.7:
+            packets.append((t, tcp(a, b, sport, dport, rng.choice(flags))))
+        elif kind < 0.85:
+            packets.append((t, udp(a, b, 53000 + sport % 3, 53, b"q")))
+        else:
+            ip = rng.choice(["192.0.2.7", "192.0.2.8"])
+            packets.append((t, udp(b, a, 53, 53000, dns_answer("x.test", [("x.test", "A", ip)]))))
+    return packets
+
+
+def split_into_files(tmp_path, packets, n, rng, overlapping=False):
+    """The packets in n capture files: rotated (consecutive), or interleaved like two
+    interfaces captured at the same time."""
+    d = tmp_path / "caps"
+    d.mkdir()
+    if overlapping:
+        parts = [[] for _ in range(n)]
+        for p in packets:
+            rng.choice(parts).append(p)
+    else:
+        cuts = sorted(rng.sample(range(1, len(packets)), n - 1))
+        parts = [packets[i:j] for i, j in zip([0] + cuts, cuts + [len(packets)])]
+    for i, part in enumerate(parts):
+        write_pcap(d / f"cap{i:02d}.pcap", part)
+    return [str(p) for p in sorted(d.iterdir())]
+
+
+def in_process(func, items, workers, *args):
+    """workers.in_order without the processes: what each worker would send back, in order."""
+    for item in items:
+        yield item, func(item, *args)
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_parallel_reading_gives_the_same_flows(tmp_path, monkeypatch, seed):
+    rng = random.Random(seed)
+    files = split_into_files(tmp_path, random_capture(seed), rng.randint(2, 5), rng, overlapping=seed % 4 == 0)
+    one_dns, many_dns = {}, {}
+    one_at_a_time = pcap.read_pcaps(files, one_dns, workers=1)
+    monkeypatch.setattr(pcap, "in_order", in_process)
+    in_parallel = pcap.read_pcaps(files, many_dns, workers=4)
+    assert in_parallel == one_at_a_time and many_dns == one_dns
+    assert list(many_dns["x.test"]) == list(one_dns["x.test"])          # same order too
+
+
+def test_a_close_spanning_two_rotated_files(tmp_path, monkeypatch):
+    # FIN at the end of one file, the last ACK and then a new SYN on the same ports in the
+    # next: the new SYN starts a second connection either way.
+    first = handshake()[:6]                                  # ... up to the server's FIN
+    second = [(T + 0.007, tcp(C, S, 50000, 445, ACK))] + handshake(t=T + 5)
+    files = split_into_files(tmp_path, first + second, 2, random.Random(0))
+    expect = pcap.read_pcaps(files, workers=1)
+    assert [f.packets for f in expect] == [7, 8]
+    monkeypatch.setattr(pcap, "in_order", in_process)
+    assert pcap.read_pcaps(files, workers=2) == expect
+
+
+def test_worker_processes_read_pcaps_and_report_errors(tmp_path):
+    files = split_into_files(tmp_path, random_capture(7), 3, random.Random(7))
+    dns = {}
+    assert pcap.read_pcaps(files, dns, workers=3) == pcap.read_pcaps(files, workers=1)
+    assert set(dns) == {"x.test"}
+    with open(files[1], "r+b") as fh:                         # a damaged file in the middle
+        fh.truncate(12)
+    with pytest.raises(SourceError, match="cap01.pcap: not a readable pcap file"):
+        pcap.read_pcaps(files, workers=3)
+
+
+def test_worker_processes_read_nfcapd_files_in_order(tmp_path, monkeypatch):
+    # A stand-in nfdump that prints the lines kept next to each "nfcapd" file.
+    fake_nfdump(tmp_path, monkeypatch, 'cat "$5.lines"\n')     # nfdump -q -o pipe -r FILE
+    files = []
+    for i, start in enumerate([1792437101000, 1792437101000, 1792437201000]):
+        path = tmp_path / f"nfcapd.20260101000{i}"
+        path.write_bytes(b"\x0c\xa5")
+        sport = 50000 + i % 2
+        path.with_name(path.name + ".lines").write_text(
+            f"2|{start}|{start + 1000}|6|0|0|0|167772165|{sport}|0|0|0|167772169|445|0|0|0|0|27|0|10|1500\n")
+        files.append(str(path))
+    one = netflow.read_nfcapd(files, workers=1)
+    # Files 0 and 2 hold the same connection 100 s apart (TCP idle timeout: 5 min): one flow.
+    assert [(f.sport, f.start, f.end, f.packets, f.source) for f in one] == [
+        (50000, 1792437101.0, 1792437202.0, 20, files[0]), (50001, 1792437101.0, 1792437102.0, 10, files[1])]
+    assert netflow.read_nfcapd(files, workers=3) == one
+
+
+def test_the_workers_run_ahead_but_hand_results_back_in_order():
+    assert list(workers.in_order(pow, [3, 1, 4, 1, 5], 2, 2)) == [(3, 9), (1, 1), (4, 16), (1, 1), (5, 25)]
+    assert list(workers.in_order(pow, [2], 8, 3)) == [(2, 8)]                # one item: no processes
+    assert list(workers.in_order(pow, [], 4, 2)) == []
+    with pytest.raises(ZeroDivisionError):
+        list(workers.in_order(divmod, [1, 0, 2], 2, 0))
+
+
+def test_progress_counts_every_byte_of_every_file(tmp_path, monkeypatch):
+    files = split_into_files(tmp_path, random_capture(3), 3, random.Random(3))
+    write_bulk_pcap(tmp_path / "caps" / "zbulk.pcap", pcap.REPORT_EVERY + 100)   # reported part-way
+    write_pcap(tmp_path / "caps" / "zempty.pcap", [])
+    files += [str(tmp_path / "caps" / "zbulk.pcap"), str(tmp_path / "caps" / "zempty.pcap")]
+    total = sum(os.path.getsize(f) for f in files)
+    for parallel in (False, True):
+        seen = []
+        if parallel:
+            monkeypatch.setattr(pcap, "in_order", in_process)
+        pcap.read_pcaps(files, workers=3 if parallel else 1, stage=lambda n, note=None: seen.append((n, note)))
+        assert sum(n for n, _ in seen) == pytest.approx(total)
+        assert seen[-1][1].startswith("file 5 of 5, ") and seen[-1][1].endswith(" packets")
 
 
 # ---- the flow record ----------------------------------------------------------------------

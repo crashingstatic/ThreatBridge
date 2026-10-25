@@ -2,8 +2,10 @@
 
 Two sources, used together:
 
-- capture: DNS answers seen in the evidence (pcaps), i.e. what the name resolved to during
-  the incident. Wildcards ("*.example.com") match these only.
+- capture: DNS answers seen on the network, i.e. what the name resolved to during the
+  incident: from the pcaps (case backend), or from the sensors' Zeek DNS records in
+  Elasticsearch (Security Onion), cached for `ttl` seconds. Wildcards ("*.example.com")
+  match these only.
 - dns: a live lookup through the system resolver, cached for `ttl` seconds. Names behind a
   CDN may resolve differently today than during the incident, which is why the capture
   answers are always included.
@@ -30,12 +32,15 @@ def system_lookup(name):
 
 class DomainResolver:
     def __init__(self, passive=None, live=True, ttl=300, timeout=2.0, lookup=system_lookup,
-                 clock=time.monotonic):
+                 clock=time.monotonic, answers=None):
         self.passive = passive or {}   # {name: {ip: [first, last]}} from the capture
+        # Or, instead: answers([entry, ...]) -> {entry: {ip: [first, last]}}, asked when needed
+        # (Security Onion's DNS records). It raises RuntimeError when it can't answer.
+        self.answers = answers
         self.live, self.ttl, self.timeout = live, ttl, timeout
         self.lookup, self.clock = lookup, clock
         self._live_cache = {}          # name -> (looked up at, [ips], error or None)
-        self._capture_cache = {}       # entry -> [ips]
+        self._capture_cache = {}       # entry -> [ips] (passive), or (asked at, [ips], error)
         self._pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="dns") if live else None
 
     def captured(self, entry):
@@ -71,15 +76,37 @@ class DomainResolver:
                 ips, error = [], f"DNS lookup failed: {e}"
             self._live_cache[name] = (now, ips, error)
 
+    def _refresh_answers(self, entries):
+        """Ask for the entries whose answers are missing or older than the TTL, all at once."""
+        now = self.clock()
+        stale = [e for e in entries
+                 if e not in self._capture_cache or now - self._capture_cache[e][0] >= self.ttl]
+        if not stale:
+            return
+        try:
+            found, error = self.answers(stale), None
+        except RuntimeError as e:   # e.g. BackendError: Elasticsearch unreachable
+            found, error = {}, str(e)
+        for e in stale:
+            ips = sorted(found.get(e, {}), key=ip_key)
+            self._capture_cache[e] = (now, ips, error)
+
     def describe(self, entries):
         """{domain entry: {"capture": [ips], "dns": [ips], "error": str or None}}."""
         domains = [e for e in entries if is_domain(e)]
+        if self.answers:
+            self._refresh_answers(domains)
         if self.live:
             self._refresh([d for d in domains if not d.startswith("*.")])
         out = {}
         for d in domains:
             _, live_ips, error = self._live_cache.get(d, (None, [], None))
-            out[d] = {"capture": self.captured(d), "dns": live_ips, "error": error}
+            if self.answers:
+                _, captured, capture_error = self._capture_cache[d]
+                error = "; ".join(e for e in (capture_error, error) if e) or None
+            else:
+                captured = self.captured(d)
+            out[d] = {"capture": captured, "dns": live_ips, "error": error}
         return out
 
     def expand(self, entries):
