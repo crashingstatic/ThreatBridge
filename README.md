@@ -200,6 +200,7 @@ Deployment on a live Security Onion install has **not been tested**. These point
 ## Requirements
 
 Requirement IDs, current status and design decisions: [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md).
+A step-by-step GUI test plan for every feature and requirement: [docs/TEST_PLAN.md](docs/TEST_PLAN.md).
 
 ## Development
 
