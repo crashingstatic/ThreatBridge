@@ -648,9 +648,11 @@ def test_progress_reports_as_it_goes_and_logs_each_file(tmp_path, monkeypatch, c
     junk = [(T + 9000, b"\x01\x02")]                               # undecodable
     write_pcap(small, junk + [(T + 9001, tcp(C, S, 50000, 445, SYN))])
     small.write_bytes(small.read_bytes() + b"\0" * 8)               # cut off at the end
-    files = [str(big), str(small)]
+    odd = d / "odd.pcap"                                           # two undecodable, one too short for ports
+    write_pcap(odd, [(T + 9100, b"\x01\x02"), (T + 9101, b"\x03"), (T + 9102, frame(udp(C, R, 53000, 53, b"q"))[:14 + 20 + 2])])
+    files = [str(big), str(small), str(odd)]
     expect_logs = [f"{big}: 8292 packets, 0 undecodable", f"{small}: capture is cut off after its last whole packet",
-                   f"{small}: 2 packets, 1 undecodable"]
+                   f"{small}: 2 packets, 1 undecodable", f"{odd}: 3 packets, 3 undecodable"]
     for parallel in (False, True):
         seen = []
         caplog.clear()
@@ -659,12 +661,13 @@ def test_progress_reports_as_it_goes_and_logs_each_file(tmp_path, monkeypatch, c
         pcap.read_pcaps(files, workers=2 if parallel else 1, stage=lambda n, note=None: seen.append((n, note)))
         notes = [note for _, note in seen]
         if parallel:      # whole files decoded first: the counts are known up front
-            assert notes == ["file 1 of 2, 8,292 packets"] * 3 + ["file 2 of 2, 8,294 packets"]
+            assert notes == ["file 1 of 3, 8,292 packets"] * 3 + ["file 2 of 3, 8,294 packets",
+                                                                  "file 3 of 3, 8,297 packets"]
             assert [round(n) for n, _ in seen[:3]] == [round(os.path.getsize(big) * k / 8292) for k in (4096, 4096, 100)]
         else:
-            assert notes == ["file 1 of 2, 4,096 packets", "file 1 of 2, 8,192 packets",
-                             "file 1 of 2, 8,292 packets", "file 2 of 2, 8,294 packets"]
-        assert sum(n for n, _ in seen) == pytest.approx(os.path.getsize(big) + os.path.getsize(small))
+            assert notes == ["file 1 of 3, 4,096 packets", "file 1 of 3, 8,192 packets",
+                             "file 1 of 3, 8,292 packets", "file 2 of 3, 8,294 packets", "file 3 of 3, 8,297 packets"]
+        assert sum(n for n, _ in seen) == pytest.approx(sum(os.path.getsize(f) for f in files))
         assert [r.getMessage() for r in caplog.records if r.name == "threatbridge.sources.pcap"] == expect_logs
 
 
