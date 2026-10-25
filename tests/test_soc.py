@@ -35,17 +35,20 @@ class FakeSoc:
         self.lookup = lookup or Resp(302, headers={"Location": "https://so/#/job/1004"})
         self.job_body, self.expired_once, self.error = job_body, expired_once, error
         self.stream_status = stream_status
-        self.calls, self.tokens = [], 0
+        self.calls, self.tokens, self.timeouts = [], 0, set()
         self.verify = None
+        self.token_body = {"expires_in": 3599}
 
     def post(self, url, auth, data, timeout):
         self.calls.append(("token", url, auth, data))
+        self.timeouts.add(timeout)
         self.tokens += 1
-        return Resp(self.token_status, {"access_token": f"t{self.tokens}", "expires_in": 3599})
+        return Resp(self.token_status, dict(self.token_body, access_token=f"t{self.tokens}"))
 
     def request(self, method, url, timeout, headers, **kw):
         if self.error:
             raise self.error
+        self.timeouts.add(timeout)
         path = url.split("https://so", 1)[1]
         self.calls.append((method, path, headers["Authorization"], kw))
         if self.expired_once and headers["Authorization"] == "Bearer t1":
@@ -71,10 +74,10 @@ class Clock:
         self.now += seconds
 
 
-def client_for(session, clock=None, **cfg):
+def client_for(session, clock=None, soc_url_override=None, **cfg):
     clock = clock or Clock()
-    config = Config(backend="elastic", soc_url="https://so", soc_client_id="tb", soc_client_secret="s3cret",
-                    es_ca="/etc/pki/ca.crt", **cfg)
+    config = Config(backend="elastic", soc_url=soc_url_override or "https://so", soc_client_id="tb",
+                    soc_client_secret="s3cret", es_ca="/etc/pki/ca.crt", **cfg)
     return SocClient(config, session=session, clock=clock, sleep=clock.sleep)
 
 
@@ -86,9 +89,16 @@ def test_a_pcap_from_the_sensor():
     assert token == ("token", "https://so/oauth2/token", ("tb", "s3cret"), {"grant_type": "client_credentials"})
     assert lookup == ("get", "/connect/joblookup/", "Bearer t1",
                       {"params": {"esid": DOC, "time": WHEN}, "allow_redirects": False})
-    assert [c[1] for c in polls] == ["/connect/job/1004"] * 3
+    assert [c[:3] for c in polls] == [("get", "/connect/job/1004", "Bearer t1")] * 3
     assert stream == ("get", "/connect/stream/1004", "Bearer t1", {"params": {"ext": "pcap"}, "stream": True})
     assert soc.verify == "/etc/pki/ca.crt"
+    assert soc.timeouts == {30}                                       # TB_ES_TIMEOUT, per request
+
+
+def test_a_soc_url_with_a_trailing_slash():
+    soc = FakeSoc(statuses=(1,))
+    assert b"".join(client_for(soc, soc_url_override="https://so/").pcap(DOC, WHEN))
+    assert soc.calls[0][1] == "https://so/oauth2/token" and soc.calls[1][1] == "/connect/joblookup/"
 
 
 def test_tokens_are_reused_until_they_expire_and_renewed_when_refused():
@@ -102,6 +112,16 @@ def test_tokens_are_reused_until_they_expire_and_renewed_when_refused():
     assert soc.tokens == 2
     soc = FakeSoc(statuses=(1,), expired_once=True)            # SOC says the token has expired
     assert b"".join(client_for(soc).pcap(DOC, WHEN))
+    assert soc.tokens == 2
+    soc, clock = FakeSoc(statuses=(1,)), Clock()                 # no expires_in: an hour
+    soc.token_body = {}
+    client = client_for(soc, clock)
+    list(client.pcap(DOC, WHEN))
+    clock.now += 3600 - 60 - 0.5
+    list(client.pcap(DOC, WHEN))
+    assert soc.tokens == 1
+    clock.now += 0.5
+    list(client.pcap(DOC, WHEN))
     assert soc.tokens == 2
 
 
@@ -142,6 +162,14 @@ def test_the_ca_for_soc_and_falling_back_to_elasticsearch_s():
 def test_what_goes_wrong_is_said(soc, message):
     with pytest.raises(SocError, match=message):
         list(client_for(soc).pcap(DOC, WHEN))
+
+
+def test_waiting_for_the_sensor_gives_up_at_the_timeout():
+    soc, clock = FakeSoc(statuses=(0,)), Clock()
+    with pytest.raises(SocError, match="has not finished after 10 s"):
+        list(client_for(soc, clock, pcap_timeout=10).pcap(DOC, WHEN))
+    polls = [c for c in soc.calls if c[1] == "/connect/job/1004"]
+    assert len(polls) == 6 and clock.now == 10                  # at 0, 2, ..., 10 s
 
 
 def test_a_token_answer_that_is_not_a_token():

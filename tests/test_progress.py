@@ -1,6 +1,7 @@
 """Progress of long jobs (building a case): on a terminal and in the log."""
 import io
 import logging
+import sys
 
 import pytest
 
@@ -17,8 +18,22 @@ class Terminal(io.StringIO):
         return True
 
     def screen(self):
-        """What the terminal shows: each line as it was last redrawn."""
-        return [line.rsplit("\r", 1)[-1].rstrip() for line in self.getvalue().split("\n")]
+        """What the terminal shows: a carriage return goes back to the start of the line, and
+        what follows overwrites it character by character."""
+        lines = []
+        for line in self.getvalue().split("\n"):
+            cells, col = [], 0
+            for ch in line:
+                if ch == "\r":
+                    col = 0
+                    continue
+                if col == len(cells):
+                    cells.append(ch)
+                else:
+                    cells[col] = ch
+                col += 1
+            lines.append("".join(cells).rstrip())
+        return lines
 
 
 class Clock:
@@ -26,6 +41,14 @@ class Clock:
         self.now = 1000.0
 
     def __call__(self):
+        return self.now
+
+
+class Ticking(Clock):
+    """A second passes every time anyone looks: every update is drawn."""
+
+    def __call__(self):
+        self.now += 1
         return self.now
 
 
@@ -77,6 +100,33 @@ def test_a_log_line_every_interval_elsewhere(caplog):
         "Saving the flows: 75%, about 4 s left", "Saving the flows: done in 16 s"]   # at 12 s
 
 
+def test_redraws_and_log_lines_at_exactly_the_interval(caplog):
+    caplog.set_level(logging.INFO, logger="threatbridge")
+    out, clock = Terminal(), Clock()
+    with Progress(out, clock=clock).stage("Reading", 10) as stage:
+        clock.now += 0.25
+        stage(1)
+        assert out.screen() == ["Reading: 10%"]
+    clock = Clock()
+    with Progress(io.StringIO(), interval=10, clock=clock).stage("Saving", 10) as stage:
+        clock.now += 10
+        stage(5)
+    assert [r.getMessage() for r in caplog.records][0] == "Saving: 50%, about 10 s left"
+
+
+def test_percentages_and_the_time_left():
+    clock = Clock()
+    with Progress(io.StringIO(), clock=clock).stage("Reading", 101) as stage:
+        stage.done = 1
+        assert stage.describe(clock.now) == "Reading: 0%"                # 0.99%: rounded down
+        stage.done = 120                                                 # more than expected
+        assert stage.describe(clock.now) == "Reading: 100%"
+        stage.done = 50
+        assert stage.describe(clock.now + 1.99) == "Reading: 49%"         # too early to guess
+        assert stage.describe(clock.now + 2) == "Reading: 49%, about 2 s left"
+    assert Progress().stream is sys.stderr
+
+
 def test_stages_without_a_total_and_streams_without_a_terminal():
     clock = Clock()
     stage_text = Progress(io.StringIO(), clock=clock).stage("Indexing the flows")
@@ -108,10 +158,12 @@ def test_building_a_case_shows_each_stage(tmp_path):
                                 (T + 0.001, tcp("10.0.0.9", "10.0.0.5", 445, 50000, SYN | ACK))])
     cfg = Config(backend="case", case_paths=[str(d)], case_db=str(tmp_path / "case.db"))
     out = Terminal()
-    CaseBackend(cfg, progress=Progress(out))
+    CaseBackend(cfg, progress=Progress(out, clock=Ticking()))
+    for done in ("Reading 1 evidence file(s): 100%", "Saving the flows: 100%", "Building the graph: 100%"):
+        assert done in out.getvalue(), done                         # each stage counted to its total
     stages = [line.split(":")[0] for line in out.screen() if line]
     assert stages == ["Reading 1 evidence file(s)", "Saving the flows", "Indexing the flows", "Building the graph"]
-    assert "Reading 1 evidence file(s): done in 0 s (file 1 of 1, 2 packets)" in out.screen()
+    assert "Reading 1 evidence file(s): done in 2 s (file 1 of 1, 2 packets)" in out.screen()
     out = Terminal()
     CaseBackend(cfg, progress=Progress(out))                      # reused: only the graph
     assert [line.split(":")[0] for line in out.screen() if line] == ["Building the graph"]

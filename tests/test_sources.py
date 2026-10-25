@@ -1,5 +1,6 @@
 """Evidence readers: finding the files, pcap decoding and connection tracking, DNS answers,
 NetFlow (nfdump)."""
+import logging
 import os
 import random
 import socket
@@ -300,6 +301,13 @@ def test_snap_length_boundaries(tmp_path):
     synack = frame(tcp(S, C, 445, 50000, SYN | ACK))[:14 + 20 + 14]
     [f] = load_packets(tmp_path, [(T, synack)])
     assert (f.src, f.sport, f.dst, f.dport) == (C, 50000, S, 445)
+    # A server on a high port, where the port heuristic would guess wrong: the flags decide...
+    synack = frame(tcp(S, C, 8443, 50000, SYN | ACK))
+    [f] = load_packets(tmp_path, [(T, synack[:14 + 20 + 14])])
+    assert (f.src, f.dst) == (C, S)
+    # ... unless they were cut off too (13 bytes): then the sender is taken as the initiator.
+    [f] = load_packets(tmp_path, [(T, synack[:14 + 20 + 13])])
+    assert (f.src, f.dst) == (S, C)
 
 
 def test_ipv6_fragments(tmp_path):
@@ -589,12 +597,91 @@ def test_worker_processes_read_nfcapd_files_in_order(tmp_path, monkeypatch):
     assert netflow.read_nfcapd(files, workers=3) == one
 
 
+class FakePool:
+    """Stands in for ProcessPoolExecutor: runs each call at once and notes what happens."""
+    events = []
+
+    def __init__(self, workers, mp_context):
+        FakePool.events = [("pool", workers, mp_context.get_start_method())]
+
+    def submit(self, func, *args):
+        from concurrent.futures import Future
+        FakePool.events.append(("submit", args[0]))
+        future = Future()
+        future.set_result(func(*args))
+        return future
+
+    def shutdown(self, wait, cancel_futures):
+        FakePool.events.append(("shutdown", wait, cancel_futures))
+
+
+def test_the_workers_run_a_bounded_way_ahead(monkeypatch):
+    monkeypatch.setattr(workers, "ProcessPoolExecutor", FakePool)
+    out = []
+    for item, result in workers.in_order(pow, [3, 1, 4, 1, 5], 2, 2):
+        FakePool.events.append(("used", item))
+        out.append(result)
+    assert out == [9, 1, 16, 1, 25]
+    assert FakePool.events == [
+        ("pool", 2, "spawn"), ("submit", 3), ("submit", 1),           # two running ...
+        ("submit", 4), ("used", 3),                                   # ... one more as each is used
+        ("submit", 1), ("used", 1), ("submit", 5), ("used", 4), ("used", 1), ("used", 5),
+        ("shutdown", True, True)]
+    list(workers.in_order(pow, [1, 2], 8, 2))
+    assert FakePool.events[0] == ("pool", 2, "spawn")                # no more workers than items
+
+
 def test_the_workers_run_ahead_but_hand_results_back_in_order():
     assert list(workers.in_order(pow, [3, 1, 4, 1, 5], 2, 2)) == [(3, 9), (1, 1), (4, 16), (1, 1), (5, 25)]
     assert list(workers.in_order(pow, [2], 8, 3)) == [(2, 8)]                # one item: no processes
     assert list(workers.in_order(pow, [], 4, 2)) == []
     with pytest.raises(ZeroDivisionError):
         list(workers.in_order(divmod, [1, 0, 2], 2, 0))
+
+
+def test_progress_reports_as_it_goes_and_logs_each_file(tmp_path, monkeypatch, caplog):
+    caplog.set_level(logging.INFO, logger="threatbridge.sources")
+    d = tmp_path / "caps"
+    d.mkdir()
+    big, small = d / "big.pcap", d / "small.pcap"
+    write_bulk_pcap(big, 2 * pcap.REPORT_EVERY + 100)
+    junk = [(T + 9000, b"\x01\x02")]                               # undecodable
+    write_pcap(small, junk + [(T + 9001, tcp(C, S, 50000, 445, SYN))])
+    small.write_bytes(small.read_bytes() + b"\0" * 8)               # cut off at the end
+    files = [str(big), str(small)]
+    expect_logs = [f"{big}: 8292 packets, 0 undecodable", f"{small}: capture is cut off after its last whole packet",
+                   f"{small}: 2 packets, 1 undecodable"]
+    for parallel in (False, True):
+        seen = []
+        caplog.clear()
+        if parallel:
+            monkeypatch.setattr(pcap, "in_order", in_process)
+        pcap.read_pcaps(files, workers=2 if parallel else 1, stage=lambda n, note=None: seen.append((n, note)))
+        notes = [note for _, note in seen]
+        if parallel:      # whole files decoded first: the counts are known up front
+            assert notes == ["file 1 of 2, 8,292 packets"] * 3 + ["file 2 of 2, 8,294 packets"]
+            assert [round(n) for n, _ in seen[:3]] == [round(os.path.getsize(big) * k / 8292) for k in (4096, 4096, 100)]
+        else:
+            assert notes == ["file 1 of 2, 4,096 packets", "file 1 of 2, 8,192 packets",
+                             "file 1 of 2, 8,292 packets", "file 2 of 2, 8,294 packets"]
+        assert sum(n for n, _ in seen) == pytest.approx(os.path.getsize(big) + os.path.getsize(small))
+        assert [r.getMessage() for r in caplog.records if r.name == "threatbridge.sources.pcap"] == expect_logs
+
+
+def test_nfcapd_progress_and_logs_through_read(tmp_path, monkeypatch, caplog):
+    caplog.set_level(logging.INFO, logger="threatbridge.sources")
+    fake_nfdump(tmp_path, monkeypatch, 'cat "$5.lines"\n')
+    for name, lines in (("nfcapd.202601010000", 1), ("nfcapd.202601010001", 2)):
+        (tmp_path / name).write_bytes(b"\x0c\xa5" + b"\0" * lines)
+        (tmp_path / (name + ".lines")).write_text("".join(
+            f"2|1792437101000|1792437102000|6|0|0|0|167772165|{50000 + i}|0|0|0|167772169|445|0|0|0|0|27|0|10|1500\n"
+            for i in range(lines)))
+    seen = []
+    flows = sources.read(sources.find([str(tmp_path / "nfcapd.202601010000"), str(tmp_path / "nfcapd.202601010001")]),
+                         workers=1, stage=lambda n, note=None: seen.append((n, note)))
+    assert len(flows) == 2 and seen == [(3, "file 1 of 2, 1 records"), (4, "file 2 of 2, 3 records")]
+    assert [r.getMessage() for r in caplog.records if r.name == "threatbridge.sources.netflow"] == [
+        f"{tmp_path / 'nfcapd.202601010000'}: 1 records", f"{tmp_path / 'nfcapd.202601010001'}: 2 records"]
 
 
 def test_progress_counts_every_byte_of_every_file(tmp_path, monkeypatch):

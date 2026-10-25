@@ -578,6 +578,21 @@ def test_case_db_is_reused_until_the_evidence_changes(tmp_path, monkeypatch):
     assert CaseBackend(cfg).summary()["flows"] == 2           # new file: rebuilt
 
 
+def test_evidence_is_read_by_one_worker_per_cpu_unless_set(tmp_path, monkeypatch):
+    d = tmp_path / "case"
+    d.mkdir()
+    write_pcap(d / "cap.pcap", [(T, tcp("10.0.0.5", H, 50000, 445, SYN))])
+    real_read, used = sources.read, []
+    monkeypatch.setattr(sources, "read", lambda found, dns, workers, stage: used.append(workers) or
+                        real_read(found, dns, workers, stage))
+    monkeypatch.setattr(os, "cpu_count", lambda: 6)
+    CaseBackend(Config(backend="case", case_paths=[str(d)]))
+    CaseBackend(Config(backend="case", case_paths=[str(d)], read_workers=2))
+    monkeypatch.setattr(os, "cpu_count", lambda: None)              # unknown: one
+    CaseBackend(Config(backend="case", case_paths=[str(d)]))
+    assert used == [6, 2, 1]
+
+
 def test_two_loaders_sharing_a_db_read_the_evidence_once(tmp_path, monkeypatch):
     # gunicorn starts several workers; with TB_CASE_DB they share one file.
     d = tmp_path / "case"

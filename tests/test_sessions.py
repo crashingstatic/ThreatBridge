@@ -68,6 +68,11 @@ def test_names_and_sizes(tmp_path, monkeypatch):
         store.save("list", [1, 2])
     with pytest.raises(ValidationError, match="larger than 2 MB"):
         store.save("big", {"blob": "x" * (2 * 2**20)})
+    room = sessions_mod.MAX_BYTES - len(json.dumps({"name": "big", "map": {"blob": ""}}, separators=(",", ":")))
+    store.save("big", {"blob": "x" * room})                       # exactly the limit
+    with pytest.raises(ValidationError, match="larger than 2 MB"):
+        store.save("big", {"blob": "x" * (room + 1)}, overwrite=True)
+    store.delete("big")
     monkeypatch.setattr(sessions_mod, "MAX_SESSIONS", 2)
     store.save("second", {})
     with pytest.raises(ValidationError, match="2 maps are saved already"):

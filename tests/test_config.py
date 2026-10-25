@@ -31,6 +31,9 @@ def test_config_from_the_environment(monkeypatch, no_settings):
         "TB_MAX_LIMIT": "99", "TB_RARE_SCAN_CAP": "77", "TB_EXCLUDE_FILE": "/d/ex.json",
         "TB_COMPROMISED_FILE": "/d/c.json", "TB_LIVE_DNS": "0", "TB_DNS_TTL": "11",
         "TB_DNS_TIMEOUT": "0.5", "TB_THREAT_HOPS": "4", "TB_THREAT_MAX_HOSTS": "50", "TB_MAX_PATHS": "20",
+        "TB_READ_WORKERS": "3", "TB_DNS_DATASETS": "dns", "TB_FIELD_DNS_QUERY": "dq", "TB_FIELD_DNS_IP": "di",
+        "TB_SOC_CLIENT_ID": "tb", "TB_SOC_CLIENT_SECRET": "s3", "TB_SOC_CA": "/soc.pem",
+        "TB_PCAP_TIMEOUT": "30", "TB_SESSIONS_DIR": "/d/sessions",
     }
     for k, v in env.items():
         monkeypatch.setenv(k, v)
@@ -42,7 +45,9 @@ def test_config_from_the_environment(monkeypatch, no_settings):
         f_bytes=["b1"], soc_url="https://so", soc_path="/x?q={query}", pivot_time_clause=False,
         default_window="1h", max_window="7d", default_limit=9, max_limit=99, rare_scan_cap=77,
         exclude_file="/d/ex.json", compromised_file="/d/c.json", live_dns=False, dns_ttl=11,
-        dns_timeout=0.5, threat_hops=4, threat_max_hosts=50, max_paths=20)
+        dns_timeout=0.5, threat_hops=4, threat_max_hosts=50, max_paths=20, read_workers=3,
+        dns_datasets=["dns"], f_dns_query="dq", f_dns_ip="di", soc_client_id="tb", soc_client_secret="s3",
+        soc_ca="/soc.pem", pcap_timeout=30, sessions_dir="/d/sessions")
     for value, expected in (("1", True), ("TRUE", True), ("yes", True), ("on", True), ("off", False), ("", True)):
         monkeypatch.setenv("TB_ES_VERIFY", value)
         assert Config.from_env().es_verify is expected, value

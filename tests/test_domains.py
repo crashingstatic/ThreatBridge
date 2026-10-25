@@ -73,7 +73,7 @@ def test_capture_answers_are_in_address_order():
 
 
 def test_answers_asked_of_a_backend_are_cached_and_combined():
-    now, asked = [0.0], []
+    now, asked = [1000.0], []
 
     def answers(entries):
         asked.append(list(entries))
@@ -84,9 +84,9 @@ def test_answers_asked_of_a_backend_are_cached_and_combined():
         "evil.test": {"capture": ["192.0.2.9", "192.0.2.10"], "dns": ["198.51.100.1"], "error": None},
         "*.cdn.test": {"capture": ["192.0.2.1"], "dns": [], "error": None}}
     r.expand(entries)
-    now[0] = 299.9
+    now[0] = 1299.9
     r.describe(entries + ["new.test"])                         # only the new entry is asked about
-    now[0] = 300.0
+    now[0] = 1300.0
     r.expand(entries)
     assert asked == [["evil.test", "*.cdn.test"], ["new.test"], ["evil.test", "*.cdn.test"]]
 
