@@ -218,15 +218,16 @@ The nfcapd test needs `nfdump` installed (`apt install nfdump`); without it, it 
 
 ```bash
 pip install mutmut
-mutmut run --max-children 4        # ~4 minutes; results in mutants/ (ignored by git)
+mutmut run --max-children 4        # ~7 minutes; results in mutants/ (ignored by git)
 mutmut results                     # the survivors; `mutmut show <name>` for one
 ```
 
-On 2026-10-22: 3,764 of 4,179 mutants caught (90.1%). The 415 survivors were reviewed. None is a missing test that matters; they change:
+On 2026-10-25: 4,815 of 5,239 mutants caught (91.9%). The 424 survivors were reviewed. None is a missing test that matters; they change:
 
 - text only: log messages and their arguments, error message wording, SQL keyword case, command-line help;
-- performance only: caches, pruning in the path search, work skipped when the answer is already known;
+- performance only: caches, pruning in the path search, work skipped when the answer is already known, and whether files are read in worker processes or one at a time (both give the same flows, by design);
 - the demo backend's random data;
+- names nobody reads back: temporary files, and how a saved map's name is spelled on disk;
 - nothing observable, e.g. a default value no caller relies on, a tie-break between equal choices, or an end point the interval code is allowed to repeat.
 
 Run it again after changing the analysis or the readers, and look at the new survivors.
