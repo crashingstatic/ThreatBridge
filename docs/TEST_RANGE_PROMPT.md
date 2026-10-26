@@ -9,14 +9,15 @@ You are building an isolated test range on a **Proxmox VE 9.2** hypervisor, usin
 **OpenTofu** for the infrastructure and **Ansible** for the configuration. Its purpose is to let
 a human tester run every test in `docs/TEST_PLAN.md` of the ThreatBridge repository. That
 includes the Security Onion tests (ENV-SO, ENV-SO-PRO), which need a real Security Onion 2.4
-sensor that sees real traffic, and REAL-01, which needs a real capture of varied traffic.
+sensor that sees real traffic, and REAL-01 and REAL-02, which need a real capture and NetFlow
+records of varied traffic.
 
 Read these first:
 
 - `README.md`, especially *Deploy on the Security Onion manager*, *PCAP for a flow* and
   *Things to verify on your install*.
 - `docs/TEST_PLAN.md`: section 2 (the environments) and section 3 (the tests), especially
-  XB-01, TLS-01, TERM-01, REAL-01 and the SO- tests.
+  XB-01, TLS-01, TERM-01, REAL-01, REAL-02 and the SO- tests.
 - `tests/make_case.py`: the attack-chain dataset the range's traffic must reproduce.
 
 ## What ThreatBridge is (for context)
@@ -33,7 +34,7 @@ mode that reads pcap and nfcapd files, which the tester runs on a workstation.
 | VIS-01, VIS-02, PRF-01, TERM-01 (ENV-DEMO, ENV-CASE, ENV-BUSY, ENV-BIG) | `tb-tester` | The repository, Python, Chromium, two terminal emulators |
 | XB-01 (ENV-DEMO) | `tb-tester` | Firefox besides Chromium; Edge if the analysts use it |
 | TLS-01 (ENV-MTLS) | `tb-tester` | Docker, openssl, the ThreatBridge image built in advance |
-| REAL-01 (ENV-REAL) | `tb-tester` | A capture NIC on the lab, tcpdump, the `zeek/zeek` image, and the real-traffic playbook |
+| REAL-01, REAL-02 (ENV-REAL) | `tb-tester` | A capture NIC on the lab, tcpdump, softflowd, nfdump, the `zeek/zeek` image, and the real-traffic playbook |
 | SO-01 to SO-06 (ENV-SO, ENV-SO-PRO) | `tb-so`, `tb-tester` | Security Onion, ThreatBridge deployed, SOC actions, the scenario |
 | SO-02 steps 5 and 6 | `tb-so`, `tb-tester` | A host with 11 peers of known counts, and a host with 1,101 peers |
 | SO-07 | `tb-so`, `tb-tester`, `tb-tester2` | A second workstation let through SO's firewall; cheap redeploys |
@@ -199,13 +200,13 @@ listener that accepts and closes), as the scenario needs:
     so that `deploy/run.sh` rebuilds it from the cache;
   - pull `zeek/zeek`, and record its Zeek version (`docker run --rm zeek/zeek zeek --version`)
     in your report.
-- **Capture** (ENV-REAL): `tcpdump`, and the capture NIC on `tblab`:
+- **Capture** (ENV-REAL): `tcpdump`, `softflowd` and `nfdump`, and the capture NIC on `tblab`:
   - link up, with no IPv4 or IPv6 address: turn IPv6 off on it (`disable_ipv6`), and keep
     NetworkManager, DHCP and router solicitations off it;
   - offloading off (`ethtool -K <nic> gro off lro off tso off gso off`), so captures show
     packets as they crossed the wire;
-  - the tester can run `sudo tcpdump -i <nic>`. Give the NIC a fixed name (e.g. `lab0`);
-    ENV-REAL calls it `<interface>`.
+  - the tester can run `sudo tcpdump -i <nic>`, `sudo softflowd -i <nic> …` and
+    `sudo softflowctl`. Give the NIC a fixed name (e.g. `lab0`); ENV-REAL calls it `<interface>`.
 - **Certificates:** the ThreatBridge client certificate (`.p12`) for the SO deployment is in the
   tester's own Chromium and Firefox stores, with the ThreatBridge CA and SO's CA trusted, so the
   tester opens `https://<tb-so>:5443/` without warnings. TLS-01 uses a new, empty store (a new
@@ -297,19 +298,22 @@ Requirements for the scenario:
   (`tcpdump -i <nic> -s 0 -w <file>`), and leave the pcap on `tb-tester`. With it, the
   post-mortem tests can also run on this traffic (`python -m threatbridge --case <pcap>`).
 
-### Real traffic for REAL-01 (ENV-REAL)
+### Real traffic for REAL-01 and REAL-02 (ENV-REAL)
 
-REAL-01 compares ThreatBridge's reading of a real capture with Zeek's, so its capture needs
-traffic that the scenario's short connections don't have. Provide a `real-traffic` playbook
+REAL-01 compares ThreatBridge's reading of a real capture with Zeek's, and REAL-02 its reading
+of NetFlow records of the same traffic. They need traffic that the scenario's short connections
+don't have. Provide a `real-traffic` playbook
 with a **duration** parameter (default 15 minutes). Run it apart from the scenario. The SO
 sensor sees this traffic too; it doesn't touch 10.0.1.3, 10.0.3.0/24, or any pair of the
 scenario.
 
 - **Clean pairs:** 10.0.5.2 and 10.0.5.3 fetch files of 1 KB to 50 MB from 10.0.5.1:80
-  throughout, sometimes several on one keep-alive connection, and sometimes in parallel. One of
-  10.0.5.3's keep-alive connections pauses 4 minutes between two requests; set the web
-  server's keep-alive timeout to 10 minutes, so it doesn't close that connection meanwhile. These two hosts send
-  10.0.5.1 nothing else: no pings, no UDP, no resets. REAL-01 compares these pairs exactly.
+  throughout, sometimes several on one keep-alive connection, and sometimes in parallel.
+  Rate-limit each transfer (e.g. 50 Mbit/s), so that neither tcpdump nor softflowd drops
+  packets. One of 10.0.5.3's keep-alive connections pauses 4 minutes between two requests; set
+  the web server's keep-alive timeout to 10 minutes, so it doesn't close that connection
+  meanwhile. These two hosts send 10.0.5.1 nothing else: no pings, no UDP, no resets. REAL-01
+  and REAL-02 compare these pairs exactly.
 - **Everything else, from 10.0.5.4 to 10.0.5.1:** pings; UDP to 514; connections to port 81,
   which are refused; a download aborted with a reset (e.g. a socket closed with `SO_LINGER` 0);
   an SSH session idle for more than 5 minutes; a TCP connection idle for 6 minutes and then
@@ -320,11 +324,16 @@ scenario.
 
 The playbook does what ENV-REAL's first commands do, in a new directory `$W` on `tb-tester`:
 
-1. It starts the slow download.
+1. It starts the NetFlow collector (`mkdir $W/nf; nfcapd -w $W/nf -p 9995`) and exporter
+   (`softflowd -i <nic> -n 127.0.0.1:9995 -v 9 -d`), then the slow download.
 2. It starts `tcpdump -i <nic> -s 0 -w $W/real.pcap`.
-3. It runs the traffic for the duration.
-4. It stops tcpdump.
-5. It hands the capture to the tester's user and prints `$W`. The tester sets `W` to it and
+3. It runs the traffic for the duration. Then it starts no new transfers, lets those under way
+   finish, and closes every connection of 10.0.5.2 and 10.0.5.3, so that Zeek sees each one
+   from its SYN to its FINs.
+4. It stops tcpdump, and keeps the drop count it reports. It runs `softflowctl statistics` and
+   keeps `Packets dropped by libpcap`. It stops softflowd with SIGINT, which makes it export
+   every flow it still holds, waits 5 s, and stops nfcapd, which then closes its file.
+5. It hands the files to the tester's user, and prints `$W` and both drop counts. The tester sets `W` to it and
    carries on at ENV-REAL's Zeek command.
 
 ### Snapshots and reset
@@ -404,6 +413,9 @@ Run all of these and put the results in your report:
 9. **Real traffic:** after a `real-traffic` run, run ENV-REAL's Zeek command on its capture.
    - REAL-01's pair listing includes 10.0.5.2 → 10.0.5.1 and 10.0.5.3 → 10.0.5.1.
    - ThreatBridge, serving the capture, gives one of them the count the listing gives.
+   - Neither tcpdump nor softflowd dropped packets.
+   - `nfdump -R $W/nf` lists records. ThreatBridge, serving `$W/nf`, gives 10.0.5.2 → 10.0.5.1
+     the listing's count (REAL-02 step 1).
    - Zeek's `dns.log` holds UDP answers for `cdn.example.com`, `dual.example.com` and
      `pool.example.com`.
 10. **Reset:** the reset playbook rolls back to `baseline`, and step 4 passes again after a new

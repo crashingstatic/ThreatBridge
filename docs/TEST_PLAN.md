@@ -17,9 +17,10 @@ plan holds only what those tests can't check, and why:
   - `ui_mtls.mjs` hands the client certificate to Playwright, which presents it itself, so a
     browser's own certificate store and prompt are never used.
   - The progress tests simulate a terminal; real terminals wrap, resize and reflow.
-- **Real evidence** (REAL-01). CI reads captures that the tests generate. A real capture can
-  hold what the generator doesn't, so it is compared with what Zeek, read independently, makes
-  of the same file.
+- **Real evidence** (REAL-01, REAL-02). CI reads captures and NetFlow records that the tests
+  generate. Real ones can hold what the generator doesn't, so they are compared with what Zeek,
+  read independently, makes of the same traffic. NetFlow often reaches back further than full
+  packet capture, so it may be the only evidence of how an incident began.
 - **How the browser feels on a large case** (PRF-01). CI times the server's answers (PRF-3), but
   not how fast a real browser draws hundreds of hosts, or whether panning stays smooth while
   attack paths are recomputed.
@@ -150,16 +151,24 @@ sudo SO_CA="$PWD/certs/ca.crt" deploy/run.sh
 # browse to https://localhost:5443/ ; clean up afterwards: sudo docker rm -f threatbridge
 ```
 
-### ENV-REAL: a real capture, and Zeek's reading of it
+### ENV-REAL: a real capture and NetFlow of the same traffic, and Zeek's reading of the capture
 
 Use 10–15 minutes of varied traffic: a busy workstation, a server, or the lab network of the
 range in [TEST_RANGE_PROMPT.md](TEST_RANGE_PROMPT.md), whose `real-traffic` playbook makes the
-capture for you. Zeek runs from its official container
-image, `zeek/zeek` (put `sudo` before `docker` if your user isn't in the `docker` group).
+capture and the NetFlow files for you. A NetFlow exporter (softflowd) and collector (nfcapd) run
+the whole time tcpdump does (packages `tcpdump`, `softflowd` and `nfdump`). Zeek runs from its
+official container image, `zeek/zeek` (put `sudo` before `docker` if your user isn't in the
+`docker` group).
 
 ```bash
-export W=$(mktemp -d)
-sudo tcpdump -i <interface> -s 0 -w $W/real.pcap          # Ctrl+C after 10-15 minutes
+export W=$(mktemp -d); echo $W
+# In two more terminals, with W set to the same directory: first the collector, then the exporter.
+mkdir $W/nf; nfcapd -w $W/nf -p 9995
+sudo softflowd -i <interface> -n 127.0.0.1:9995 -v 9 -d
+# Then the capture:
+sudo tcpdump -i <interface> -s 0 -w $W/real.pcap          # Ctrl+C after 10-15 minutes; note the drops it reports
+# Then: sudo softflowctl statistics (note "Packets dropped by libpcap"); Ctrl+C softflowd, which
+# exports every flow it still holds; wait 5 s; Ctrl+C nfcapd, which closes its file.
 sudo chown $USER $W/real.pcap
 docker run --rm -v $W:/w -w /w zeek/zeek zeek -C -r real.pcap     # writes conn.log, dns.log, ... into $W
 zc() { docker run --rm -i -v $W:/w -w /w zeek/zeek zeek-cut "$@"; }   # zeek-cut, e.g. zc ts < $W/conn.log
@@ -318,6 +327,29 @@ serving it; page open.
 | 2 | For one pair, left-click the arrow. List Zeek's records in the same form: `zc ts id.orig_h id.orig_p id.resp_h id.resp_p duration orig_pkts resp_pkts orig_ip_bytes resp_ip_bytes < $W/conn.log \| awk -F'\t' -v a=A -v b=B '$2 == a && $4 == b {printf "%s tcp %s → %s · %.3f s · %d pkts · %d B\n", $1, $3, $5, $6, $7 + $8, $9 + $10}' \| sort -n \| while read ts rest; do echo "$(date -u -d @$ts +%FT%T.%3NZ) $rest"; done`. Compare the first page of flows, and the last (**Last**), with those lines. | Each flow matches a line: the same start, ports, protocol, packets and bytes (IP bytes of both sides), and the same duration give or take 0.001 s. | Per-flow fields (ING-4, GRA-S3). | |
 | 3 | List the names answered over UDP port 53, with their answers: `zc proto id.resp_p rcode_name query answers < $W/dns.log \| awk -F'\t' '$1 == "udp" && $2 == 53 && $3 == "NOERROR" {print tolower($4), $5}' \| sort -u`. Pick a name whose lines hold one to four IP addresses in all, and that is no other name's alias: `zc answers < $W/dns.log \| grep -Fiwc <name>` prints `0`. Add it to the exclude list. | The entry shows `capture: ` and exactly the IP addresses on that name's lines (not the names among the answers), IPv4 before IPv6, each in numeric order. An address on the lines but not in the entry is F, unless Wireshark shows the response gave it for an unrelated name (ThreatBridge ignores those). | Domain names from real DNS answers, through CNAMEs (FIL-2). | |
 
+### REAL-02 · NetFlow from a real exporter is read as Zeek reads the same traffic: connections, orientation, packets (ING-2, D7)
+
+CI exports NetFlow records that the tests make up through a real nfcapd and nfdump, so a real
+exporter's records are only checked here. This test reads a real exporter's records of
+REAL-01's traffic, and compares them with Zeek's reading of the capture.
+
+softflowd follows each connection as one two-way flow, and exports it as two one-way records
+with the same start time. Timing then can't tell ThreatBridge which side started the connection,
+so it goes by the port rule (README, *Post-mortem mode*): a port below 1024 talking to one of
+1024 or above is the responder. So this test uses connections to ports below 1024. It doesn't
+compare bytes with Zeek: softflowd counts each packet's length on the wire less its link header,
+which includes any Ethernet padding, where Zeek counts IP lengths.
+
+**Environment:** ENV-REAL. **Starting state:** REAL-01 done, and its pair listing at hand. The
+NetFlow served on another port, and `http://127.0.0.1:5057/` open:
+`TB_LIVE_DNS=false TB_EXCLUDE_FILE=$W/ex2.json TB_COMPROMISED_FILE=$W/c2.json TB_SESSIONS_DIR=$W/s2 python -m threatbridge --case $W/nf --port 5057`
+
+| # | Do | Expect | Proves | Result |
+|---|---|---|---|---|
+| 1 | From REAL-01's listing, take the pairs A → B whose connections all go to one port below 1024 from ports of 1024 or above: `zc id.orig_h id.orig_p id.resp_h id.resp_p < $W/conn.log \| awk -F'\t' -v a=A -v b=B '$1 == a && $3 == b {ok = $2 >= 1024 && $4 < 1024; print ok ? "ok" : "no", $4}' \| sort -u` prints one line, starting `ok`. For each, set N to `200` and map B inbound. | An arrow runs from A to B, and its count is the listing's. A higher count is right only if each extra flow lies partly outside the capture: it began before tcpdump started, or ended after it stopped (softflowd runs longer). | Each connection's two records become one flow, initiator → responder (ING-2, D7). | |
+| 2 | Left-click the arrow. List Zeek's records with REAL-01 step 2's command, and compare the first page of flows, and the last (**Last**), with those lines. | Each line matches a flow: the same ports and packets, and a start and duration that agree to within 0.01 s (the exporter keeps times in milliseconds). Packets may differ only if tcpdump or softflowd reported dropped packets (ENV-REAL). | Per-flow fields from NetFlow (ING-4, GRA-S3). | |
+| 3 | For one flow, from port P, list its records: `TZ=UTC nfdump -R $W/nf -N -o long 'proto tcp and host A and host B and port P'`. | Two records, one each way, with the same *Date first seen*. The flow's packets and bytes are the sums of the two records'; its start is their *Date first seen*. | The two one-way records are merged (ING-2). | |
+
 ### SO-01 · SOC actions open the map at the event's IP and time (EXT-1)
 
 **Environment:** ENV-SO. **Starting state:** logged in to SOC; ThreatBridge reachable with the analyst's certificate.
@@ -405,16 +437,16 @@ and `ui_mtls.mjs` (the container). *Manual* names the tests above.
 | Requirement or decision | Automated | Manual |
 |---|---|---|
 | ING-1 PCAP ingest | `test_sources.py`, `test_case.py`; the case in `ui_case.mjs`, `ui_actions.mjs` | REAL-01 (a real capture) |
-| ING-2 NetFlow ingest | `test_sources.py` (record pairing; a real nfcapd file through nfdump), `test_integration.py` (pcap and NetFlow in one case) | |
+| ING-2 NetFlow ingest | `test_sources.py` (record pairing; a real nfcapd file through nfdump), `test_integration.py` (pcap and NetFlow in one case) | REAL-02 (a real exporter, against Zeek) |
 | ING-3 Directories of pcaps, rotated captures | `test_sources.py` | |
-| ING-4 Addresses, ports, times, protocol | `test_sources.py`, `test_case.py`, `test_backends.py` (Elasticsearch fields, configurable); flow lines in `ui_case.mjs`, `ui_actions.mjs` | REAL-01, SO-02 (field names on a live install) |
+| ING-4 Addresses, ports, times, protocol | `test_sources.py`, `test_case.py`, `test_backends.py` (Elasticsearch fields, configurable); flow lines in `ui_case.mjs`, `ui_actions.mjs` | REAL-01, REAL-02, SO-02 (field names on a live install) |
 | ING-S2 Security Onion integration | `test_domains.py`, `test_backends.py` (Zeek DNS records); `test_soc.py` (Connect API against a stand-in); `ui_smoke.mjs` (PCAP links and download) | SO-03, SO-04, SO-05 |
 | GRA-1 Directed graph | `test_case.py`, `test_backends.py`; `ui_actions.mjs` | SO-02 |
 | GRA-2 Hosts and connections displayed | `ui_smoke.mjs`, `ui_case.mjs`, `ui_actions.mjs` (elements, labels, layout) | VIS-01 |
 | GRA-3 Temporal ordering | `test_case.py`, `test_analysis.py`; `ui_actions.mjs` (time-chained hops, flows paged oldest first) | SO-02 (10,000-flow limit) |
 | GRA-4 Interactive, clickable | `ui_smoke.mjs`, `ui_case.mjs`, `ui_actions.mjs` (clicks, menus, details) | VIS-01, XB-01 (other browsers) |
 | GRA-S2 Time-range filtering | `test_case.py`, `test_api.py`; `ui_smoke.mjs`, `ui_case.mjs`, `ui_actions.mjs` | |
-| GRA-S3 Connection metadata | `test_sources.py`, `test_backends.py`; `ui_case.mjs`, `ui_actions.mjs` | REAL-01, SO-02 |
+| GRA-S3 Connection metadata | `test_sources.py`, `test_backends.py`; `ui_case.mjs`, `ui_actions.mjs` | REAL-01, REAL-02, SO-02 |
 | Bottom N exact (README, *Peer selection*) | `test_backends.py` (the paged scan, the cap), `test_case.py`; `ui_smoke.mjs` (rarest and the cap warning in the status) | SO-02 steps 5, 6 |
 | ATK-1 Attack paths | `test_analysis.py` (against brute force), `test_case.py`; `ui_case.mjs`, `ui_actions.mjs` | VIS-02 |
 | ATK-3 Predecessors and successors | `test_case.py`; `ui_smoke.mjs`, `ui_actions.mjs` | |
@@ -438,7 +470,7 @@ and `ui_mtls.mjs` (the container). *Manual* names the tests above.
 | EXT-S2 API | `test_integration.py` (every endpoint documented), the API tests | |
 | Mutual TLS | `mtls_check.sh`, `ui_mtls.mjs` (CI Docker job) | TLS-01 (a browser's own certificate store); ENV-SO uses it |
 | D3 Edge left-click / right-click | `ui_smoke.mjs`, `ui_case.mjs`, `ui_actions.mjs` | XB-01 (other browsers) |
-| D6, D7 Inputs, connection rules | `test_sources.py` | REAL-01 (against Zeek) |
+| D6, D7 Inputs, connection rules | `test_sources.py` | REAL-01, REAL-02 (against Zeek) |
 | D8 Time order, hop limit | `test_analysis.py`, `test_case.py` | |
 | D9 Capture DNS, then live DNS | `test_domains.py`; `ui_smoke.mjs` | SO-03 |
 | D10 Flows in time order; time range | `test_case.py`; `ui_actions.mjs` | |
