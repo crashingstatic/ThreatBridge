@@ -16,7 +16,10 @@ RANGE = {"range": {"@timestamp": {"gte": "2024-05-01T12:00:00.000Z", "lte": "202
 DATASETS = {"terms": {"event.dataset": ["conn", "zeek.conn"]}}
 REJ = {"match": {"connection.state": "REJ"}}        # refused connections are left out
 DETAILS = {"first_seen": {"min": {"field": "@timestamp"}}, "last_seen": {"max": {"field": "@timestamp"}},
-           "ports": {"terms": {"field": "destination.port", "size": 5}}}
+           "ports": {"terms": {"field": "destination.port", "size": 5}},
+           # Zeek's service; "" for records without one, then split by transport (ICMP or unknown).
+           "protocols": {"terms": {"field": "network.protocol", "size": 20, "missing": ""},
+                         "aggs": {"transports": {"terms": {"field": "network.transport", "size": 5}}}}}
 
 
 # ---- validation and times -----------------------------------------------------------------
@@ -177,7 +180,7 @@ def test_es_dns_body_asks_about_every_entry_at_once():
 def test_field_names_and_datasets_come_from_the_config():
     cfg = Config(f_src="src", f_dst="dst", f_ts="ts", f_dport="dport", f_dataset="ds", datasets=["c"],
                  f_sport="sport", f_proto="proto", f_duration="dur", f_packets=["p1", "p2"], f_bytes=["b1"],
-                 f_conn_state="state")
+                 f_conn_state="state", f_service="svc")
     in_range = {"range": {"ts": {"gte": "2024-05-01T12:00:00.000Z", "lte": "2024-05-01T13:00:00.000Z",
                                  "format": "strict_date_optional_time"}}}
     top = q.es_top_body(cfg, "10.0.0.5", "in", T0, T1, 7, ["10.9.0.0/16"])
@@ -185,13 +188,19 @@ def test_field_names_and_datasets_come_from_the_config():
                                      "must_not": [{"term": {"src": "10.9.0.0/16"}}, {"match": {"state": "REJ"}}]}}
     assert top["aggs"]["peers"]["terms"]["field"] == "src"
     assert top["aggs"]["distinct"] == {"cardinality": {"field": "src"}}
-    assert top["aggs"]["peers"]["aggs"] == {"first_seen": {"min": {"field": "ts"}},
-                                            "last_seen": {"max": {"field": "ts"}},
-                                            "ports": {"terms": {"field": "dport", "size": 5}}}
+    assert top["aggs"]["peers"]["aggs"] == {
+        "first_seen": {"min": {"field": "ts"}}, "last_seen": {"max": {"field": "ts"}},
+        "ports": {"terms": {"field": "dport", "size": 5}},
+        "protocols": {"terms": {"field": "svc", "size": 20, "missing": ""},
+                      "aggs": {"transports": {"terms": {"field": "proto", "size": 5}}}}}
     flows = q.es_flows_body(cfg, "10.0.0.5", "10.0.0.9", T0, T1, 0, 50)
     assert flows["sort"] == [{"ts": "asc"}]
     assert flows["fields"] == [{"field": "ts", "format": "strict_date_optional_time"},
-                               "sport", "dport", "proto", "dur", "p1", "p2", "b1"]
+                               "sport", "dport", "proto", "dur", "p1", "p2", "b1", "svc"]
+    # TB_FIELD_SERVICE= (empty): no protocols asked for.
+    plain = Config(f_service="")
+    assert "protocols" not in q.es_top_body(plain, "10.0.0.5", "in", T0, T1, 7, [])["aggs"]["peers"]["aggs"]
+    assert "network.protocol" not in q.es_flows_body(plain, "10.0.0.5", "10.0.0.9", T0, T1, 0, 50)["fields"]
     assert q.soc_pivot_query(cfg, "10.0.0.1", "10.0.0.2", T0) == (
         '((src:"10.0.0.1" AND dst:"10.0.0.2") OR (src:"10.0.0.2" AND dst:"10.0.0.1")) '
         'AND ts:[* TO "2024-05-01T12:00:00.000Z"] | groupby src dst dport')

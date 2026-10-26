@@ -20,6 +20,7 @@ Status last updated 2026-10-25. **Done**, **Partial**, **Missing**, **Unverified
 | D11 | Paths between two hosts: every path from A to B in the evidence, no host twice, each hop opened by the host the attacker is on (initiator -> responder), following D8. A's and B's IOC times are optional. Listed shortest first, up to `TB_MAX_PATHS` (500). The compromised list shows the first 10 per pair, with "Show all". |
 | D12 | Security Onion integration (ING-S2): Zeek DNS records resolve domain names on the exclude list, and each flow gets its PCAP from its sensor through SOC: SOC's own PCAP job link always, and a download through ThreatBridge when a SOC API client (Security Onion Pro) is configured. PCAP export from case files and along attack paths stays deferred (D5). |
 | D13 | Reading in parallel (PRF-S1): worker processes decode evidence files, one per CPU; connections are followed in capture order in one process, so the flows are exactly those of reading one file at a time. Distributing work across machines is out of scope. |
+| D14 | Protocols: each connection's is named as Zeek names services, so both modes agree. Security Onion: Zeek's own (`network.protocol`). Case files: from the payload (DNS, HTTP, TLS, SSH, SMB, RDP, DHCP), then by the server's well-known port; NetFlow by port only. The map's drop-down lists the protocols on the map; choosing one highlights the connections carrying it and fades the rest. |
 
 ## Data ingestion
 

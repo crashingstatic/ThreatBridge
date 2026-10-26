@@ -173,7 +173,7 @@ try {
   }
   assert.ok(await menuHidden());
   assert.deepEqual(await rows(), ["Source", "10.0.0.77", "Destination", "10.0.0.9", "Direction", "inbound (past)",
-    "Connections", "1", "Top dst ports", "80", "First seen", "2024-05-01T12:30:00.000Z",
+    "Connections", "1", "Top dst ports", "80", "Protocols", "HTTP", "First seen", "2024-05-01T12:30:00.000Z",
     "Last seen", "2024-05-01T12:30:00.000Z"]);
   await sleep(1300);                                        // the first connection's flows arrive late
   assert.deepEqual(await page.$$eval("#flows ol.flows li", (l) => l.map((x) => x.firstChild.textContent)),
@@ -378,14 +378,14 @@ try {
     src: "10.0.1.1", dst: "10.0.1.2", start: "2024-05-01T12:50:00.000Z", end: "2024-05-01T13:09:50.000Z",
     offset: 0, total: 100071, flows: [
       { start: "2024-05-01T12:50:00.000Z", proto: "icmp", sport: null, dport: null, duration: null,
-        packets: 1234, bytes: 3410 },
+        packets: 1234, bytes: 3410, protocols: ["icmp"] },
       { start: "2024-05-01T12:51:00.000Z", proto: null, sport: null, dport: null, duration: 0.5,
-        packets: null, bytes: null }] } }));
+        packets: null, bytes: null, protocols: ["smb", "ntlm"] }] } }));
   p = await at(edge("10.0.1.1", "10.0.1.2"), "edge");
   await page.mouse.click(p.x, p.y, { button: "right" });
   await page.waitForFunction(() => document.querySelector("#flows .pager span")?.textContent === "1–2 of 100,071");
   assert.deepEqual(await page.$$eval("#flows ol.flows li small", (l) => l.map((x) => x.textContent)),
-                   ["icmp · 1,234 pkts · 3,410 B", "? · 0.500 s"]);
+                   ["ICMP · icmp · 1,234 pkts · 3,410 B", "SMB/NTLM · ? · 0.500 s"]);
   await page.unroute("**/api/flows?*");
 
   // 8c. Hops are time-chained. Going forward, 10.0.0.9's DNS query at 11:40 came before it
@@ -472,8 +472,10 @@ try {
   await page.route("**/api/threatline?*", (route) => route.fulfill({ json: { a: "10.0.0.5", b: "10.0.0.9", truncated: true,
     nodes: [{ id: "10.0.0.5", role: "selected", time: T5, hops: 0 }, { id: "10.0.0.9", role: "selected", time: T5, hops: 0 },
             { id: "192.0.2.50", role: "both", time: T5, hops: 1 }],
-    edges: [{ source: "192.0.2.50", target: "10.0.0.5", role: "up", count: 1, first_seen: T5, last_seen: T5, ports: [22] },
-            { source: "10.0.0.9", target: "192.0.2.50", role: "down", count: 1, first_seen: T5, last_seen: T5, ports: [22] }] } }));
+    edges: [{ source: "192.0.2.50", target: "10.0.0.5", role: "up", count: 1, first_seen: T5, last_seen: T5, ports: [22],
+              protocols: ["ssh"] },
+            { source: "10.0.0.9", target: "192.0.2.50", role: "down", count: 1, first_seen: T5, last_seen: T5, ports: [22],
+              protocols: ["ssh"] }] } }));
   await lineSays("Threat line through 10.0.0.5 → 10.0.0.9: 1 earlier host(s) (violet), 1 later host(s) (teal); " +
                  "≤ 6 hops, ≤ 24h between hops. Click the background to clear. " +
                  "WARNING: stopped at the host limit; the line is incomplete.");
@@ -488,7 +490,7 @@ try {
   await page.mouse.click(p.x, p.y);
   await waitStatus(/^Threat line/);
   const elements = () => cyEval(() => window.threatbridge.cy.elements().map((e) => [
-    e.id(), e.isNode() ? e.position() : [e.data("count"), e.data("ports"), e.data("first_seen")],
+    e.id(), e.isNode() ? e.position() : [e.data("count"), e.data("ports"), e.data("first_seen"), e.data("protocols")],
     e.data("anchor") ?? null, e.data("root") ?? null, e.classes().sort()]).sort());
   const settings = () => page.evaluate(() => ["ip", "ts", "direction", "window", "range-from", "range-to", "order",
     "limit", "route-src", "route-src-time", "route-dst", "route-dst-time"].map((id) => document.getElementById(id).value));
@@ -517,7 +519,11 @@ try {
   await waitStatus(/^Replaced the map "incident 42" for everyone$/);
   assert.equal(await page.locator("#session-list li").count(), 1);
   assert.deepEqual(await othersSee("#session-list .session"), ["incident 42"]);
+  // Clear clears the protocol chosen too.
+  await page.selectOption("#protocol", await page.$eval("#protocol option:nth-child(2)", (o) => o.value));
   await page.click("#clear");
+  await page.waitForFunction(() => document.querySelectorAll("#protocol option").length === 1);
+  assert.equal(await page.inputValue("#protocol"), "");
   await page.fill("#window", "1h");
   await page.selectOption("#order", "top");
   await page.fill("#limit", "50");
@@ -557,14 +563,18 @@ try {
   await openFile("odd.json", { version: 1,
     nodes: [{ id: "10.0.0.1", position: { x: 1, y: 2 } }, { id: "10.0.0.1" }, { id: "" }, { id: 5 }, { position: "x" },
             { id: "10.0.0.2", position: "here" }],
-    edges: [{ source: "10.0.0.1", target: "10.0.0.2", count: "many", ports: ["x", 80], direction: "sideways" },
+    edges: [{ source: "10.0.0.1", target: "10.0.0.2", count: "many", ports: ["x", 80], direction: "sideways",
+              protocols: ["quic", 7, "x".repeat(41), ""] },
             { source: "10.0.0.1", target: "nowhere" }, { source: 1, target: 2 }] });
   await waitStatus(/^Opened odd\.json: 2 host\(s\), 1 connection\(s\)$/);
   assert.deepEqual(await cyEval(() => {
     const cy = window.threatbridge.cy, e = cy.edges()[0];
-    return [e.id(), e.data("count"), e.data("ports"), e.data("direction"), e.data("label"),
+    return [e.id(), e.data("count"), e.data("ports"), e.data("direction"), e.data("label"), e.data("protocols"),
             cy.getElementById("10.0.0.1").position(), cy.getElementById("10.0.0.2").position()];
-  }), ["10.0.0.1->10.0.0.2", 0, [80], "out", "0 · 80", { x: 1, y: 2 }, { x: 0, y: 0 }]);
+  }), ["10.0.0.1->10.0.0.2", 0, [80], "out", "0 · 80", ["quic"], { x: 1, y: 2 }, { x: 0, y: 0 }]);
+  // A protocol ThreatBridge has no name for is shown as it came, in capitals.
+  await page.waitForFunction(() => document.querySelector("#protocol option:nth-child(2)")?.value === "quic");
+  assert.equal(await page.textContent("#protocol option:nth-child(2)"), "QUIC");
   // Without a name, the file is named after the IOC host, or "map" for an empty map.
   await openFile("incident.json", doc);
   await waitStatus(/^Opened incident\.json: /);

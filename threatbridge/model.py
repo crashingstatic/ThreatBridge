@@ -34,6 +34,7 @@ class Flow:
     packets: int
     bytes: int
     source: str       # evidence file the flow was first seen in
+    service: str = "unknown"   # the protocol it carries, as Zeek names it (see protocols.py)
 
 
 def proto_name(number):
@@ -110,12 +111,12 @@ def settle(first_flags, other_flags, first_port, other_port, packets=False):
     return ports_say_reversed(first_port, other_port) if flip is None else flip
 
 
-def oriented(flip, a, aport, b, bport, proto, start, end, packets, nbytes, source):
+def oriented(flip, a, aport, b, bport, proto, start, end, packets, nbytes, source, service):
     """A connection between a:aport and b:bport as flows: one from a (`flip` False) or from b
     (True); when who started it can't be told (None), two identical flows, one each way."""
     flows = []
     if not flip:
-        flows.append(Flow(a, b, aport, bport, proto, start, end, packets, nbytes, source))
+        flows.append(Flow(a, b, aport, bport, proto, start, end, packets, nbytes, source, service))
     if flip is not False:
-        flows.append(Flow(b, a, bport, aport, proto, start, end, packets, nbytes, source))
+        flows.append(Flow(b, a, bport, aport, proto, start, end, packets, nbytes, source, service))
     return flows

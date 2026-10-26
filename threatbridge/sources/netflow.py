@@ -10,6 +10,7 @@ import socket
 import subprocess
 import tempfile
 
+from .. import protocols
 from ..model import SourceError, icmp_flags, idle_timeout, oriented, proto_name, refused, settle
 from .workers import in_order
 
@@ -104,8 +105,10 @@ class _Conn:
             flip = False
         else:
             flip = settle(self.oflags, self.rflags, self.oport, self.rport)
+        server, client = (self.oport, self.rport) if flip else (self.rport, self.oport)
         return oriented(flip, self.orig, self.oport, self.resp, self.rport, self.proto,
-                        self.start, self.last, self.packets, self.bytes, self.source)
+                        self.start, self.last, self.packets, self.bytes, self.source,
+                        protocols.name(self.proto, 0, server, client))   # no payload: by port
 
 
 def pair_records(records):

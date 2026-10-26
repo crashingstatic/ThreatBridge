@@ -91,11 +91,15 @@ the window after it (`out`).
 {"ip": "10.0.0.9", "direction": "in", "order": "top", "anchor": "2024-05-01T13:00:00.000Z",
  "start": "2024-04-30T13:00:00.000Z", "end": "2024-05-01T13:00:00.000Z",
  "peers": [{"peer": "10.0.0.5", "count": 1, "first_seen": "2024-05-01T12:10:00.000Z",
-            "last_seen": "2024-05-01T12:10:00.000Z", "ports": [445]}],
+            "last_seen": "2024-05-01T12:10:00.000Z", "ports": [445], "protocols": ["smb"]}],
  "distinct_peers": 2, "truncated": false}
 ```
 
-`ports` are the most used destination ports (up to 5). `distinct_peers` may be null (Elasticsearch
+`ports` are the most used destination ports (up to 5). `protocols` are every protocol the flows
+carry, sorted: named as Zeek names its services (`dns`, `http`, `smb`, `ssl` for TLS, ...), plus
+`icmp`, and `unknown` for flows nothing identified. Security Onion gives Zeek's own; case files
+are identified from the payload, then by well-known port (README, *Post-mortem mode*).
+`distinct_peers` may be null (Elasticsearch
 estimate unavailable). `truncated`: the rarest scan stopped at `rare_scan_cap` distinct peers, so
 the bottom list may be incomplete. Hosts on the exclude list are left out. When the window and
 the time range don't overlap, `start` is after `end` and `peers` is empty.
@@ -117,10 +121,11 @@ One page of a connection's flows, oldest first.
 {"src": "10.0.0.5", "dst": "10.0.0.9", "start": "2024-05-01T12:10:00.000Z",
  "end": "2024-05-01T12:10:00.000Z", "offset": 0, "total": 1,
  "flows": [{"start": "2024-05-01T12:10:00.000Z", "duration": 0.001, "sport": 50001, "dport": 445,
-            "proto": "tcp", "packets": 2, "bytes": 80}]}
+            "proto": "tcp", "packets": 2, "bytes": 80, "protocols": ["smb"]}]}
 ```
 
-`duration` is in seconds; any field but `start` may be null. Flows from Security Onion also have
+`duration` is in seconds; any field but `start` and `protocols` (as for `/api/neighbors`; Zeek
+may name several for one connection) may be null. Flows from Security Onion also have
 `id` (the connection log's Elasticsearch ID, for `POST /api/pcap`) and `soc_pcap` (SOC's link
 that has the sensor extract the flow's packets). Security Onion lists at most the first 10,000
 flows of a connection (`offset + limit` past that is a 400); narrow the time range for later ones.
@@ -169,7 +174,7 @@ and where `b` could have gone after it.
 `{"a", "b", "nodes": [...], "edges": [...], "truncated": false}`. Each node is
 `{"id", "role", "time", "hops"}`: `role` is `selected` (`a` and `b`), `up` (earlier), `down`
 (later) or `both`; `time` is when the line reached it; `hops` how many it took. Each edge is
-`{"source", "target", "role", "count", "first_seen", "last_seen", "ports"}` for the flows on that
+`{"source", "target", "role", "count", "first_seen", "last_seen", "ports", "protocols"}` for the flows on that
 host pair that fit the line. `truncated`: a direction stopped at `TB_THREAT_MAX_HOSTS` hosts.
 A 400 says when there are no flows from `a` to `b` in that time.
 
@@ -192,7 +197,7 @@ With them: every path from `src` to `dst`, up to `TB_MAX_PATHS`:
 `{"src": "10.0.0.5", "dst": "10.0.0.20", "paths": [...], "truncated": false}`
 
 A path is `{"hops": [{"source", "target", "start", "sport", "dport", "proto", "packets",
-"bytes"}, ...]}`: one chain of flows that proves it. `truncated`: there are more than listed.
+"bytes", "protocols"}, ...]}`: one chain of flows that proves it. `truncated`: there are more than listed.
 
 ## Shared lists
 

@@ -6,6 +6,7 @@ import struct
 
 import dpkt
 
+from .. import protocols
 from ..model import SourceError, icmp_flags, idle_timeout, oriented, proto_name, refused, settle
 from ..progress import counted
 from .workers import in_order
@@ -41,7 +42,7 @@ class _Conn:
     it is settled when it closes (flows)."""
     __slots__ = ("orig", "oport", "resp", "rport", "proto", "start", "last", "packets",
                  "bytes", "source", "closing", "first_flags", "other_flags", "time_flip",
-                 "oall", "rall")
+                 "oall", "rall", "code")
 
     def __init__(self, orig, oport, resp, rport, proto, ts, source, flags):
         self.orig, self.oport, self.resp, self.rport = orig, oport, resp, rport
@@ -52,6 +53,7 @@ class _Conn:
         # says about who started it (None: it can't, or can't yet).
         self.first_flags, self.other_flags, self.time_flip = flags, None, None
         self.oall = self.rall = 0          # all of each side's flags, ORed together
+        self.code = 0                      # the protocol the first recognized payload showed
 
     def answer(self, ts, flags):
         """The other side's first packet, at `ts` with `flags`. If it came at another time than
@@ -68,8 +70,10 @@ class _Conn:
         flip = self.time_flip
         if flip is None:
             flip = settle(self.first_flags, self.other_flags, self.oport, self.rport, packets=True)
+        server, client = (self.oport, self.rport) if flip else (self.rport, self.oport)
         return oriented(flip, self.orig, self.oport, self.resp, self.rport, self.proto,
-                        self.start, self.last, self.packets, self.bytes, self.source)
+                        self.start, self.last, self.packets, self.bytes, self.source,
+                        protocols.name(self.proto, self.code, server, client))
 
 
 class FlowTracker:
@@ -87,7 +91,7 @@ class FlowTracker:
         self.now = 0.0
         self.next_sweep = 0.0
 
-    def add(self, ts, src, dst, proto, sport, dport, nbytes, flags, source):
+    def add(self, ts, src, dst, proto, sport, dport, nbytes, flags, source, code=0):
         if ts > self.now:
             self.now = ts
         if self.now >= self.next_sweep:
@@ -102,6 +106,8 @@ class FlowTracker:
             conn = None
         if conn is None:
             conn = self.open[key] = _Conn(src, sport, dst, dport, proto, ts, source, flags)
+        if code and not conn.code:
+            conn.code = code
         if (src, sport) == (conn.orig, conn.oport):
             conn.oall |= flags
         else:
@@ -256,10 +262,13 @@ def _decoded(path, dns, counts, report=None):
             else:
                 continue  # ARP and other non-IP traffic
             t = ip.data
+            code = 0
             if isinstance(t, dpkt.tcp.TCP):
                 sport, dport, flags = t.sport, t.dport, t.flags
+                code = protocols.from_payload(True, sport, dport, t.data)
             elif isinstance(t, dpkt.udp.UDP):
                 sport, dport, flags = t.sport, t.dport, 0
+                code = protocols.from_payload(False, sport, dport, t.data)
                 if sport == 53 and dns is not None:
                     record_dns(t.data, ts, dns)
             elif ip.p in (dpkt.ip.IP_PROTO_TCP, dpkt.ip.IP_PROTO_UDP):
@@ -273,7 +282,7 @@ def _decoded(path, dns, counts, report=None):
                 sport, dport, flags = 0, 0, icmp_flags(ip.p, t.type)
             else:
                 sport = dport = flags = 0
-            yield ts, version, ip.p, ip.src, ip.dst, sport, dport, nbytes, flags
+            yield ts, version, ip.p, ip.src, ip.dst, sport, dport, nbytes, flags, code
         if report:
             report(fh.tell() - offset)
 
@@ -294,9 +303,9 @@ class _Hosts:
 
 
 def _track(tracker, packets, path, hosts):
-    for ts, version, p, src, dst, sport, dport, nbytes, flags in packets:
+    for ts, version, p, src, dst, sport, dport, nbytes, flags, code in packets:
         tracker.add(ts, hosts(version, src), hosts(version, dst), proto_name(p), sport, dport,
-                    nbytes, flags, path)
+                    nbytes, flags, path, code)
 
 
 def _logged(path, counts):
@@ -306,8 +315,8 @@ def _logged(path, counts):
 
 
 # A decoded packet as worker processes pass it back (see _decoded): addresses in 16 bytes,
-# an IPv4 address in the first 4.
-_PACKED = struct.Struct("<dBB16s16sHHIB")
+# an IPv4 address in the first 4; the last byte is the payload's protocol code.
+_PACKED = struct.Struct("<dBB16s16sHHIBB")
 
 
 def _decode_file(path, want_dns):

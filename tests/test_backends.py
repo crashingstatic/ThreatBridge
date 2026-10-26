@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 import requests
 
-from threatbridge import backends
+from threatbridge import backends, protocols
 from threatbridge import query as q
 from threatbridge.app import create_app
 from threatbridge.backends import BackendError, DemoBackend, ElasticBackend
@@ -115,16 +115,23 @@ def test_elastic_top_peers():
         "peers": {"buckets": [
             {"key": "10.0.0.7", "doc_count": 9, "first_seen": {"value": 1714564800000.0},
              "last_seen": {"value_as_string": "2024-05-01T12:30:00.000Z"},
-             "ports": {"buckets": [{"key": 443}, {"key": 80}]}},
-            {"key": "10.0.0.8", "doc_count": 1, "first_seen": {"value": None}, "last_seen": {}}]},
+             "ports": {"buckets": [{"key": 443}, {"key": 80}]},
+             # Zeek's service: lists, aliases, and records it named nothing for, by transport.
+             "protocols": {"buckets": [
+                 {"key": "smb,ntlm,gssapi"}, {"key": "krb_tcp"},
+                 {"key": "", "transports": {"buckets": [{"key": "tcp"}, {"key": "icmp"}]}}]}},
+            {"key": "10.0.0.8", "doc_count": 1, "first_seen": {"value": None}, "last_seen": {},
+             "protocols": {"buckets": [{"key": "", "transports": {"buckets": [{"key": "icmp"}]}}]}}]},
         "distinct": {"value": 42}}})
     be = ElasticBackend(Config(es_url="https://es.example:9200/", es_index="logs-zeek-*", es_timeout=7))
     be.session = es
     res = be.neighbors("10.0.0.5", "in", T0, T1, 2, "top", [])
     assert res == {"peers": [
         {"peer": "10.0.0.7", "count": 9, "first_seen": "2024-05-01T12:00:00.000Z",
-         "last_seen": "2024-05-01T12:30:00.000Z", "ports": [443, 80]},
-        {"peer": "10.0.0.8", "count": 1, "first_seen": None, "last_seen": None, "ports": []}],
+         "last_seen": "2024-05-01T12:30:00.000Z", "ports": [443, 80],
+         "protocols": ["gssapi", "icmp", "krb", "ntlm", "smb", "unknown"]},
+        {"peer": "10.0.0.8", "count": 1, "first_seen": None, "last_seen": None, "ports": [],
+         "protocols": ["icmp"]}],
         "distinct_peers": 42, "truncated": False}
     [call] = es.calls
     assert call["url"] == "https://es.example:9200/logs-zeek-*/_search"
@@ -182,13 +189,17 @@ def test_elastic_flows_read_fields_and_stop_at_the_result_window():
     be.session = FlowsES([
         {"@timestamp": ["2024-05-01T12:00:00.123456Z"], "source.port": [50000],
          "destination.port": [445], "network.transport": ["tcp"], "event.duration": [1.5],
-         "client.packets": [3], "server.packets": [4], "client.ip_bytes": [300]},
-        {"@timestamp": ["2024-05-01T12:00:01Z"], "event.duration": ["n/a"]}], total=7)
+         "client.packets": [3], "server.packets": [4], "client.ip_bytes": [300],
+         "network.protocol": ["smb,ntlm"]},
+        {"@timestamp": ["2024-05-01T12:00:01Z"], "event.duration": ["n/a"]},
+        {"@timestamp": ["2024-05-01T12:00:02Z"], "network.transport": ["icmp"]}], total=7)
     res = be.flows("10.0.0.1", "10.0.0.2", T0, T0, 0, 50)
     assert res["total"] == 7
     assert res["flows"][0] == {"start": "2024-05-01T12:00:00.123Z", "duration": 1.5, "sport": 50000,
-                               "dport": 445, "proto": "tcp", "packets": 7, "bytes": 300}
+                               "dport": 445, "proto": "tcp", "packets": 7, "bytes": 300,
+                               "protocols": ["smb", "ntlm"]}
     assert res["flows"][1]["packets"] is None and res["flows"][1]["sport"] is None
+    assert [f["protocols"] for f in res["flows"][1:]] == [["unknown"], ["icmp"]]    # none named
     assert res["flows"][1]["duration"] is None                      # not a number: left out
     with pytest.raises(q.ValidationError, match="narrow the time range"):
         be.flows("10.0.0.1", "10.0.0.2", T0, T0, 9990, 50)
@@ -196,13 +207,17 @@ def test_elastic_flows_read_fields_and_stop_at_the_result_window():
 
 def test_elastic_flows_read_the_configured_fields():
     cfg = Config(f_ts="t", f_sport="sp", f_dport="dp", f_proto="pr", f_duration="du",
-                 f_packets=["p1", "p2"], f_bytes=["b1", "b2"])
+                 f_packets=["p1", "p2"], f_bytes=["b1", "b2"], f_service="sv")
     be = ElasticBackend(cfg)
     be.session = FlowsES([{"t": ["2024-05-01T12:00:00Z"], "sp": [53000], "dp": [53], "pr": ["udp"],
-                           "du": [0.25], "p1": [1], "p2": [1], "b1": [70], "b2": [90]}], total=1)
+                           "du": [0.25], "p1": [1], "p2": [1], "b1": [70], "b2": [90], "sv": ["dns"]}],
+                         total=1)
     assert be.flows("10.0.0.1", "10.0.0.2", T0, T0, 0, 50)["flows"] == [
         {"start": "2024-05-01T12:00:00.000Z", "duration": 0.25, "sport": 53000, "dport": 53,
-         "proto": "udp", "packets": 2, "bytes": 160}]
+         "proto": "udp", "packets": 2, "bytes": 160, "protocols": ["dns"]}]
+    # TB_FIELD_SERVICE= (empty): not asked for, so unknown.
+    be.cfg.f_service = ""
+    assert be.flows("10.0.0.1", "10.0.0.2", T0, T0, 0, 50)["flows"][0]["protocols"] == ["unknown"]
 
 
 def test_elastic_flows_request_and_limits():
@@ -327,6 +342,9 @@ def test_demo_edges_match_their_flow_lists(direction):
         assert all(p["first_seen"] <= f["start"] <= p["last_seen"] for f in r["flows"])
         assert all(f["soc_pcap"] == q.soc_pcap_url(be.cfg, f["id"], f["start"]) for f in r["flows"])
         assert len({f["id"] for f in r["flows"]}) == len(r["flows"])
+        # Protocols by port, as case files without a payload have them.
+        assert p["protocols"] == sorted({protocols.name("tcp", 0, port, 0) for port in p["ports"]})
+        assert all(f["protocols"] == [protocols.name("tcp", 0, f["dport"], 0)] for f in r["flows"])
 
 
 def test_make_backend():

@@ -40,9 +40,49 @@ const TWO_PATHS = [
   ["203.0.113.66 → 10.0.0.5 → 10.0.0.20", "2024-05-01T12:00:00.000Z → 2024-05-01T12:15:00.000Z"],
   ["203.0.113.66 → 10.0.0.5 → 10.0.0.9 → 10.0.0.20", "2024-05-01T12:00:00.000Z → 2024-05-01T12:20:00.000Z"]];
 
+const protocolOptions = () => page.$$eval("#protocol option", (l) => l.map((o) => [o.value, o.textContent]));
+const style = (id, prop) => cyEval(([i, p]) => window.threatbridge.cy.getElementById(i).style(p), [id, prop]);
+
 try {
   await page.goto(`${BASE}/?ip=10.0.0.9&dir=in`);
   await page.waitForFunction(() => window.threatbridge.cy.nodes().length >= 3);
+
+  // The protocol drop-down lists the protocols on the map's connections, by name. Choosing one
+  // makes the connections carrying it glow and the others fade.
+  await page.waitForFunction(() => document.querySelectorAll("#protocol option").length === 3);
+  assert.deepEqual(await protocolOptions(), [["", "All"], ["http", "HTTP"], ["smb", "SMB"]]);
+  await page.selectOption("#protocol", "smb");
+  assert.ok((await classes("10.0.0.5->10.0.0.9")).includes("proto-hit"));
+  assert.ok((await classes("10.0.0.77->10.0.0.9")).includes("proto-dim"));
+  assert.equal(await style("10.0.0.77->10.0.0.9", "opacity"), "0.2");
+  assert.equal(await style("10.0.0.5->10.0.0.9", "underlay-color"), "rgb(255,224,102)");
+  // Expanded again, a connection already drawn may carry more (say, the analyst changed the
+  // window): the drop-down follows, with no connection added or removed.
+  await page.route("**/api/neighbors?*", async (route) => {
+    const r = await route.fetch();
+    const json = await r.json();
+    for (const peer of json.peers) if (peer.peer === "10.0.0.5") peer.protocols = ["dce_rpc", "smb"];
+    await route.fulfill({ response: r, json });
+  });
+  const root = await at("node#10\\.0\\.0\\.9");
+  await page.mouse.click(root.x, root.y, { button: "right" });
+  await menuClick("Expand inbound: who connected to it (past)");
+  await page.waitForFunction(() => document.querySelectorAll("#protocol option").length === 4);
+  assert.deepEqual(await protocolOptions(), [["", "All"], ["dce_rpc", "DCE/RPC"], ["http", "HTTP"], ["smb", "SMB"]]);
+  assert.equal(await page.inputValue("#protocol"), "smb");
+  await remap();                                                    // mapping again keeps the choice
+  assert.equal(await page.inputValue("#protocol"), "smb");
+  // A choice no connection carries any more holds, says so, and fades every connection, until
+  // another is chosen.
+  await page.selectOption("#protocol", "dce_rpc");
+  await page.unroute("**/api/neighbors?*");
+  await remap();
+  await page.waitForFunction(() => document.querySelector("#protocol option[value=dce_rpc]")?.textContent ===
+                                   "DCE/RPC (not on the map)");
+  assert.equal(await page.inputValue("#protocol"), "dce_rpc");
+  assert.equal(await cyEval(() => window.threatbridge.cy.edges().not(".proto-dim").length), 0);
+  await page.selectOption("#protocol", "smb");
+  assert.deepEqual(await protocolOptions(), [["", "All"], ["http", "HTTP"], ["smb", "SMB"]]);
 
   // Left-click the 10.0.0.5 -> 10.0.0.9 edge: the threat line runs back to the external
   // host and forward to 10.0.0.20, which was not on the map yet.
@@ -55,12 +95,28 @@ try {
   assert.ok((await classes("10.0.0.20")).includes("down"));
   assert.ok((await classes("10.0.0.5->10.0.0.9")).includes("line-selected"));
   assert.ok((await classes("10.0.0.77")).includes("faded"), "inbound peer after the hop is not on the line");
+  // The line's new connections join the drop-down, and the choice holds: SMB still glows (even
+  // where the line fades the map), the new ones fade.
+  await page.waitForFunction(() => document.querySelectorAll("#protocol option").length === 5);
+  assert.deepEqual(await protocolOptions(),
+                   [["", "All"], ["http", "HTTP"], ["rdp", "RDP"], ["smb", "SMB"], ["ssl", "TLS"]]);
+  assert.equal(await page.inputValue("#protocol"), "smb");
+  assert.ok((await classes("203.0.113.66->10.0.0.5")).includes("proto-dim"));
+  assert.ok((await classes("10.0.0.9->10.0.0.20")).includes("proto-dim"));
+  await page.selectOption("#protocol", "ssl");
+  assert.deepEqual([await style("203.0.113.66->10.0.0.5", "opacity"), await style("10.0.0.5->10.0.0.9", "opacity")],
+                   ["1", "0.2"]);
+  await page.selectOption("#protocol", "http");                    // glows though the line faded it
+  assert.ok((await classes("10.0.0.77->10.0.0.9")).includes("faded"));
+  assert.equal(await style("10.0.0.77->10.0.0.9", "opacity"), "1");
+  await page.selectOption("#protocol", "");                       // All: no filter
+  assert.equal(await cyEval(() => window.threatbridge.cy.$(".proto-hit, .proto-dim").length), 0);
   // The same click lists the connection's flows, oldest first.
   await page.waitForSelector("#flows ol.flows li");
   assert.equal(await page.textContent("#flows .pager span"), "1–1 of 1");
   assert.equal(await page.$eval("#flows ol.flows li", (li) => li.firstChild.textContent),
                "2024-05-01T12:10:00.000Z");
-  assert.match(await page.textContent("#flows ol.flows li small"), /^tcp 50001 → 445 · 0\.001 s · 2 pkts · \d+ B$/);
+  assert.match(await page.textContent("#flows ol.flows li small"), /^SMB · tcp 50001 → 445 · 0\.001 s · 2 pkts · \d+ B$/);
   assert.equal(await page.locator("#flows a, #flows button:has-text('PCAP')").count(), 0);   // no PCAP for case files
   await shot("threat-line");
 

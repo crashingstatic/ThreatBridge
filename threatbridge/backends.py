@@ -1,11 +1,12 @@
 """Data backends.
 
 neighbors() returns {"peers": [...], "distinct_peers": int|None, "truncated": bool}
-where each peer is {"peer", "count", "first_seen", "last_seen", "ports"}.
+where each peer is {"peer", "count", "first_seen", "last_seen", "ports", "protocols"}.
+Protocols are named as Zeek names services (see protocols.py), plus "icmp" and "unknown".
 
 flows() returns {"total": int, "flows": [...]}: one page of a connection's flows, oldest
-first, each {"start", "duration", "sport", "dport", "proto", "packets", "bytes"} (duration in
-seconds; any but start may be None). Flows from Security Onion also have "id" (the connection
+first, each {"start", "duration", "sport", "dport", "proto", "packets", "bytes", "protocols"}
+(duration in seconds; any but start and protocols may be None). Flows from Security Onion also have "id" (the connection
 log's Elasticsearch ID) and "soc_pcap" (SOC's link to the flow's packets).
 
 dns_answers([entry, ...]) (Security Onion) returns {entry: {ip: [first seen, last seen]}}:
@@ -27,7 +28,7 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
-from . import analysis, sources
+from . import analysis, protocols, sources
 from .graph import build_graph, count_between
 from .progress import Progress, counted
 from .query import (ValidationError, es_details_body, es_dns_body, es_flows_body, es_scan_body,
@@ -124,6 +125,8 @@ class ElasticBackend:
             "first_seen": self._agg_time(b.get("first_seen", {})),
             "last_seen": self._agg_time(b.get("last_seen", {})),
             "ports": [p["key"] for p in b.get("ports", {}).get("buckets", [])],
+            "protocols": (_es_protocols(b["protocols"]["buckets"]) if "protocols" in b
+                          else [protocols.UNKNOWN]),           # TB_FIELD_SERVICE= (empty)
         }
 
     def flows(self, src, dst, start, end, offset, limit):
@@ -159,9 +162,12 @@ class ElasticBackend:
             start = datetime.fromtimestamp(hit["sort"][0] / 1000.0, timezone.utc)
         else:
             return None
+        proto = one(cfg.f_proto)
+        named = protocols.split(one(cfg.f_service) or "") if cfg.f_service else []
         flow = {"start": fmt_time(start), "duration": number(cfg.f_duration),
-                "sport": one(cfg.f_sport), "dport": one(cfg.f_dport), "proto": one(cfg.f_proto),
-                "packets": total(cfg.f_packets), "bytes": total(cfg.f_bytes)}
+                "sport": one(cfg.f_sport), "dport": one(cfg.f_dport), "proto": proto,
+                "packets": total(cfg.f_packets), "bytes": total(cfg.f_bytes),
+                "protocols": named or ["icmp" if proto == "icmp" else protocols.UNKNOWN]}
         if hit.get("_id"):
             flow.update(id=hit["_id"], soc_pcap=soc_pcap_url(cfg, hit["_id"], flow["start"]))
         return flow
@@ -173,6 +179,19 @@ class ElasticBackend:
             out[entry] = {b["key"]: [_seconds(b.get("first")), _seconds(b.get("last"))]
                           for b in buckets.get(entry, {}).get("ips", {}).get("buckets", [])}
         return out
+
+
+def _es_protocols(buckets):
+    """A peer's protocols from its terms buckets on Zeek's service field. Records without one
+    (the "" bucket) are ICMP or unknown, by their transport."""
+    found = set()
+    for b in buckets:
+        if b["key"]:
+            found.update(protocols.split(b["key"]))
+        else:
+            for t in b.get("transports", {}).get("buckets", []):
+                found.add("icmp" if t["key"] == "icmp" else protocols.UNKNOWN)
+    return sorted(found)
 
 
 class DemoBackend:
@@ -211,6 +230,7 @@ class DemoBackend:
                 "last_seen": fmt_time(max(a, b)),
                 "ports": sorted(rng.sample(self.PORTS, rng.randint(1, 3))),
             }
+            seen[peer]["protocols"] = sorted({protocols.name("tcp", 0, p, 0) for p in seen[peer]["ports"]})
         peers = [p for p in seen.values()
                  if not any(ipaddress.ip_address(p["peer"]) in n for n in nets)]
         if order == "top":
@@ -230,6 +250,7 @@ class DemoBackend:
                  "sport": rng.randint(1024, 65535), "dport": rng.choice(self.PORTS), "proto": "tcp",
                  "packets": rng.randint(2, 400), "bytes": rng.randint(120, 500000)} for t in starts]
         for i, row in enumerate(rows):   # links as Security Onion's flows have them
+            row["protocols"] = [protocols.name("tcp", 0, row["dport"], 0)]
             row["id"] = f"demo{hashlib.sha256(f'{src}>{dst}>{i}'.encode()).hexdigest()[:16]}"
             row["soc_pcap"] = soc_pcap_url(self.cfg, row["id"], row["start"])
         return {"total": count, "flows": rows[offset:offset + limit]}
@@ -324,20 +345,21 @@ class CaseBackend:
                     peers[peer] = (n, first, last)
         sign = -1 if order == "top" else 1
         ranked = sorted(peers.items(), key=lambda kv: (sign * kv[1][0], kv[0]))[:limit]
-        ports = self.store.ports(ip, direction, [peer for peer, _ in ranked], lo, hi)
+        details = self.store.details(ip, direction, [peer for peer, _ in ranked], lo, hi)
         return {
             "peers": [{"peer": peer, "count": n, "first_seen": fmt_time(_utc(first)),
-                       "last_seen": fmt_time(_utc(last)), "ports": _top_ports(ports[peer])}
+                       "last_seen": fmt_time(_utc(last)), "ports": _top_ports(details[peer][0]),
+                       "protocols": details[peer][1]}
                       for peer, (n, first, last) in ranked],
             "distinct_peers": len(peers),
             "truncated": False,
         }
 
     def _edge(self, src, dst, intervals, role):
-        n, first, last, ports = self.store.edge(src, dst, intervals)
+        n, first, last, ports, found = self.store.edge(src, dst, intervals)
         return {"source": src, "target": dst, "role": role, "count": n,
                 "first_seen": fmt_time(_utc(first)), "last_seen": fmt_time(_utc(last)),
-                "ports": _top_ports(ports)}
+                "ports": _top_ports(ports), "protocols": found}
 
     def flows(self, src, dst, start, end, offset, limit):
         lo, hi = start.timestamp() - TIME_SLACK, end.timestamp() + TIME_SLACK
@@ -347,7 +369,7 @@ class CaseBackend:
         return {"total": total, "flows": [{
             "start": fmt_time(_utc(f.start)), "duration": round(f.end - f.start, 6),
             "sport": f.sport, "dport": f.dport, "proto": f.proto, "packets": f.packets,
-            "bytes": f.bytes} for f in page]}
+            "bytes": f.bytes, "protocols": [f.service]} for f in page]}
 
     def threat_line(self, a, b, first, last, window, max_hops, exclude, max_hosts,
                     bounds=(None, None)):
@@ -409,7 +431,7 @@ class CaseBackend:
             flows[h] = self.store.flow_at(h.src, h.dst, h.start)
         return [{"hops": [{"source": f.src, "target": f.dst, "start": fmt_time(_utc(f.start)),
                            "sport": f.sport, "dport": f.dport, "proto": f.proto,
-                           "packets": f.packets, "bytes": f.bytes}
+                           "packets": f.packets, "bytes": f.bytes, "protocols": [f.service]}
                           for f in (flows[h] for h in hops)]} for hops in found]
 
 

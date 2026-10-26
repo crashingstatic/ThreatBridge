@@ -11,10 +11,11 @@ import threading
 from .model import Flow
 from .progress import QUIET, counted
 
-VERSION = "6"   # changes when flows are read differently, so older stores are rebuilt
+VERSION = "7"   # changes when flows are read differently, so older stores are rebuilt
 _SCHEMA = """
 CREATE TABLE flow (src TEXT, dst TEXT, sport INTEGER, dport INTEGER, proto TEXT,
-                   start_ts REAL, end_ts REAL, packets INTEGER, bytes INTEGER, source TEXT);
+                   start_ts REAL, end_ts REAL, packets INTEGER, bytes INTEGER, source TEXT,
+                   service TEXT);
 CREATE TABLE dns (name TEXT, ip TEXT, first_ts REAL, last_ts REAL);
 CREATE TABLE evidence (path TEXT, size INTEGER, mtime_ns INTEGER);
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
@@ -25,27 +26,37 @@ CREATE INDEX flow_pair ON flow (src, dst, start_ts);
 _TABLES = {"flow", "dns", "evidence", "meta"}
 _FAR = 1e18  # seconds
 _DROP = "".join(f"DROP TABLE IF EXISTS {t};" for t in sorted(_TABLES))
-# TCP/UDP destination ports per peer, for flows into ("in") or out of ("out") a host.
+# Destination ports and protocols per peer, for flows into ("in") or out of ("out") a host.
 # The peers are one JSON array parameter, so the SQL text never changes.
-_PORTS = {
-    "in": "SELECT src, dport, count(*) FROM flow WHERE dst = ? "
+_DETAILS = {
+    "in": "SELECT src, dport, proto, service, count(*) FROM flow WHERE dst = ? "
           "AND src IN (SELECT value FROM json_each(?)) AND start_ts BETWEEN ? AND ? "
-          "AND proto IN ('tcp', 'udp') GROUP BY src, dport",
-    "out": "SELECT dst, dport, count(*) FROM flow WHERE src = ? "
+          "GROUP BY src, dport, proto, service",
+    "out": "SELECT dst, dport, proto, service, count(*) FROM flow WHERE src = ? "
            "AND dst IN (SELECT value FROM json_each(?)) AND start_ts BETWEEN ? AND ? "
-           "AND proto IN ('tcp', 'udp') GROUP BY dst, dport",
+           "GROUP BY dst, dport, proto, service",
 }
 
-# Count, first/last start, and TCP/UDP destination ports of the flows src -> dst within a
+# Count, first/last start, destination ports and protocols of the flows src -> dst within a
 # JSON array of [lo, hi] intervals. CROSS JOIN keeps the intervals as the outer loop, so each
 # one is a range search on the flow_pair index.
 _EDGE = ("SELECT count(*), min(f.start_ts), max(f.start_ts) "
          "FROM json_each(?) AS j CROSS JOIN flow AS f WHERE f.src = ? AND f.dst = ? "
          "AND f.start_ts BETWEEN json_extract(j.value, '$[0]') AND json_extract(j.value, '$[1]')")
-_EDGE_PORTS = ("SELECT f.dport, count(*) "
-               "FROM json_each(?) AS j CROSS JOIN flow AS f WHERE f.src = ? AND f.dst = ? "
-               "AND f.start_ts BETWEEN json_extract(j.value, '$[0]') AND json_extract(j.value, '$[1]') "
-               "AND f.proto IN ('tcp', 'udp') GROUP BY f.dport")
+_EDGE_DETAILS = ("SELECT f.dport, f.proto, f.service, count(*) "
+                 "FROM json_each(?) AS j CROSS JOIN flow AS f WHERE f.src = ? AND f.dst = ? "
+                 "AND f.start_ts BETWEEN json_extract(j.value, '$[0]') AND json_extract(j.value, '$[1]') "
+                 "GROUP BY f.dport, f.proto, f.service")
+
+
+def _ports_and_protocols(rows):
+    """({dport: count} of the TCP/UDP flows, sorted protocols) from (dport, proto, service, n)."""
+    ports, protocols = {}, set()
+    for dport, proto, service, n in rows:
+        if proto in ("tcp", "udp"):
+            ports[dport] = ports.get(dport, 0) + n
+        protocols.add(service)
+    return ports, sorted(protocols)
 
 
 class NotAStore(Exception):
@@ -82,9 +93,9 @@ class FlowStore:
         db.execute("PRAGMA synchronous=OFF")
         db.executescript(_DROP + _SCHEMA)
         with db, progress.stage("Saving the flows", len(flows)) as stage:
-            db.executemany("INSERT INTO flow VALUES (?,?,?,?,?,?,?,?,?,?)",
+            db.executemany("INSERT INTO flow VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                            ((f.src, f.dst, f.sport, f.dport, f.proto, f.start, f.end, f.packets,
-                             f.bytes, f.source) for f in counted(flows, stage)))
+                             f.bytes, f.source, f.service) for f in counted(flows, stage)))
             db.executemany("INSERT INTO dns VALUES (?,?,?,?)",
                            ((name, ip, t[0], t[1]) for name, seen in dns.items()
                             for ip, t in seen.items()))
@@ -120,29 +131,29 @@ class FlowStore:
         """(flow count, earliest start, latest end)."""
         return self._db().execute("SELECT count(*), min(start_ts), max(end_ts) FROM flow").fetchone()
 
-    def ports(self, host, direction, peers, lo, hi):
-        """{peer: {dport: count}} for TCP/UDP flows into ("in") or out of ("out") `host`
-        from/to the given peers, started within [lo, hi]."""
-        out = {peer: {} for peer in peers}
+    def details(self, host, direction, peers, lo, hi):
+        """{peer: ({dport: count} of TCP/UDP flows, sorted protocols)} for flows into ("in")
+        or out of ("out") `host` from/to the given peers, started within [lo, hi]."""
+        rows = {peer: [] for peer in peers}
         if peers:
-            for peer, port, n in self._db().execute(_PORTS[direction],
-                                                    (host, json.dumps(list(peers)), lo, hi)):
-                out[peer][port] = n
-        return out
+            for peer, *row in self._db().execute(_DETAILS[direction],
+                                                 (host, json.dumps(list(peers)), lo, hi)):
+                rows[peer].append(row)
+        return {peer: _ports_and_protocols(r) for peer, r in rows.items()}
 
     def edge(self, src, dst, intervals):
-        """(count, first start, last start, {dport: count}) for flows src -> dst that started
-        within the disjoint intervals [(lo, hi), ...]."""
+        """(count, first start, last start, {dport: count} of TCP/UDP flows, sorted protocols)
+        for flows src -> dst that started within the disjoint intervals [(lo, hi), ...]."""
         db = self._db()
         # JSON has no infinity: an open end becomes a far-off time.
         args = (json.dumps([[max(lo, -_FAR), min(hi, _FAR)] for lo, hi in intervals]), src, dst)
         n, first, last = db.execute(_EDGE, args).fetchone()
-        return n, first, last, dict(db.execute(_EDGE_PORTS, args))
+        return (n, first, last, *_ports_and_protocols(db.execute(_EDGE_DETAILS, args)))
 
     def flows(self, src, dst, lo, hi, offset, limit):
         """One page of the flows src -> dst that started within [lo, hi], oldest first."""
         rows = self._db().execute(
-            "SELECT src, dst, sport, dport, proto, start_ts, end_ts, packets, bytes, source "
+            "SELECT src, dst, sport, dport, proto, start_ts, end_ts, packets, bytes, source, service "
             "FROM flow WHERE src = ? AND dst = ? AND start_ts BETWEEN ? AND ? "
             "ORDER BY start_ts, rowid LIMIT ? OFFSET ?", (src, dst, lo, hi, limit, offset))
         return [Flow(*row) for row in rows]
@@ -150,6 +161,6 @@ class FlowStore:
     def flow_at(self, src, dst, start):
         """The flow src -> dst that started at exactly `start`."""
         row = self._db().execute(
-            "SELECT src, dst, sport, dport, proto, start_ts, end_ts, packets, bytes, source "
+            "SELECT src, dst, sport, dport, proto, start_ts, end_ts, packets, bytes, source, service "
             "FROM flow WHERE src = ? AND dst = ? AND start_ts = ? LIMIT 1", (src, dst, start)).fetchone()
         return Flow(*row) if row else None

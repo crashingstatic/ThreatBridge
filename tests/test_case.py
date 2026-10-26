@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from evidence import ACK, SYN, tcp, udp, write_pcap
-from threatbridge import sources
+from threatbridge import protocols, sources
 from threatbridge import store as store_mod
 from threatbridge.app import create_app
 from threatbridge.backends import CaseBackend, DemoBackend
@@ -27,7 +27,8 @@ WRITE = {"X-ThreatBridge": "1"}
 
 
 def flow(src, dst, dport, start, proto="tcp", sport=50000):
-    return Flow(src, dst, sport, dport, proto, start, start + 1, 2, 120, "x.pcap")
+    return Flow(src, dst, sport, dport, proto, start, start + 1, 2, 120, "x.pcap",
+                protocols.name(proto, 0, dport, sport))
 
 
 def utc(epoch):
@@ -62,13 +63,15 @@ def test_store_queries(tmp_path):
     store = FlowStore(str(tmp_path / "case.db"))
     store.write(FLOWS, {"x.example": {"10.0.0.1": [T, T + 1]}}, [("/e/cap.pcap", 10, 5)])
     assert store.stats() == (9, T + 10, T + 5001)
-    assert store.ports(H, "in", ["10.0.0.1", "10.0.0.2", "10.0.0.3"], T + 15, T + 45) == {
-        "10.0.0.1": {445: 1, 3389: 1}, "10.0.0.2": {22: 1}, "10.0.0.3": {}}
-    assert store.ports(H, "out", ["10.0.0.20"], 0, T * 2) == {"10.0.0.20": {443: 1}}
-    assert store.ports("10.9.9.9", "in", [], 0, T * 2) == {}
-    assert store.edge("10.0.0.1", H, [(T, T + 25)]) == (2, T + 10, T + 20, {445: 2})
+    assert store.details(H, "in", ["10.0.0.1", "10.0.0.2", "10.0.0.3"], T + 15, T + 45) == {
+        "10.0.0.1": ({445: 1, 3389: 1}, ["rdp", "smb"]), "10.0.0.2": ({22: 1}, ["ssh"]),
+        "10.0.0.3": ({}, [])}
+    assert store.details(H, "in", ["10.0.0.3"], 0, T * 2) == {"10.0.0.3": ({}, ["icmp"])}  # no ports
+    assert store.details(H, "out", ["10.0.0.20"], 0, T * 2) == {"10.0.0.20": ({443: 1}, ["ssl"])}
+    assert store.details("10.9.9.9", "in", [], 0, T * 2) == {}
+    assert store.edge("10.0.0.1", H, [(T, T + 25)]) == (2, T + 10, T + 20, {445: 2}, ["smb"])
     assert store.edge("10.0.0.1", H, [(T, T + 15), (T + 25, T + 35)]) == (2, T + 10, T + 30,
-                                                                       {445: 1, 3389: 1})
+                                                                       {445: 1, 3389: 1}, ["rdp", "smb"])
     assert store.edge("10.0.0.1", H, [(-float("inf"), float("inf"))])[0] == 3
     assert store.flow_at("10.0.0.2", H, T + 40) == FLOWS[3]
     assert store.dns() == {"x.example": {"10.0.0.1": [T, T + 1]}}
@@ -160,6 +163,7 @@ def test_neighbors_inbound(backend):
     assert rows["10.0.0.1"]["first_seen"] == "2024-05-01T12:00:10.000Z"
     assert rows["10.0.0.1"]["last_seen"] == "2024-05-01T12:00:30.000Z"
     assert rows["10.0.0.3"]["ports"] == []                    # ICMP has no ports
+    assert rows["10.0.0.1"]["protocols"] == ["rdp", "smb"] and rows["10.0.0.3"]["protocols"] == ["icmp"]
     assert "10.0.0.4" not in rows                              # outside the window
 
 
@@ -235,9 +239,9 @@ def test_flows_api_lists_a_connection_oldest_first(client):
     assert (r["total"], r["offset"]) == (3, 0)
     assert r["flows"] == [
         {"start": "2024-05-01T12:00:10.000Z", "duration": 1.0, "sport": 50000, "dport": 445,
-         "proto": "tcp", "packets": 2, "bytes": 120},
+         "proto": "tcp", "packets": 2, "bytes": 120, "protocols": ["smb"]},
         {"start": "2024-05-01T12:00:20.000Z", "duration": 1.0, "sport": 50000, "dport": 445,
-         "proto": "tcp", "packets": 2, "bytes": 120}]
+         "proto": "tcp", "packets": 2, "bytes": 120, "protocols": ["smb"]}]
     r = client.get(base + "&limit=2&offset=2").get_json()
     assert [(f["start"], f["dport"]) for f in r["flows"]] == [("2024-05-01T12:00:30.000Z", 3389)]
     assert client.get(base + "&offset=3").get_json()["flows"] == []
@@ -336,6 +340,7 @@ def test_threatline_api(chain_client):
     edges = {(e["source"], e["target"]): e for e in r["edges"]}
     assert set(edges) == {("10.0.0.5", H), ("203.0.113.66", "10.0.0.5"), (H, "10.0.0.20")}
     assert edges[(H, "10.0.0.20")]["count"] == 2 and edges[(H, "10.0.0.20")]["ports"] == [3389]
+    assert edges[(H, "10.0.0.20")]["protocols"] == ["rdp"]
     assert edges[(H, "10.0.0.20")]["role"] == "down" and not r["truncated"]
     # Excluded hosts are not traversed.
     chain_client.post("/api/excludes", json={"entry": "10.0.0.20"}, headers=WRITE)
@@ -422,6 +427,7 @@ def test_attack_paths_update_with_marked_hosts(chain_client):
     [p] = pair["paths"]
     assert [(h["source"], h["target"], h["dport"]) for h in p["hops"]] == [
         ("203.0.113.66", "10.0.0.5", 443), ("10.0.0.5", H, 445), (H, "10.0.0.20", 3389)]
+    assert [h["protocols"] for h in p["hops"]] == [["ssl"], ["smb"], ["rdp"]]
     assert p["hops"][2]["start"] == "2024-05-01T12:20:00.000Z"     # earliest arrival
     # Marked compromised before the chain reached it: no path any more.
     c.post("/api/compromised", json={"ip": "10.0.0.20", "time": "2024-05-01T12:15:00Z"}, headers=WRITE)

@@ -20,6 +20,7 @@ Data sources: Zeek `conn` records in Security Onion's Elasticsearch (`event.data
 | Exclude list | Shared across all analysts and editable in the UI (side panel, or right-click a host). Takes IPs, CIDRs or domain names (see [Domain names](#domain-names-on-the-exclude-list)). Applied to both Top and Bottom. Stored in `/data/exclude.json`. No audit trail. Invalid entries from a hand edit are skipped with a warning; a file that is not valid JSON is reported and never overwritten. |
 | Time window | 24h per hop by default. Adjustable on the map, up to `TB_MAX_WINDOW` (30d). |
 | Time range | Optional *Range from* / *Range to* (UTC) on the map. It limits everything: expansions, the default anchor, flow lists, threat lines, attack paths and SOC pivots. Kept in the map's URL. |
+| Protocol highlight | Toolbar → *Highlight protocol* lists every protocol the connections on the map carry (SMB, DNS, TLS, ICMP, Unknown, ...). Choosing one makes the connections carrying it glow and fades the rest. The choice holds as the map changes, until you choose another, *All*, or *Clear*; while no connection carries it, it says so. Security Onion mode uses Zeek's detection (`network.protocol`); case files are identified from the payload, then by port (see [Post-mortem mode](#post-mortem-mode-pcap-and-netflow-files)). |
 | Flow list | Clicking a connection lists its flows oldest first, 50 per page, with start, protocol, ports, duration, packets and bytes. Security Onion returns at most the first 10,000 flows of a connection; narrow the time range to page past them. |
 | PCAP | Security Onion mode: each flow links to SOC's PCAP job for it, and with a SOC API client ThreatBridge downloads the PCAP itself. See [PCAP for a flow](#pcap-for-a-flow). |
 | Saved maps | Side panel → *Saved maps*: save the map under a name for every analyst (`TB_SESSIONS_DIR`), or to a JSON file to keep or pass on. Opening one brings back the hosts where they were, the connections, the highlights, the view and the toolbar; attack paths are recomputed from the current compromised list. Saving under a name that exists asks first. |
@@ -51,6 +52,10 @@ python -m threatbridge --case /cases/incident-42/      # files or directories, i
   - In testing on 4 CPUs, 8 rotated captures of TCP traffic (538 MB) were read in 4.2 s instead of 15.5 s. With every packet a connection of its own (1.2M), 12.5 s instead of 23.7 s: following the connections is then most of the work.
   - While a case is built, the terminal shows the stage, the file, how far it has got and the time left, e.g. `Reading 8 evidence file(s): 41%, file 4 of 8, 612,330 packets, about 3 s left`. Without a terminal (gunicorn, Docker) the same goes to the log every 10 seconds.
 - **NetFlow records are one-way,** so the two halves of a connection are merged into one flow.
+- **Each connection's protocol** is named as Zeek names services (`dns`, `http`, `ssl` for TLS, `smb`, ...), so case files and Security Onion agree.
+  - In a capture, from the first payload whose bytes show it: DNS, HTTP, TLS, SSH, SMB, RDP or DHCP, on any port.
+  - Failing that, and always for NetFlow (no payload), from the server's well-known port (e.g. 445 SMB, 3389 RDP, 5985 HTTP): a guess, so a service on an unusual port, or something else on a well-known one, is named after the port.
+  - ICMP is ICMP; anything else is Unknown.
 - **Refused connections aren't mapped,** so a port scan doesn't swamp the map: a SYN answered only by a RST, never a SYN-ACK (Zeek's `REJ`). The log says how many were left out. A SYN nobody answered, a scan's hit on an open port (SYN, SYN-ACK, then the scanner's RST) and a SYN-ACK scan's reset are mapped.
 - **Who started a connection** (the initiator) is decided by time, then TCP flags, then ports:
   1. **Time,** when both sides were seen: the side whose first packet came first; in NetFlow, the half that started first.
@@ -169,6 +174,7 @@ Deployment on a live Security Onion install has **not been tested**. These point
 9. **The Zeek DNS records** (`event.dataset` `dns`, `dns.query.name`, `dns.resolved_ip`; taken from Security Onion's 2.4 ingest parser). The question name must be a keyword field: names are matched exactly and case-insensitively, `*.suffix` with a wildcard query.
 10. **The PCAP links:** *PCAP in SOC* uses the same `/joblookup` link as SOC's own PCAP action. *Download PCAP* follows SOC's Connect API as published in its source (token, `/connect/joblookup/`, `/connect/job/{id}`, `/connect/stream/{id}`); it was tested against a stand-in, not a real SOC.
 11. **Refused connections** are left out by Zeek's `connection.state` `REJ` (`TB_FIELD_CONN_STATE`). The field name is from Security Onion's 2.4 ingest pipeline (`zeek.conn`); whether it is indexed as keyword or text isn't known, so a `match` query is used, which finds it either way.
+12. **Protocols** come from Zeek's `service` as Security Onion stores it, `network.protocol` (`TB_FIELD_SERVICE`; from the same pipeline). It must be aggregatable (a keyword field): if it isn't, expanding a host fails with an Elasticsearch error, and `TB_FIELD_SERVICE=` (empty) turns protocols off.
 
 ## Configuration (env vars)
 
@@ -187,6 +193,7 @@ Deployment on a live Security Onion install has **not been tested**. These point
 | `TB_FIELD_SRC/DST/TS/DPORT/DATASET` | ECS names | |
 | `TB_FIELD_SPORT/PROTO/DURATION` | `source.port` / `network.transport` / `event.duration` | flow list |
 | `TB_FIELD_PACKETS` / `TB_FIELD_BYTES` | `client.packets,server.packets` / `client.ip_bytes,server.ip_bytes` | flow list; the fields are summed |
+| `TB_FIELD_SERVICE` | `network.protocol` | Zeek's `service`: the protocols it recognized, for the map's protocol filter; empty = all unknown |
 | `TB_FIELD_CONN_STATE` | `connection.state` | Zeek's `conn_state`: records of refused connections (`REJ`) are left out; empty = keep them |
 | `TB_DNS_DATASETS` | `dns,zeek.dns` | Zeek DNS records, for domain names on the exclude list; empty = no dataset filter |
 | `TB_FIELD_DNS_QUERY` / `TB_FIELD_DNS_IP` | `dns.query.name` / `dns.resolved_ip` | their question name and answer addresses |

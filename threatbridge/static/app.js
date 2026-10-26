@@ -14,7 +14,7 @@
   const WRITE_HEADERS = { "Content-Type": "application/json", "X-ThreatBridge": "1" };
   const COLORS = { root: "#e5484d", in: "#3e9bff", out: "#f5a524", node: "#9aa7bd",
                    up: "#a78bfa", down: "#2dd4bf", attack: "#ff4d5e", compromised: "#b4232a",
-                   route: "#f472b6" };
+                   route: "#f472b6", protocol: "#ffe066" };
 
   const cy = cytoscape({
     container: $("cy"),
@@ -50,11 +50,26 @@
       { selector: "node.up", style: { "border-width": 4, "border-color": COLORS.up } },
       { selector: "node.down", style: { "border-width": 4, "border-color": COLORS.down } },
       { selector: ".faded", style: { opacity: 0.15 } },
+      // The protocol filter (toolbar): edges carrying the chosen protocol glow, the rest fade.
+      { selector: "edge.proto-dim", style: { opacity: 0.2 } },
+      { selector: "edge.proto-hit", style: {
+          opacity: 1, "underlay-color": COLORS.protocol, "underlay-opacity": 0.55, "underlay-padding": 4,
+          "z-index": 20 } },
       { selector: ":selected", style: { "overlay-color": "#fff", "overlay-opacity": 0.15 } },
     ],
   });
 
   window.threatbridge = { cy }; // handle for debugging / UI tests
+
+  // Protocols as the server names them (Zeek's service names), as people know them.
+  const PROTOCOL_NAMES = {
+    dns: "DNS", http: "HTTP", ssl: "TLS", ssh: "SSH", smb: "SMB", rdp: "RDP", dhcp: "DHCP",
+    krb: "Kerberos", dce_rpc: "DCE/RPC", ntlm: "NTLM", gssapi: "GSSAPI", ldap: "LDAP", ntp: "NTP",
+    snmp: "SNMP", ftp: "FTP", "ftp-data": "FTP data", smtp: "SMTP", pop3: "POP3", imap: "IMAP",
+    telnet: "Telnet", syslog: "Syslog", tds: "MS SQL (TDS)", mysql: "MySQL", postgresql: "PostgreSQL",
+    rfb: "VNC (RFB)", radius: "RADIUS", icmp: "ICMP", unknown: "Unknown",
+  };
+  const protocolName = (p) => PROTOCOL_NAMES[p] || p.toUpperCase();
 
   function setStatus(msg, isError, isWarn) {
     statusEl.textContent = msg || "";
@@ -156,20 +171,54 @@
     return n;
   }
 
-  function edgeData(src, dst, direction, count, ports, first, last) {
+  function edgeData(src, dst, direction, count, ports, first, last, protocols) {
     return {
-      id: `${src}->${dst}`, source: src, target: dst, direction, count, ports,
+      id: `${src}->${dst}`, source: src, target: dst, direction, count, ports, protocols,
       first_seen: first, last_seen: last, logCount: Math.log10(count + 1),
       label: `${count}${ports.length ? " · " + ports.join(",") : ""}`,
     };
   }
 
   // Add an edge unless the map already shows it (keep the data from the expansion).
-  function mergeEdge(src, dst, direction, count, ports, first, last) {
+  function mergeEdge(src, dst, direction, count, ports, first, last, protocols) {
     const e = cy.getElementById(`${src}->${dst}`);
     if (e.nonempty()) return e;
-    return cy.add({ group: "edges", data: edgeData(src, dst, direction, count, ports, first, last) });
+    return cy.add({ group: "edges", data: edgeData(src, dst, direction, count, ports, first, last, protocols) });
   }
+
+  // ---- protocol filter: edges carrying the chosen protocol glow, the others fade -----------
+  const protocolSelect = $("protocol");
+
+  function applyProtocol() {
+    const want = protocolSelect.value;
+    cy.batch(() => {
+      cy.edges().removeClass("proto-hit proto-dim");
+      if (!want) return;
+      for (const e of cy.edges()) e.addClass(e.data("protocols").includes(want) ? "proto-hit" : "proto-dim");
+    });
+  }
+
+  // The drop-down lists every protocol on the map's edges, by name. A choice holds until
+  // another is made (or Clear): while no edge carries it, it says so, and every edge fades.
+  function refreshProtocols() {
+    const found = new Set(cy.edges().map((e) => e.data("protocols")).flat());
+    const chosen = protocolSelect.value;
+    const options = [...found].sort((a, b) => protocolName(a).localeCompare(protocolName(b)))
+      .map((p) => new Option(protocolName(p), p));
+    if (chosen && !found.has(chosen)) options.unshift(new Option(`${protocolName(chosen)} (not on the map)`, chosen));
+    protocolSelect.replaceChildren(new Option("All", ""), ...options);
+    protocolSelect.value = chosen;
+    applyProtocol();
+  }
+
+  // Once per change to the map, however many edges it added, removed or updated.
+  let protocolsDue = false;
+  cy.on("add remove data", "edge", () => {
+    if (protocolsDue) return;
+    protocolsDue = true;
+    queueMicrotask(() => { protocolsDue = false; refreshProtocols(); });
+  });
+  protocolSelect.addEventListener("change", refreshProtocols);
 
   function clearHighlight() {
     cy.elements().removeClass("up down line-selected faded");
@@ -204,7 +253,7 @@
         addNode(p.peer, peerAnchor, { depth });
         const src = direction === "in" ? p.peer : res.ip;
         const dst = direction === "in" ? res.ip : p.peer;
-        const data = edgeData(src, dst, direction, p.count, p.ports, p.first_seen, p.last_seen);
+        const data = edgeData(src, dst, direction, p.count, p.ports, p.first_seen, p.last_seen, p.protocols);
         const e = cy.getElementById(data.id);
         if (e.nonempty()) e.data(data); else cy.add({ group: "edges", data });
       }
@@ -285,6 +334,7 @@
       ["Source", e.data("source")], ["Destination", e.data("target")],
       ["Direction", e.data("direction") === "in" ? "inbound (past)" : "outbound (future)"],
       ["Connections", e.data("count")], ["Top dst ports", (e.data("ports") || []).join(", ")],
+      ["Protocols", e.data("protocols").map(protocolName).join(", ")],
       ["First seen", e.data("first_seen")], ["Last seen", e.data("last_seen")],
     ]);
     flowsFor = { src: e.data("source"), dst: e.data("target"),
@@ -300,11 +350,11 @@
     if (flowsFor === conn) renderFlows(conn, r); // else another element was clicked meanwhile
   }
 
-  // "tcp 51234 → 445 · 1.204 s · 12 pkts · 3,410 B"; missing values are left out.
+  // "SMB · tcp 51234 → 445 · 1.204 s · 12 pkts · 3,410 B"; missing values are left out.
   function flowMeta(f) {
     const ports = f.proto === "tcp" || f.proto === "udp" ? ` ${f.sport} → ${f.dport}` : "";
     const n = (v) => v.toLocaleString("en-US");
-    return [`${f.proto || "?"}${ports}`,
+    return [f.protocols.map(protocolName).join("/"), `${f.proto || "?"}${ports}`,
             f.duration == null ? null : `${f.duration.toFixed(3)} s`,
             f.packets == null ? null : `${n(f.packets)} pkts`,
             f.bytes == null ? null : `${n(f.bytes)} B`].filter((x) => x).join(" · ");
@@ -480,7 +530,9 @@
 
   $("go").addEventListener("click", start);
   $("fit").addEventListener("click", () => cy.fit(undefined, 40));
-  $("clear").addEventListener("click", () => { cy.elements().remove(); iocTime = null; setStatus(""); });
+  $("clear").addEventListener("click", () => {
+    cy.elements().remove(); iocTime = null; setStatus(""); protocolSelect.value = "";
+  });
   for (const id of ["ip", "ts", "window", "limit", "range-from", "range-to"]) {
     $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") start(); });
   }
@@ -562,7 +614,7 @@
       for (const n of r.nodes) line = line.union(addNode(n.id, n.time, {}));
       for (const ed of r.edges) {
         const el = mergeEdge(ed.source, ed.target, ed.role === "up" ? "in" : "out",
-                             ed.count, ed.ports, ed.first_seen, ed.last_seen);
+                             ed.count, ed.ports, ed.first_seen, ed.last_seen, ed.protocols);
         line = line.union(el);
       }
     });
@@ -646,7 +698,7 @@
           addNode(h.source, h.start, {});
           addNode(h.target, h.start, {});
           const ports = h.proto === "tcp" || h.proto === "udp" ? [h.dport] : [];
-          mergeEdge(h.source, h.target, "out", 1, ports, h.start, h.start).addClass(cls);
+          mergeEdge(h.source, h.target, "out", 1, ports, h.start, h.start, h.protocols).addClass(cls);
         }
       }
     });
@@ -804,7 +856,8 @@
                                                  pick(n.data(), NODE_FIELDS))),
       edges: cy.edges().map((e) => Object.assign({ source: e.data("source"), target: e.data("target"),
                                                    direction: e.data("direction"), count: e.data("count"),
-                                                   ports: e.data("ports"), classes: e.classes() },
+                                                   ports: e.data("ports"), protocols: e.data("protocols"),
+                                                   classes: e.classes() },
                                                  pick(e.data(), EDGE_FIELDS))),
       view: { zoom: cy.zoom(), pan: cy.pan() },
     };
@@ -835,9 +888,12 @@
         if (typeof e.source !== "string" || typeof e.target !== "string") continue;
         if (cy.getElementById(e.source).empty() || cy.getElementById(e.target).empty()) continue;
         const ports = Array.isArray(e.ports) ? e.ports.filter(Number.isInteger) : [];
+        const protocols = Array.isArray(e.protocols)
+          ? e.protocols.filter((p) => typeof p === "string" && p.length > 0 && p.length <= 40) : [];
         const t = pick(e, EDGE_FIELDS);
         const edge = mergeEdge(e.source, e.target, e.direction === "in" ? "in" : "out",
-                               Number.isFinite(e.count) ? e.count : 0, ports, t.first_seen, t.last_seen);
+                               Number.isFinite(e.count) ? e.count : 0, ports, t.first_seen, t.last_seen,
+                               protocols);
         highlight(edge, e.classes);
       }
     });

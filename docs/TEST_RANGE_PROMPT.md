@@ -170,9 +170,11 @@ listener that accepts and closes), as the scenario needs:
 - 8443 on 10.0.1.2;
 - 9000 on 10.0.1.3;
 - 8080 on 10.0.3.1;
-- on 10.0.5.1: a real web server on 80 and 8080 serving files from 1 KB to 50 MB, with keep-alive;
-  sshd on 22; a UDP service on 514 (e.g. syslog); and nothing on 81, so connections to it are
-  refused.
+- on 10.0.5.1: a real web server on 80 and 8080 serving files from 1 KB to 50 MB, with keep-alive,
+  and with TLS (a self-signed certificate) on 443; sshd on 22 and also on 2222; an SMB share
+  (Samba) on 445; a UDP service on 514 (e.g. syslog); and nothing on 81, so connections to it are
+  refused. REAL-01 step 4 compares the protocols ThreatBridge names with Zeek's: SSH on 2222 shows
+  the payload recognized where the port alone wouldn't tell.
 
 10.0.0.53 runs dnsmasq (or similar) answering:
 
@@ -318,7 +320,8 @@ scenario.
 - **Everything else, from 10.0.5.4 to 10.0.5.1:** pings; UDP to 514; connections to port 81,
   which are refused; a download aborted with a reset (e.g. a socket closed with `SO_LINGER` 0);
   an SSH session idle for more than 5 minutes; a TCP connection idle for 6 minutes and then
-  used again; and a slow download (rate-limited) that starts 30 s before the capture.
+  used again; a slow download (rate-limited) that starts 30 s before the capture; a few HTTPS
+  downloads from 443; an SSH login to 2222; and listing the SMB share.
 - **DNS:** all four hosts query 10.0.0.53 over UDP for all the names above throughout, and a
   few times over TCP (e.g. `dig +tcp`).
 - Keep the whole capture under about 2 GB.
@@ -423,6 +426,8 @@ Run all of these and put the results in your report:
      and 10.0.5.3 → 10.0.5.1 the listing's counts, in that direction (REAL-02 step 1).
    - Zeek's `dns.log` holds UDP answers for `cdn.example.com`, `dual.example.com` and
      `pool.example.com`.
+   - Zeek's `conn.log` names `http`, `ssl`, `ssh` (on 22 and 2222), `smb` and `dns` among the
+     services, and ThreatBridge, serving the capture, names the same for those connections.
 10. **Reset:** the reset playbook rolls back to `baseline`, and step 4 passes again after a new
     scenario run.
 11. **Teardown:** `tofu destroy` (plus the documented Ansible cleanup of host network changes)

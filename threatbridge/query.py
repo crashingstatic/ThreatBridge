@@ -164,11 +164,17 @@ def es_filter(cfg, ip, direction, start, end, exclude, peers=None):
 
 
 def _detail_aggs(cfg):
-    return {
+    aggs = {
         "first_seen": {"min": {"field": cfg.f_ts}},
         "last_seen": {"max": {"field": cfg.f_ts}},
         "ports": {"terms": {"field": cfg.f_dport, "size": 5}},
     }
+    if cfg.f_service:
+        # The protocols Zeek recognized; records where it named none ("") are told apart by
+        # their transport: ICMP, or unknown.
+        aggs["protocols"] = {"terms": {"field": cfg.f_service, "size": 20, "missing": ""},
+                             "aggs": {"transports": {"terms": {"field": cfg.f_proto, "size": 5}}}}
+    return aggs
 
 
 def es_top_body(cfg, ip, direction, start, end, limit, exclude):
@@ -223,7 +229,8 @@ def es_flows_body(cfg, src, dst, start, end, offset, size):
         "sort": [{cfg.f_ts: "asc"}],
         "_source": False,
         "fields": [{"field": cfg.f_ts, "format": "strict_date_optional_time"}, cfg.f_sport,
-                   cfg.f_dport, cfg.f_proto, cfg.f_duration, *cfg.f_packets, *cfg.f_bytes],
+                   cfg.f_dport, cfg.f_proto, cfg.f_duration, *cfg.f_packets, *cfg.f_bytes,
+                   *([cfg.f_service] if cfg.f_service else [])],
         "query": es_filter(cfg, src, "out", start, end, [], peers=[dst]),
     }
 

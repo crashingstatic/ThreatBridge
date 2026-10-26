@@ -67,6 +67,11 @@ try {
   await page.waitForFunction(() => window.threatbridge.cy.edges().length > 0);
   assert.match(await status(), /showing top/);
   assert.ok(await page.evaluate(() => window.threatbridge.cy.edges("[direction='out']").length === 0));
+  // The protocol drop-down offers each protocol the drawn connections carry, once.
+  await page.waitForFunction(() => document.querySelectorAll("#protocol option").length > 1);
+  assert.deepEqual(await page.$$eval("#protocol option", (l) => l.slice(1).map((o) => o.value).sort()),
+                   await page.evaluate(() => [...new Set(window.threatbridge.cy.edges()
+                     .map((e) => e.data("protocols")).flat())].sort()));
 
   // 2. Right-click a peer: its menu, for Security Onion data; then expand outbound (future).
   const peer = await at("node[!root]", "node");

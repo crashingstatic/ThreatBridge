@@ -12,7 +12,7 @@ import pytest
 
 from evidence import (ACK, FIN, MAC, PSH, RST, SYN, dns_answer, have_nfdump, icmp_echo, ip_bytes, load,
                       make_nfcapd, tcp, udp, write_bulk_pcap, write_pcap)
-from threatbridge import model, sources
+from threatbridge import model, protocols, sources
 from threatbridge.model import Flow, SourceError
 from threatbridge.sources import netflow, pcap, workers
 from threatbridge.sources.netflow import pair_records, parse_pipe_line, read_records
@@ -835,3 +835,109 @@ def test_model_helpers():
     assert [model.icmp_flags(1, t) for t in (8, 0, 3)] == [SYN, SYN | ACK, 0]
     assert [model.icmp_flags(58, t) for t in (128, 129, 0)] == [SYN, SYN | ACK, 0]
     assert model.settle(None, None, 49668, 50000) is None and model.settle(SYN, None, 49668, 50000) is False
+
+
+# ---- which protocol a connection carries ---------------------------------------------------
+
+def dns_query(name="www.example.org", qclass=1):
+    return (struct.pack("!HHHHHH", 7, 0x0100, 1, 0, 0, 0) +
+            b"".join(bytes([len(p)]) + p.encode() for p in name.split(".")) + b"\0" +
+            struct.pack("!HH", 1, qclass))
+
+
+TLS_HELLO = b"\x16\x03\x01\x00\x50\x01" + b"\0" * 20
+
+
+@pytest.mark.parametrize("tcp_,payload,ports,expect", [
+    (True, TLS_HELLO, (51000, 443), protocols.SSL),
+    (True, b"\x16\x03\x03\x00\x50\x02" + b"\0" * 8, (443, 51000), protocols.SSL),   # ServerHello
+    (True, b"\x16\x03\x03\x00\x50\x0b" + b"\0" * 8, (443, 51000), 0),               # a certificate
+    (True, b"\x17\x03\x03\x00\x50\x01", (443, 51000), 0),                           # application data
+    (True, b"\x16\x03\x05\x00\x50\x01", (443, 51000), 0),                           # no such version
+    (True, b"SSH-2.0-OpenSSH_9.6\r\n", (51000, 22), protocols.SSH),
+    (True, b"GET / HTTP/1.1\r\nHost: x\r\n\r\n", (51000, 8000), protocols.HTTP),
+    (True, b"HTTP/1.1 200 OK\r\n", (8000, 51000), protocols.HTTP),
+    (True, b"POST /wsman HTTP/1.1\r\n", (51000, 5985), protocols.HTTP),
+    (True, b"GETS / HTTP/1.1\r\n", (51000, 8000), 0),
+    (True, b"\x00\x00\x00\x45\xfeSMB" + b"\0" * 8, (51000, 445), protocols.SMB),
+    (True, b"\x00\x00\x00\x45\xffSMB" + b"\0" * 8, (51000, 445), protocols.SMB),
+    (True, b"\x81\x00\x00\x44\xfeSMB", (51000, 139), 0),                            # session request
+    (True, b"\x03\x00\x00\x13\x0e\xe0\x00\x00", (51000, 3389), protocols.RDP),
+    (True, b"\x03\x00\x00\x13\x0e\xd0\x00\x00", (3389, 51000), protocols.RDP),
+    (True, b"\x03\x00\x00\x16\x11\xe0\x00\x00", (51000, 102), 0),                   # S7 on ISO-TSAP
+    (True, b"\x03\x00\x00\x16\x11\xe0\x00\x00", (102, 51000), 0),
+    (True, len(dns_query()).to_bytes(2, "big") + dns_query(), (51000, 53), protocols.DNS),
+    (True, dns_query(), (51000, 53), 0),                                            # no length first
+    (True, b"\x00\x05" + dns_query(), (51000, 53), 0),                             # a wrong length
+    (False, dns_query(), (51000, 53), protocols.DNS),
+    (False, dns_query(), (40000, 40001), protocols.DNS),                            # on any port
+    (False, dns_answer("www.example.org", [("www.example.org", "A", "10.0.0.7")]), (53, 51000), protocols.DNS),
+    (False, dns_query(qclass=0x8001), (5353, 5353), protocols.DNS),                 # mDNS, unicast bit
+    (False, dns_query(qclass=2), (51000, 53), 0),                                   # no such class
+    (False, dns_query()[:4] + b"\x00\x02" + dns_query()[6:], (51000, 53), 0),       # two questions
+    (False, dns_query()[:2] + b"\x08\x00" + dns_query()[4:], (51000, 53), 0),       # opcode 1
+    (False, dns_query()[:6] + b"\x00\xff" + dns_query()[8:], (51000, 53), 0),       # 255 answers
+    (False, dns_query()[:12] + b"\x40" + b"a" * 64 + b"\0\0\1\0\1", (51000, 53), 0),   # a label > 63
+    (False, dns_query("." .join(["a" * 63] * 5)), (51000, 53), 0),                 # name > 255
+    (False, dns_query()[:20], (51000, 53), 0),                                      # cut off in the name
+    (False, dns_query()[:-2], (51000, 53), 0),                                      # cut off in the class
+    (False, b"\0" * 20, (1024, 53), 0),
+    (False, b"\0" * 236 + b"\x63\x82\x53\x63" + b"\0" * 8, (68, 67), protocols.DHCP),
+    (False, b"\0" * 236 + b"\x63\x82\x53", (68, 67), 0),
+    (True, b"SSH", (51000, 22), 0),                                                 # too short
+])
+def test_protocols_from_the_payload(tcp_, payload, ports, expect):
+    assert protocols.from_payload(tcp_, *ports, payload) == expect
+
+
+def test_protocol_names():
+    assert protocols.name("tcp", protocols.HTTP, 443, 51000) == "http"       # the payload first
+    assert protocols.name("icmp", 0, 0, 0) == "icmp"
+    assert protocols.name("tcp", 0, 445, 51000) == "smb"                     # then the server's port
+    assert protocols.name("udp", 0, 51000, 53) == "dns"                      # then the client's
+    assert protocols.name("tcp", 0, 445, 443) == "smb"                       # the server's first
+    assert protocols.name("tcp", 0, 49668, 50000) == "unknown"
+    assert protocols.split("smb,ntlm, GSSAPI") == ["smb", "ntlm", "gssapi"]
+    assert protocols.split("krb_tcp") == ["krb"] and protocols.split("-") == [] and protocols.split("") == []
+    assert protocols.split(None) == []
+
+
+def test_a_capture_names_protocols_by_payload_then_port(tmp_path, monkeypatch):
+    pkts = [
+        # HTTP on an unusual port: the payload tells.
+        (T, tcp(C, S, 51000, 8000, SYN)), (T + 0.01, tcp(S, C, 8000, 51000, SYN | ACK)),
+        (T + 0.02, tcp(C, S, 51000, 8000, ACK | PSH, b"GET / HTTP/1.1\r\n\r\n")),
+        # On 443 but not TLS: the port is all there is.
+        (T + 1, tcp(C, S, 51001, 443, ACK | PSH, b"\x00\x01beacon")), (T + 1.01, tcp(S, C, 443, 51001, ACK)),
+        # The server's banner, seen before the client says anything.
+        (T + 2, tcp(C, S, 51002, 2222, SYN)), (T + 2.01, tcp(S, C, 2222, 51002, SYN | ACK)),
+        (T + 2.02, tcp(S, C, 2222, 51002, ACK | PSH, b"SSH-2.0-OpenSSH_9.6\r\n")),
+        (T + 3, icmp_echo(C, S)), (T + 3.01, icmp_echo(S, C, reply=True)),
+        (T + 4, udp(C, S, 51003, 49999, b"\0" * 20)), (T + 4.01, udp(S, C, 49999, 51003, b"\0" * 20)),
+        # Through a proxy: the first payload recognized names it (HTTP CONNECT, then TLS).
+        (T + 5, tcp(C, S, 51004, 3128, ACK | PSH, b"CONNECT x.example:443 HTTP/1.1\r\n\r\n")),
+        (T + 5.01, tcp(C, S, 51004, 3128, ACK | PSH, TLS_HELLO)),
+        # Both ports well-known, the server seen first and told by its SYN-ACK: the server's port.
+        (T + 6, tcp(S, C, 445, 443, SYN | ACK)), (T + 6, tcp(C, S, 443, 445, ACK)),
+    ]
+    files = split_into_files(tmp_path, pkts, 2, random.Random(1))
+    flows = pcap.read_pcaps(files, workers=1)
+    assert [(f.dport, f.service) for f in flows] == [(8000, "http"), (443, "ssl"), (2222, "ssh"),
+                                                     (0, "icmp"), (49999, "unknown"), (3128, "http"),
+                                                     (445, "smb")]
+    monkeypatch.setattr(pcap, "in_order", in_process)          # packed by worker processes
+    assert pcap.read_pcaps(files, workers=2) == flows
+
+
+def test_netflow_names_protocols_by_port():
+    done = FIN | SYN | PSH | ACK
+    flows = pair_records([
+        rec(C, 51000, S, 445, T, T + 1, flags=done), rec(S, 445, C, 51000, T, T + 1, flags=done),
+        rec(S, 53, C, 51001, T, T, proto="udp"),                                  # the reply alone
+        rec(C, 0, S, 0, T, T, proto="icmp", flags=SYN),
+        rec(C, 50000, S, 49668, T, T + 1), rec(S, 49668, C, 50000, T, T + 1),     # both ways
+        # Both ports well-known; the server's half listed first, the client told by its SYN.
+        rec(S, 445, C, 443, T, T, flags=SYN | ACK), rec(C, 443, S, 445, T, T, flags=SYN)])
+    assert sorted((f.src, f.dport, f.service) for f in flows) == [
+        (C, 0, "icmp"), (C, 53, "dns"), (C, 445, "smb"), (C, 445, "smb"), (C, 49668, "unknown"),
+        (S, 50000, "unknown")]
