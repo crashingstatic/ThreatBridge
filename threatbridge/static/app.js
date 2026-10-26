@@ -25,8 +25,8 @@
           "background-color": COLORS.node, label: "data(id)", color: "#d8dee9",
           "font-size": 10, "text-valign": "bottom", "text-margin-y": 4, width: 18, height: 18 } },
       { selector: "node[?root]", style: { "background-color": COLORS.root, width: 28, height: 28 } },
-      { selector: "node[?expandedIn][?expandedOut]", style: { "border-width": 3, "border-color": "#fff" } },
       { selector: "node[?expandedIn], node[?expandedOut]", style: { "border-width": 2, "border-color": "#d8dee9" } },
+      { selector: "node[?expandedIn][?expandedOut]", style: { "border-width": 3, "border-color": "#fff" } },
       { selector: "edge", style: {
           width: "mapData(logCount, 0, 4, 1, 7)", "curve-style": "bezier",
           "target-arrow-shape": "triangle", "arrow-scale": 0.9, label: "data(label)",
@@ -112,6 +112,23 @@
   const getJSON = (url, opts) => request(url, opts, "json");
 
   $("cancel").addEventListener("click", () => { for (const c of inFlight) c.abort(); });
+
+  // Writes to a shared list go one at a time, in the order made, so each answer includes the
+  // writes before it (the server may run two at once and answer them in either order).
+  const writing = {};   // url -> the last write to it
+  function write(url, method, body) {
+    const payload = JSON.stringify(body);
+    const sent = (writing[url] || Promise.resolve()).then(() =>
+      getJSON(url, { method, headers: WRITE_HEADERS, body: payload }));
+    writing[url] = sent.catch(() => {});
+    return sent;
+  }
+
+  // Once a submitted entry is stored, empty its form, unless the analyst has typed something
+  // else in it meanwhile.
+  function clearForm(ids, submitted) {
+    if (ids.every((id, i) => $(id).value.trim() === submitted[i])) for (const id of ids) $(id).value = "";
+  }
 
   // Offer `blob` to the analyst as a file called `name`.
   function saveFile(blob, name) {
@@ -506,8 +523,7 @@
   }
 
   async function addExclude(entry) {
-    const r = await getJSON("/api/excludes", { method: "POST", headers: WRITE_HEADERS,
-                                              body: JSON.stringify({ entry }) });
+    const r = await write("/api/excludes", "POST", { entry });
     renderExcludes(r);
     const added = r.entry;   // canonical form, e.g. lower-cased domain
     const resolved = (r.resolved || {})[added];
@@ -519,23 +535,21 @@
     setStatus(resolved
       ? `Excluded ${added} (${hosts.length} address(es)) for everyone`
       : `Excluded ${added} for everyone; re-expand hosts to apply CIDRs`);
-    await refreshPaths(true);
+    refreshPaths(true).catch(fail);   // in the background: the map stays usable meanwhile
   }
 
   async function removeExclude(entry) {
-    const r = await getJSON("/api/excludes", { method: "DELETE", headers: WRITE_HEADERS,
-                                              body: JSON.stringify({ entry }) });
+    const r = await write("/api/excludes", "DELETE", { entry });
     renderExcludes(r);
     setStatus(`Removed ${entry} from exclude list`);
-    await refreshPaths(true);
+    refreshPaths(true).catch(fail);
   }
 
   $("exclude-form").addEventListener("submit", (e) => {
     e.preventDefault();
     const v = $("exclude-input").value.trim();
     if (!v) return;
-    addExclude(v).then(() => { $("exclude-input").value = ""; })
-      .catch((err) => fail(err));
+    addExclude(v).then(() => clearForm(["exclude-input"], [v])).catch((err) => fail(err));
   });
 
   // ---- threat line through a clicked edge (PCAP/NetFlow cases) --------------
@@ -595,29 +609,26 @@
   }
 
   async function markCompromised(ip, time) {
-    const r = await getJSON("/api/compromised", { method: "POST", headers: WRITE_HEADERS,
-                                                 body: JSON.stringify({ ip, time }) });
+    const r = await write("/api/compromised", "POST", { ip, time });
     renderCompromised(r.hosts);
     refreshDetails(ip);
     setStatus(`Marked ${ip} compromised${time ? " at " + time : " (time unknown)"}`);
-    await refreshPaths();
+    refreshPaths().catch(fail);       // in the background: the map stays usable meanwhile
   }
 
   async function unmarkCompromised(ip) {
-    const r = await getJSON("/api/compromised", { method: "DELETE", headers: WRITE_HEADERS,
-                                                 body: JSON.stringify({ ip }) });
+    const r = await write("/api/compromised", "DELETE", { ip });
     renderCompromised(r.hosts);
     refreshDetails(ip);
     setStatus(`Unmarked ${ip}`);
-    await refreshPaths();
+    refreshPaths().catch(fail);
   }
 
   $("compromised-form").addEventListener("submit", (e) => {
     e.preventDefault();
-    const ip = $("compromised-ip").value.trim();
+    const ip = $("compromised-ip").value.trim(), time = $("compromised-time").value.trim();
     if (!ip) return;
-    markCompromised(ip, $("compromised-time").value.trim())
-      .then(() => { $("compromised-ip").value = ""; $("compromised-time").value = ""; })
+    markCompromised(ip, time).then(() => clearForm(["compromised-ip", "compromised-time"], [ip, time]))
       .catch((err) => fail(err));
   });
 
@@ -677,10 +688,13 @@
 
   // Re-run after every change to compromised hosts or excludes; draws the paths in red.
   // The server sends the first few paths per pair of hosts; "Show all" lists the rest.
+  let pathsAsked = 0;   // answers to calls before the latest are out of date
   async function refreshPaths(quiet) {
     if (!cfg.analysis) return;
+    const asked = ++pathsAsked;
     const params = withRange(new URLSearchParams({ window: $("window").value.trim() }));
     const r = await getJSON(`/api/paths?${params}`);
+    if (asked !== pathsAsked) return;
     const paths = r.pairs.flatMap((pair) => pair.paths);
     drawPaths(paths, "attack");
     const ul = $("path-list");
@@ -866,9 +880,8 @@
   }
 
   async function saveSession(name, overwrite) {
-    const body = JSON.stringify({ name, map: mapDocument(), overwrite: !!overwrite });
     try {
-      const r = await getJSON("/api/sessions", { method: "POST", headers: WRITE_HEADERS, body });
+      const r = await write("/api/sessions", "POST", { name, map: mapDocument(), overwrite: !!overwrite });
       renderSessions(r.sessions);
       setStatus(`${overwrite ? "Replaced" : "Saved"} the map "${r.name}" for everyone`);
     } catch (err) {
@@ -888,8 +901,7 @@
 
   async function deleteSession(name) {
     if (!confirm(`Delete the saved map "${name}" for everyone?`)) return;
-    const r = await getJSON("/api/sessions", { method: "DELETE", headers: WRITE_HEADERS,
-                                               body: JSON.stringify({ name }) });
+    const r = await write("/api/sessions", "DELETE", { name });
     renderSessions(r.sessions);
     setStatus(`Deleted the saved map "${name}"`);
   }

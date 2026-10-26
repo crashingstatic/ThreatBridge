@@ -1,7 +1,8 @@
 // Headless browser test of the map's actions in post-mortem mode, beyond ui_case.mjs:
-// opening without parameters, errors, left-click expansion, the host menu, the compromised
-// form, "Show all" paths, paging a connection's flows, the time range from the URL, a slow
-// request cancelled, saved maps (shared and as a file), Fit, Clear.
+// opening without parameters, errors, slow writes kept in order, left-click expansion, the
+// host menu, the compromised form, attack paths answered out of order, "Show all" paths,
+// paging a connection's flows, the time range from the URL, a slow request cancelled, saved
+// maps (shared and as a file), Fit, Clear.
 //   python tests/make_case.py DIR
 //   TB_MAX_PATHS=11 python -m threatbridge --case DIR --port 5056
 //   TB_URL=http://127.0.0.1:5056 node tests/ui_actions.mjs [screenshot-dir]
@@ -70,6 +71,35 @@ try {
   await waitStatus(/invalid IP, CIDR or domain name/);
   await page.fill("#exclude-input", "");
 
+  // 2b. Writes to a shared list go one at a time, and what the analyst types while one is
+  // on its way is kept.
+  const sent = [];
+  await page.route("**/api/excludes", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    const { entry } = JSON.parse(route.request().postData());
+    sent.push(`> ${entry}`);
+    if (entry === "192.0.2.30") await new Promise((done) => setTimeout(done, 1000));
+    const response = await route.fetch();
+    sent.push(`< ${entry}`);
+    return route.fulfill({ response });
+  });
+  await page.fill("#exclude-input", "192.0.2.30");
+  await page.press("#exclude-input", "Enter");
+  await page.fill("#exclude-input", "192.0.2.31");
+  await page.press("#exclude-input", "Enter");               // while the first is on its way
+  await page.fill("#exclude-input", "192.0.2.32");           // typed, not added yet
+  await page.waitForSelector("#exclude-list li >> text=192.0.2.31");
+  assert.deepEqual(sent, ["> 192.0.2.30", "< 192.0.2.30", "> 192.0.2.31", "< 192.0.2.31"]);
+  assert.deepEqual(await page.$$eval("#exclude-list li span", (s) => s.map((x) => x.textContent)),
+                   ["192.0.2.30", "192.0.2.31"]);
+  assert.equal(await page.inputValue("#exclude-input"), "192.0.2.32");
+  await page.unroute("**/api/excludes");
+  for (const entry of ["192.0.2.30", "192.0.2.31"]) {
+    await page.click(`#exclude-list li:has-text('${entry}') button`);
+  }
+  await page.waitForSelector("#exclude-list li", { state: "detached" });
+  await page.fill("#exclude-input", "");
+
   // 3. Left-click a host: it expands in the selected direction.
   await map("10.0.0.9", "in");
   assert.deepEqual(await ids(), ["10.0.0.5", "10.0.0.77", "10.0.0.9"]);
@@ -78,8 +108,16 @@ try {
   await page.waitForFunction(() => window.threatbridge.cy.getElementById("203.0.113.66").nonempty());
   assert.equal(await page.textContent("#detail-body dd"), "10.0.0.5");
   assert.ok(await cyEval(() => window.threatbridge.cy.getElementById("10.0.0.5").data("expandedIn")));
+  const border = (ip) => cyEval((id) => {
+    const n = window.threatbridge.cy.getElementById(id);
+    return `${n.style("border-width")} ${n.style("border-color")}`;
+  }, ip);
+  assert.equal(await border("10.0.0.5"), "2px rgb(216,222,233)");   // expanded one way
 
-  // 4. The host menu: expand inbound, remove, exclude, mark and unmark.
+  // 4. The host menu: expand both ways, remove, exclude, mark and unmark.
+  await menu(node("10.0.0.9"), "Expand outbound");
+  await waitStatus(/^10\.0\.0\.9: showing top 0 of 0 distinct peer/);
+  assert.equal(await border("10.0.0.9"), "3px rgb(255,255,255)");   // both ways
   await menu(node("10.0.0.9"), "Expand inbound");
   await waitStatus(/^10\.0\.0\.9: showing top 2 of 2 distinct peer/);
   await menu(node("10.0.0.77"), "Remove from map");
@@ -112,6 +150,10 @@ try {
   await page.click("#compromised-form button");
   await page.waitForSelector("#compromised-list li >> text=10.0.2.1 @ time unknown");
   await page.fill("#compromised-ip", "10.0.2.2");
+  await page.fill("#compromised-time", "2024-05-01T12:00:00Z");      // before any path reaches it
+  await page.click("#compromised-form button");
+  await page.waitForSelector("#path-list li.hint >> text=No time-consistent path between the marked hosts.");
+  await page.fill("#compromised-ip", "10.0.2.2");
   await page.fill("#compromised-time", "2024-05-01T13:00:00Z");
   await page.click("#compromised-form button");
   await page.waitForSelector("#compromised-list li >> text=10.0.2.2 @ 2024-05-01T13:00:00.000Z");
@@ -120,6 +162,25 @@ try {
   await page.waitForSelector("#path-list li.pair button");
   assert.equal(await page.textContent("#path-list li.pair span"), "10.0.2.1 → 10.0.2.2: first 10 paths");
   assert.equal(await page.$$eval("#path-list li.path", (l) => l.length), 10);
+  // Attack paths answered out of order: an earlier answer that arrives last is ignored.
+  const attackDrawn = () => cyEval(() => window.threatbridge.cy.edges(".attack").nonempty());
+  let held = null;
+  const holding = new Promise((seen) => page.route("**/api/paths?*", (route) => {
+    if (held) return route.continue();
+    held = route;                                            // answered below, after the next one
+    return seen();
+  }));
+  await page.fill("#ip", "10.0.2.1");
+  await page.selectOption("#direction", "out");
+  await page.click("#go");                                   // its paths are held back
+  await holding;
+  await page.click("#go");                                   // its paths are answered
+  await page.waitForFunction(() => window.threatbridge.cy.edges(".attack").nonempty());
+  await held.fulfill({ json: { pairs: [] } });
+  await page.waitForTimeout(300);
+  await page.unroute("**/api/paths?*");
+  assert.equal(await page.textContent("#path-list li.pair span"), "10.0.2.1 → 10.0.2.2: first 10 paths");
+  assert.ok(await attackDrawn());
   await page.click("#path-list li.pair button");
   await page.waitForFunction(() => document.querySelectorAll("#route-list li.path").length === 11);
   assert.equal(await page.inputValue("#route-dst-time"), "2024-05-01T13:00:00.000Z");

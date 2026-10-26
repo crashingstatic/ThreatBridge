@@ -48,7 +48,7 @@ Contents:
   host…`, the busy indicator `Working… N s`, and statuses shown while a request runs (e.g.
   `Asking the sensor for the packets of A → B at T…`). Capitals such as A, B, T and N, and words
   in <angle brackets>, stand for values the step names. Times are UTC.
-- Use Chrome or Chromium; [PRG-01](#prg-01--busy-indicator-elapsed-seconds-and-cancel-prf-s3)
+- Use Chrome or Chromium; [PRG-01](#prg-01--busy-indicator-cancel-and-writes-in-quick-succession-prf-s3-atk-4)
   uses its DevTools. Keep DevTools' Console open. A step whose result is a red status also logs
   `Failed to load resource: the server responded with a status of 4xx/5xx`; that is expected.
   Any other console error (an uncaught exception, a Content Security Policy violation) is a
@@ -669,7 +669,7 @@ S1: `Threat line through 10.0.0.5 → 10.0.0.9: 1 earlier host(s) (violet), 1 la
 | 4 | Create `notamap.json` containing `{"version": 2, "nodes": [], "edges": []}`, and `hello.json` containing `hello`. Open each. | Red: `notamap.json is not a ThreatBridge map`, then `hello.json is not a ThreatBridge map`. The map is unchanged. | Bad files are refused without touching the map. | |
 | 5 | Mark `203.0.113.66` (time blank) and `10.0.0.20` at `2024-05-01T12:20:00Z` (red attack arrows appear); **Save to file** (name field blank). Then **Remove** 203.0.113.66 from the compromised list; **Open file** → the file just saved. | The map opens without red arrows. *Attack paths* says `Mark at least two hosts as compromised.`, and the compromised list still holds only 10.0.0.20. | Attack paths come from the current compromised list, not the file. | |
 
-### PRG-01 · Busy indicator: elapsed seconds, and Cancel (PRF-S3)
+### PRG-01 · Busy indicator, Cancel, and writes in quick succession (PRF-S3, ATK-4)
 
 **Environment:** ENV-DEMO in Chrome or Chromium. **Starting state:** page open; `10.0.0.5` mapped inbound at Anchor `2024-05-01T12:00:00Z` with no throttling.
 
@@ -679,7 +679,8 @@ S1: `Threat line through 10.0.0.5 → 10.0.0.9: 1 earlier host(s) (violet), 1 la
 | 2 | DevTools → Network: add a custom throttling profile with **5000 ms latency** and select it. Left-click 10.1.0.26. | After about 1 s, `Working… 1 s` and a **Cancel** button appear by the status line; the count rises once a second. | A request still running after a second shows its elapsed time (PRF-S3). | |
 | 3 | Click **Cancel** before it finishes. | The indicator disappears. Status: `Cancelled`, in the normal colour (not red). No new peers are added. | Cancel stops the request. | |
 | 4 | Left-click 10.1.0.26 again and wait. | The indicator counts up to about 5 s, then disappears as the peers appear. | The indicator clears when the request completes. | |
-| 5 | Select *No throttling* again. | | | |
+| 5 | Still throttled, in *Compromised hosts*: type `10.0.0.2` and click **Mark**. Straight away type `10.0.0.3` and click **Mark**. Then type `10.0.0.4` and leave it. Wait about 15 s. | After about 5 s `10.0.0.2 @ time unknown` is listed; after about 10 s `10.0.0.3 @ time unknown` too, and the status reads `Marked 10.0.0.3 compromised (time unknown)`. The IP field still shows `10.0.0.4`. | Writes made in quick succession are all stored, one after the other, and what you type while one is being stored is kept. | |
+| 6 | Select *No throttling* again. Click **Remove** next to both hosts and clear the IP field. | | | |
 
 ### PRF-01 · 1.25 million flows built within 5 minutes; reopened from `--db` (PRF-1, PRF-2)
 
@@ -706,7 +707,7 @@ attack paths, which are recomputed in the background.
 | 3 | Left-click that arrow. | In under 3 s (about 2 s on the test machines): `1–50 of 100,071`, and the threat line, with about 600 hosts added and the amber status `Threat line through 10.1.0.7 → 10.0.0.80: 298 earlier host(s) (violet), 299 later host(s) (teal); ≤ 6 hops, ≤ 8d between hops. Click the background to clear. WARNING: stopped at the host limit; the line is incomplete.` | A threat line through the busiest connection stays fast and warns when capped at `TB_THREAT_MAX_HOSTS`. | |
 | 4 | Click **Last**. | In under 3 s: `100051–100071 of 100,071`; the last row is `2024-05-08T11:59:52.354Z`. | The last page of a 100k-flow connection. | |
 | 5 | **Clear**; Window `24h`. Paths from `10.0.0.80` to `10.0.0.53`. | In under 3 s, amber: `First 500 paths from 10.0.0.80 to 10.0.0.53, shortest first. There are more: …`. | Paths between two busy hosts. | |
-| 6 | Mark these hosts compromised, one at a time, at these times: 10.0.0.80 `2024-05-05T00:00:00Z`, 10.0.0.53 `…T01:00:00Z`, 10.0.0.1 `…T02:00:00Z`, 10.1.4.24 `…T03:00:00Z`, 10.1.3.235 `…T04:00:00Z`, 10.1.3.92 `…T05:00:00Z`, 10.1.1.42 `…T06:00:00Z`, 10.1.1.237 `…T07:00:00Z`, 10.1.3.110 `…T08:00:00Z`, 10.1.5.138 `…T09:00:00Z` (all on 2024-05-05). Wait for each mark's `… attack path(s) between N compromised host(s)` status before typing the next host: the form clears itself when a mark completes. | Each mark recomputes the attack paths, and the later ones show `Working… N s`. After the tenth, in under 10 s (about 6 s on the test machines): `78+ attack path(s) between 10 compromised host(s)`. | Attack paths among the ten busiest hosts, with IOC times. | |
+| 6 | Mark these hosts compromised, one at a time, at these times: 10.0.0.80 `2024-05-05T00:00:00Z`, 10.0.0.53 `…T01:00:00Z`, 10.0.0.1 `…T02:00:00Z`, 10.1.4.24 `…T03:00:00Z`, 10.1.3.235 `…T04:00:00Z`, 10.1.3.92 `…T05:00:00Z`, 10.1.1.42 `…T06:00:00Z`, 10.1.1.237 `…T07:00:00Z`, 10.1.3.110 `…T08:00:00Z`, 10.1.5.138 `…T09:00:00Z` (all on 2024-05-05). | Each mark recomputes the attack paths, and the later ones show `Working… N s`. After the tenth, in under 10 s (about 6 s on the test machines): `78+ attack path(s) between 10 compromised host(s)`. | Attack paths among the ten busiest hosts, with IOC times. | |
 | 7 | While step 6's last recomputation runs (`Working… N s` shown), pan and zoom, right-click a host, and map `10.0.0.53` inbound. | The map pans and zooms smoothly. The details appear at once. The expansion answers in under 3 s (under a second on the test machines), before the paths finish. | The map stays usable while paths are computed (PRF-3). | |
 
 ### EVD-01 · Reading captures: rotated files, idle timeouts, RST, cut-off files, link types; the same flows with or without parallel workers (ING-1, ING-3, ING-4, D6, D7, D13)
@@ -849,7 +850,7 @@ attack paths, which are recomputed in the background.
 | GRA-S3 Connection metadata | FLW-01, SO-02 |
 | ATK-1 Attack paths between compromised hosts | CMP-02, CMP-03, PTH-01 |
 | ATK-3 Predecessors and successors | MAP-02, MAP-03, MAP-04, MAP-05 |
-| ATK-4 Mark hosts compromised | CMP-01 |
+| ATK-4 Mark hosts compromised | CMP-01, PRG-01 |
 | INT-1 Threat line on edge click | THR-01 |
 | INT-2 Earlier and later communications | THR-01, THR-02 |
 | INT-3 Iterative refinement | MAP-09, CMP-02, EXC-05 |
