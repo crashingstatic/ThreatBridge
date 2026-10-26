@@ -487,6 +487,13 @@ def route(path):
     return [path["hops"][0]["source"]] + [h["target"] for h in path["hops"]]
 
 
+def test_the_hop_limit_comes_from_the_config(lateral):
+    c = lateral(threat_hops=1)
+    assert c.get("/api/config").get_json()["threat_hops"] == 1
+    assert c.get(f"/api/paths?src={A}&dst={B}").get_json()["paths"] == []         # every way takes 2+ hops
+    assert c.get(f"/api/paths?src={A}&dst={B}&hops=2").get_json()["paths"]
+
+
 def test_every_path_between_two_hosts(lateral):
     c = lateral()
     r = c.get(f"/api/paths?src={A}&dst={B}").get_json()

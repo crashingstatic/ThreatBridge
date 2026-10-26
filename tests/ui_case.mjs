@@ -16,6 +16,29 @@ const menuClick = async (text) => {
   await item.first().click();
 };
 const shot = (name) => SHOTS && page.screenshot({ path: `${SHOTS}/${name}.png` });
+const status = () => page.textContent("#status");
+const waitStatus = (re) => page.waitForFunction(
+  (src) => new RegExp(src).test(document.getElementById("status").textContent), re.source);
+const pathList = () => page.$$eval("#path-list li", (l) => l.map((x) => x.innerText.split("\n")));
+const routeList = () => page.$$eval("#route-list li", (l) => l.map((x) => x.innerText.split("\n")));
+const findRoutes = async (src, srcTime, dst, dstTime) => {
+  await page.fill("#route-src", src);
+  await page.fill("#route-src-time", srcTime);
+  await page.fill("#route-dst", dst);
+  await page.fill("#route-dst-time", dstTime);
+  await page.$eval("#route-summary", (s) => { s.textContent = ""; });     // to see the new answer arrive
+  await page.click("#route-form button");
+  await page.waitForFunction(([s, d]) => document.getElementById("route-summary").textContent
+    .includes(` from ${s} to ${d}.`), [src, dst]);
+};
+const remap = async () => {          // Map again; its attack paths are recomputed too
+  await page.click("#go");
+  await waitStatus(/^10\.0\.0\.9: showing/);
+};
+const TWO_PATHS = [
+  ["203.0.113.66 → 10.0.0.20: 2 path(s)"],
+  ["203.0.113.66 → 10.0.0.5 → 10.0.0.20", "2024-05-01T12:00:00.000Z → 2024-05-01T12:15:00.000Z"],
+  ["203.0.113.66 → 10.0.0.5 → 10.0.0.9 → 10.0.0.20", "2024-05-01T12:00:00.000Z → 2024-05-01T12:20:00.000Z"]];
 
 try {
   await page.goto(`${BASE}/?ip=10.0.0.9&dir=in`);
@@ -26,7 +49,8 @@ try {
   let p = await at("edge#10\\.0\\.0\\.5-\\>10\\.0\\.0\\.9", "edge");
   await page.mouse.click(p.x, p.y);
   await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Threat line"));
-  assert.match(await page.textContent("#status"), /1 earlier host\(s\).*1 later host\(s\)/);
+  assert.equal(await status(), "Threat line through 10.0.0.5 → 10.0.0.9: 1 earlier host(s) (violet), " +
+    "1 later host(s) (teal); ≤ 6 hops, ≤ 24h between hops. Click the background to clear.");
   assert.ok((await classes("203.0.113.66")).includes("up"));
   assert.ok((await classes("10.0.0.20")).includes("down"));
   assert.ok((await classes("10.0.0.5->10.0.0.9")).includes("line-selected"));
@@ -37,6 +61,7 @@ try {
   assert.equal(await page.$eval("#flows ol.flows li", (li) => li.firstChild.textContent),
                "2024-05-01T12:10:00.000Z");
   assert.match(await page.textContent("#flows ol.flows li small"), /^tcp 50001 → 445 · 0\.001 s · 2 pkts · \d+ B$/);
+  assert.equal(await page.locator("#flows a, #flows button:has-text('PCAP')").count(), 0);   // no PCAP for case files
   await shot("threat-line");
 
   // Clicking the background clears the highlight.
@@ -53,16 +78,39 @@ try {
   await page.mouse.click(p.x, p.y, { button: "right" });
   await menuClick("Mark compromised at");
   await page.waitForFunction(() => document.querySelector("#path-list li.path"));
-  assert.deepEqual(await page.$$eval("#path-list li", (l) => l.map((x) => x.innerText.split("\n"))), [
-    ["203.0.113.66 → 10.0.0.20: 2 path(s)"],
-    ["203.0.113.66 → 10.0.0.5 → 10.0.0.20", "2024-05-01T12:00:00.000Z → 2024-05-01T12:15:00.000Z"],
-    ["203.0.113.66 → 10.0.0.5 → 10.0.0.9 → 10.0.0.20", "2024-05-01T12:00:00.000Z → 2024-05-01T12:20:00.000Z"]]);
+  assert.deepEqual(await pathList(), TWO_PATHS);
+  await waitStatus(/^2 attack path\(s\) between 2 compromised host\(s\)$/);
   assert.equal(await cyEval(() => window.threatbridge.cy.edges(".attack").length), 4);
   assert.ok(await cyEval(() => window.threatbridge.cy.getElementById("10.0.0.20").data("compromised")));
   await page.locator("#path-list li.path").nth(1).click();
   assert.ok((await classes("10.0.0.77")).includes("faded"));
   assert.ok(!(await classes("10.0.0.9")).includes("faded"));
+  assert.equal(await status(), "Attack path 203.0.113.66 → 10.0.0.20, 3 hop(s). Click the background to clear.");
   await shot("attack-path");
+
+  // Excluded hosts are never crossed: without 10.0.0.5 there is no path, and back with it.
+  await page.fill("#exclude-input", "10.0.0.5");
+  await page.press("#exclude-input", "Enter");
+  await page.waitForSelector("#path-list li.hint >> text=No time-consistent path between the marked hosts.");
+  assert.equal(await cyEval(() => window.threatbridge.cy.edges(".attack").length), 0);
+  assert.ok(await cyEval(() => window.threatbridge.cy.getElementById("10.0.0.5").empty()));
+  await page.click("#exclude-list li:has-text('10.0.0.5') button");
+  await page.waitForFunction(() => document.querySelectorAll("#path-list li.path").length === 2);
+  assert.deepEqual(await pathList(), TWO_PATHS);
+
+  // The Window and the time range limit the attack paths: hops 10 min apart pass a 10m Window,
+  // the 15-min shortcut doesn't, and none start after 12:05.
+  await page.fill("#window", "10m");
+  await remap();
+  await page.waitForFunction(() => document.querySelectorAll("#path-list li.path").length === 1);
+  assert.deepEqual(await pathList(), [["203.0.113.66 → 10.0.0.20: 1 path(s)"], TWO_PATHS[2]]);
+  await page.fill("#window", "24h");
+  await page.fill("#range-from", "2024-05-01T12:05:00Z");
+  await remap();
+  await page.waitForSelector("#path-list li.hint >> text=No time-consistent path between the marked hosts.");
+  await page.fill("#range-from", "");
+  await remap();
+  await page.waitForFunction(() => document.querySelectorAll("#path-list li.path").length === 2);
 
   // Unmarking recomputes: no path left.
   await page.locator("#compromised-list li", { hasText: "10.0.0.20" }).locator("button").click();
@@ -75,9 +123,27 @@ try {
   await page.click("#route-form button");
   await page.waitForFunction(() => document.querySelectorAll("#route-list li.path").length === 2);
   assert.equal(await page.textContent("#route-summary"), "2 path(s) from 203.0.113.66 to 10.0.0.20.");
+  assert.equal(await status(), "2 path(s) from 203.0.113.66 to 10.0.0.20. At most 6 hops, 24h between hops. " +
+                               "Click the background to clear.");
   assert.equal(await cyEval(() => window.threatbridge.cy.edges(".route").length), 4);
   assert.ok((await classes("10.0.0.77")).includes("faded"));
   await shot("paths-between");
+  // The IOC times: the first hop must leave after the first's, the path reach the second by its.
+  await findRoutes("203.0.113.66", "2024-05-01T12:05:00Z", "10.0.0.20", "");
+  assert.equal(await page.textContent("#route-summary"), "0 path(s) from 203.0.113.66 to 10.0.0.20.");
+  assert.deepEqual(await routeList(), [["No time-consistent path."]]);
+  assert.equal(await status(), "0 path(s) from 203.0.113.66 to 10.0.0.20. At most 6 hops, 24h between hops.");
+  assert.equal(await cyEval(() => window.threatbridge.cy.edges(".route").length), 0);
+  await findRoutes("203.0.113.66", "", "10.0.0.20", "2024-05-01T12:17:00Z");
+  assert.equal(await page.textContent("#route-summary"), "1 path(s) from 203.0.113.66 to 10.0.0.20.");
+  assert.deepEqual(await routeList(), [TWO_PATHS[1]]);
+  await findRoutes("10.0.0.20", "", "203.0.113.66", "");                 // the other way: none
+  assert.equal(await page.textContent("#route-summary"), "0 path(s) from 10.0.0.20 to 203.0.113.66.");
+  await page.fill("#route-dst", "");
+  await page.click("#route-form button");
+  await waitStatus(/^Enter both hosts to find the paths between them$/);
+  assert.ok(await page.$eval("#status", (s) => s.classList.contains("error")));
+  await findRoutes("203.0.113.66", "", "10.0.0.20", "");
   // ... and from the host menu: paths to 10.0.0.9 from the host already entered.
   p = await at("node#10\\.0\\.0\\.9");
   await page.mouse.click(p.x, p.y, { button: "right" });
@@ -85,6 +151,9 @@ try {
   await page.waitForFunction(() => document.getElementById("route-summary").textContent.includes("to 10.0.0.9"));
   assert.deepEqual(await page.$$eval("#route-list li.path", (l) => l.map((x) => x.innerText.split("\n"))), [
     ["203.0.113.66 → 10.0.0.5 → 10.0.0.9", "2024-05-01T12:00:00.000Z → 2024-05-01T12:10:00.000Z"]]);
+  assert.equal(await cyEval(() => window.threatbridge.cy.edges(".route").length), 2);   // the old ones cleared
+  await page.locator("#route-list li.path").click();
+  assert.equal(await status(), "Path 203.0.113.66 → 10.0.0.9, 2 hop(s). Click the background to clear.");
   await page.mouse.click(box.x + 5, box.y + 5);
 
   // Exclude a domain: it resolves to 10.0.0.77 from the capture's DNS answers.
@@ -94,6 +163,7 @@ try {
   await page.waitForFunction(() => document.querySelector("#exclude-list li"));
   assert.match(await page.textContent("#exclude-list li"), /^updates\.example\.comcapture: 10\.0\.0\.77/);
   assert.ok(await cyEval(() => window.threatbridge.cy.getElementById("10.0.0.77").empty()));
+  assert.equal(await status(), "Excluded updates.example.com (1 address(es)) for everyone");
   await shot("domain-exclude");
   await page.locator("#exclude-list li button").click();
   await page.waitForFunction(() => !document.querySelector("#exclude-list li"));

@@ -15,7 +15,7 @@ Read these first:
 
 - `README.md`, especially *Deploy on the Security Onion manager*, *PCAP for a flow* and
   *Things to verify on your install*.
-- `docs/TEST_PLAN.md`, especially section 2 (the environments) and the SO-, TLS- and PRF- tests.
+- `docs/TEST_PLAN.md`, especially section 2 (the environments) and the SO- tests.
 - `tests/make_case.py`: the attack-chain dataset the range's traffic must reproduce.
 
 ## What ThreatBridge is (for context)
@@ -148,13 +148,11 @@ listener that accepts and closes), as the scenario needs:
 **Tester workstation (`tb-tester`):**
 
 - The ThreatBridge repository cloned, `python -m pip install -r requirements.txt pytest`
-  (Python 3.11 or later), `nfdump`, Docker, and Chromium.
-- It can run every non-SO environment of `docs/TEST_PLAN.md`. Note that ENV-MTLS runs its own
-  container here.
+  (Python 3.11 or later), `nfdump`, and Chromium.
+- It can run the plan's other environments (ENV-DEMO, ENV-CASE, ENV-BUSY).
 - The ThreatBridge client certificate (`.p12`) for the SO deployment is in a Chromium profile,
   with the ThreatBridge CA and SO's CA trusted, so the tester opens
   `https://<tb-so>:5443/` without warnings.
-- A second Chromium profile has no client certificate (for TLS-01).
 - The tester reaches the desktop through the Proxmox console or a remote desktop on `tbmgmt`.
 
 ### Security Onion and ThreatBridge on `tb-so`

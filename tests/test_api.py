@@ -66,6 +66,23 @@ def test_api_boundaries_and_messages(client):
     assert r.status_code == 200 and b"threatbridge" in r.data
 
 
+def test_windows_and_limits_come_from_the_config(tmp_path):
+    cfg = Config(backend="demo", default_window="2h", max_window="3h", default_limit=2, max_limit=3,
+                 live_dns=False, exclude_file=str(tmp_path / "ex.json"),
+                 compromised_file=str(tmp_path / "c.json"))
+    c = create_app(cfg, DemoBackend(cfg)).test_client()
+    conf = c.get("/api/config").get_json()
+    assert (conf["default_window"], conf["max_window"], conf["default_limit"], conf["max_limit"]) == \
+        ("2h", "3h", 2, 3)
+    base = "/api/neighbors?ip=10.0.0.5&direction=out&ts=2024-05-01T12:00:00Z"
+    r = c.get(base).get_json()
+    assert r["end"] == "2024-05-01T14:00:00.000Z" and len(r["peers"]) == 2      # TB_WINDOW, TB_LIMIT
+    assert len(c.get(base + "&limit=50").get_json()["peers"]) == 3               # capped: TB_MAX_LIMIT
+    assert c.get(base + "&window=3h").status_code == 200
+    r = c.get(base + "&window=4h")
+    assert r.status_code == 400 and r.get_json()["error"] == "window exceeds maximum of 3h"
+
+
 @pytest.mark.parametrize("window", ["99999999999d", "999999999999w", "0x10h"])
 def test_absurd_windows_are_rejected(client, window):
     assert client.get(f"/api/neighbors?ip=10.0.0.5&window={window}").status_code == 400

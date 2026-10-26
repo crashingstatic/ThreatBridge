@@ -171,6 +171,30 @@ def test_es_dns_body_asks_about_every_entry_at_once():
     assert body["aggs"]["entries"]["filters"]["filters"]["x.test"] == {"term": {"q": {"value": "x.test", "case_insensitive": True}}}
 
 
+def test_field_names_and_datasets_come_from_the_config():
+    cfg = Config(f_src="src", f_dst="dst", f_ts="ts", f_dport="dport", f_dataset="ds", datasets=["c"],
+                 f_sport="sport", f_proto="proto", f_duration="dur", f_packets=["p1", "p2"], f_bytes=["b1"])
+    in_range = {"range": {"ts": {"gte": "2024-05-01T12:00:00.000Z", "lte": "2024-05-01T13:00:00.000Z",
+                                 "format": "strict_date_optional_time"}}}
+    top = q.es_top_body(cfg, "10.0.0.5", "in", T0, T1, 7, ["10.9.0.0/16"])
+    assert top["query"] == {"bool": {"filter": [{"term": {"dst": "10.0.0.5"}}, in_range, {"terms": {"ds": ["c"]}}],
+                                     "must_not": [{"term": {"src": "10.9.0.0/16"}}]}}
+    assert top["aggs"]["peers"]["terms"]["field"] == "src"
+    assert top["aggs"]["distinct"] == {"cardinality": {"field": "src"}}
+    assert top["aggs"]["peers"]["aggs"] == {"first_seen": {"min": {"field": "ts"}},
+                                            "last_seen": {"max": {"field": "ts"}},
+                                            "ports": {"terms": {"field": "dport", "size": 5}}}
+    flows = q.es_flows_body(cfg, "10.0.0.5", "10.0.0.9", T0, T1, 0, 50)
+    assert flows["sort"] == [{"ts": "asc"}]
+    assert flows["fields"] == [{"field": "ts", "format": "strict_date_optional_time"},
+                               "sport", "dport", "proto", "dur", "p1", "p2", "b1"]
+    assert q.soc_pivot_query(cfg, "10.0.0.1", "10.0.0.2", T0) == (
+        '((src:"10.0.0.1" AND dst:"10.0.0.2") OR (src:"10.0.0.2" AND dst:"10.0.0.1")) '
+        'AND ts:[* TO "2024-05-01T12:00:00.000Z"] | groupby src dst dport')
+    unfiltered = q.es_filter(Config(datasets=[]), "10.0.0.5", "in", T0, T1, [])["bool"]["filter"]
+    assert unfiltered == [{"term": {"destination.ip": "10.0.0.5"}}, RANGE]       # TB_DATASETS= : no filter
+
+
 def test_pcap_links_and_document_ids():
     cfg = Config(soc_url="https://so")
     assert q.soc_pcap_url(cfg, "P5mgnpEB0JpjNDZz1bIN", "2024-05-01T12:00:00.123Z") == \
@@ -192,3 +216,17 @@ def test_pivot_query_both_directions_up_to_ioc():
     url = q.soc_url(cfg, query)
     assert url.startswith("https://so/#/dashboards?q=")
     assert unquote(url.split("q=", 1)[1]) == query
+
+
+def test_pivots_follow_the_pivot_settings():
+    cfg = Config(soc_url="https://so", soc_path="/#/hunt?q={query}&t=1", pivot_time_clause=False)
+    query = q.soc_pivot_query(cfg, "10.0.0.1", "10.0.0.2", T1, T0)
+    assert query == ('((source.ip:"10.0.0.1" AND destination.ip:"10.0.0.2") OR '
+                     '(source.ip:"10.0.0.2" AND destination.ip:"10.0.0.1")) '
+                     '| groupby source.ip destination.ip destination.port')     # TB_PIVOT_TIME_CLAUSE=false
+    assert q.soc_host_query(cfg, "10.0.0.1", T0, T1) == (
+        '(source.ip:"10.0.0.1" OR destination.ip:"10.0.0.1") | groupby source.ip destination.ip destination.port')
+    url = q.soc_url(cfg, query)                                                   # TB_SOC_PATH
+    prefix, suffix = "https://so/#/hunt?q=", "&t=1"
+    assert url.startswith(prefix) and url.endswith(suffix)
+    assert unquote(url[len(prefix):-len(suffix)]) == query

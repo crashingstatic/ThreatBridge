@@ -87,6 +87,13 @@ jobs:
         run: sudo SO_CA="$PWD/certs/ca.crt" deploy/run.sh
       - name: Mutual TLS and CSRF checks
         run: tests/mtls_check.sh https://localhost:5443 certs ci-analyst
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install --no-save playwright@1
+      - run: npx playwright install --with-deps chromium
+      - name: The map in a browser through mutual TLS
+        run: TB_URL=https://localhost:5443 node tests/ui_mtls.mjs certs ci-analyst
       - name: Container logs
         if: always()
         run: sudo docker logs threatbridge || true

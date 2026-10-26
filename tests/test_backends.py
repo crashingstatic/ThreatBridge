@@ -194,6 +194,17 @@ def test_elastic_flows_read_fields_and_stop_at_the_result_window():
         be.flows("10.0.0.1", "10.0.0.2", T0, T0, 9990, 50)
 
 
+def test_elastic_flows_read_the_configured_fields():
+    cfg = Config(f_ts="t", f_sport="sp", f_dport="dp", f_proto="pr", f_duration="du",
+                 f_packets=["p1", "p2"], f_bytes=["b1", "b2"])
+    be = ElasticBackend(cfg)
+    be.session = FlowsES([{"t": ["2024-05-01T12:00:00Z"], "sp": [53000], "dp": [53], "pr": ["udp"],
+                           "du": [0.25], "p1": [1], "p2": [1], "b1": [70], "b2": [90]}], total=1)
+    assert be.flows("10.0.0.1", "10.0.0.2", T0, T0, 0, 50)["flows"] == [
+        {"start": "2024-05-01T12:00:00.000Z", "duration": 0.25, "sport": 53000, "dport": 53,
+         "proto": "udp", "packets": 2, "bytes": 160}]
+
+
 def test_elastic_flows_request_and_limits():
     es = RecordingES({"hits": {}})
     be = ElasticBackend(Config())

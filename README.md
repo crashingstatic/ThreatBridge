@@ -200,7 +200,7 @@ Deployment on a live Security Onion install has **not been tested**. These point
 ## Requirements
 
 Requirement IDs, current status and design decisions: [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md).
-A step-by-step GUI test plan for every feature and requirement: [docs/TEST_PLAN.md](docs/TEST_PLAN.md). A prompt for an agent to build a Security Onion test range for it on Proxmox (OpenTofu and Ansible): [docs/TEST_RANGE_PROMPT.md](docs/TEST_RANGE_PROMPT.md).
+The manual tests, for what CI can't check (how the map looks, a large case in a real browser, a real Security Onion), and where each requirement is tested: [docs/TEST_PLAN.md](docs/TEST_PLAN.md). A prompt for an agent to build a Security Onion test range for it on Proxmox (OpenTofu and Ansible): [docs/TEST_RANGE_PROMPT.md](docs/TEST_RANGE_PROMPT.md).
 
 ## Development
 
@@ -243,10 +243,10 @@ Run it again after changing the analysis or the readers, and look at the new sur
 | Performance | `TB_PERF=1 tests/test_perf.py`: 1.25M flows built within 5 minutes (PRF-1/2), and the interactive queries timed on a busy case (PRF-3) |
 | Shellcheck | `scripts/`, `deploy/`, `tests/` shell scripts |
 | Security scan | `pip-audit` (known-vulnerable dependencies), `bandit -ll` (medium+ Python security issues) |
-| Docker build + mTLS | Generates a throwaway PKI, builds and starts the container with `deploy/run.sh` (demo backend), then `tests/mtls_check.sh`. No cert and foreign-CA certs must be refused, a valid cert accepted, and writes without the CSRF header rejected. |
-| UI tests | Headless Chromium. Every script fails on any unexpected console/CSP error, and screenshots are uploaded as an artifact. `tests/ui_smoke.mjs` (demo backend) loads the map as a SOC action would, expands a hop, right-clicks an edge, checks the SOC pivot URL and the flows' PCAP links and download, and round-trips the exclude list. `tests/ui_case.mjs` runs post-mortem mode on a pcap made by `tests/make_case.py`: it traces a threat line, marks two hosts compromised, checks the attack path, then unmarks one. `tests/ui_actions.mjs` covers the rest: opening without parameters, errors, slow writes kept in order, left-click expansion, every host-menu action, the compromised form, attack paths answered out of order, "Show all" paths, paging flows, a time range from the URL, a failing server, a slow request cancelled, saved maps (shared and as a file), Fit and Clear. The job ends with `tests/js_coverage.mjs`, which lists what of `app.js` no browser test ran. |
+| Docker build + mTLS | Generates a throwaway PKI, builds and starts the container with `deploy/run.sh` (demo backend), then `tests/mtls_check.sh`. No cert and foreign-CA certs must be refused, a valid cert accepted, and writes without the CSRF header rejected. `tests/ui_mtls.mjs` then opens the map in Chromium through the container: refused without a certificate, working with one. |
+| UI tests | Headless Chromium. Every script fails on any unexpected console/CSP error, and screenshots are uploaded as an artifact. `tests/ui_smoke.mjs` (demo backend) checks the toolbar and its URL, loads the map as a SOC action would, Top and Bottom N, the SOC pivots (with the IOC time and the time range), the flows' PCAP links and download, the exclude list and what its entries resolved to, marking hosts compromised, the busy indicator, and the status line's messages. `tests/ui_case.mjs` runs post-mortem mode on a pcap made by `tests/make_case.py`: threat lines, compromised hosts and attack paths (with the Window, the time range and excludes), paths between two hosts with IOC times, and domain excludes. `tests/ui_actions.mjs` covers the rest: errors, slow writes kept in order, the details panel and layout, every menu and how menus close, time-chained hops, the compromised form, attack paths answered out of order, CIDRs, "Show all" paths, paging flows, threat lines cut short, saved maps (shared and as a file, including malformed files and markup in names), clicks after a resize or scroll, Fit and Clear. The job ends with `tests/js_coverage.mjs`, which lists what of `app.js` no browser test ran. |
 
-CI cannot reach a real Security Onion, so the items under *Things to verify on your install* still need a manual check.
+CI cannot reach a real Security Onion, so the items under *Things to verify on your install* still need a manual check: tests SO-01 to SO-06 in [docs/TEST_PLAN.md](docs/TEST_PLAN.md).
 
 Layout:
 
