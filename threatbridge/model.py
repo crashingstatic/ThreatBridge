@@ -83,6 +83,15 @@ def flags_say_reversed(first, other, packets=False):
     return other_client if other_client != first_client else None
 
 
+def refused(a, b):
+    """Whether a TCP connection was refused, from each side's flags ORed together: one side's
+    SYN (without ACK) answered only by a RST, never a SYN-ACK. Zeek calls it REJ. Refused
+    connections aren't mapped: a single port scan would swamp the map."""
+    def answered_by_reset(x, y):
+        return x & TCP_SYN and not x & TCP_ACK and y & TCP_RST and not y & TCP_SYN
+    return bool(answered_by_reset(a, b) or answered_by_reset(b, a))
+
+
 def ports_say_reversed(first, other):
     """Whether the ports say the `other` side started the connection: True, False, or None when
     they can't tell. A well-known port (below 1024) facing one of 1024 or above is the server's;

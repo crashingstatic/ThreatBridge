@@ -36,7 +36,7 @@ mode that reads pcap and nfcapd files, which the tester runs on a workstation.
 | TLS-01 (ENV-MTLS) | `tb-tester` | Docker, openssl, the ThreatBridge image built in advance |
 | REAL-01, REAL-02 (ENV-REAL) | `tb-tester` | A capture NIC on the lab, tcpdump, softflowd, nfdump, the `zeek/zeek` image, and the real-traffic playbook |
 | SO-01 to SO-06 (ENV-SO, ENV-SO-PRO) | `tb-so`, `tb-tester` | Security Onion, ThreatBridge deployed, SOC actions, the scenario |
-| SO-02 steps 5 and 6 | `tb-so`, `tb-tester` | A host with 11 peers of known counts, and a host with 1,101 peers |
+| SO-02 steps 5, 6 and 7 | `tb-so`, `tb-tester` | A port scan; a host with 11 peers of known counts, and a host with 1,101 peers |
 | SO-07 | `tb-so`, `tb-tester`, `tb-tester2` | A second workstation let through SO's firewall; cheap redeploys |
 
 ## Facts to rely on, and what to check yourself
@@ -140,10 +140,10 @@ Proxmox host. ThreatBridge's results depend on time order.
 
 And, for the tests added since:
 
-- 10.0.3.1, and its peers 10.0.3.2 to 10.0.3.12 (SO-02 step 5). One container may hold the
+- 10.0.3.1, and its peers 10.0.3.2 to 10.0.3.12 (SO-02 step 6). One container may hold the
   eleven peers as addresses on its `eth0`.
 - 10.0.5.1 to 10.0.5.4, one container each (the real traffic of REAL-01).
-- `tb-many`, one container holding 1,100 addresses (SO-02 step 6): 10.0.8.1–10.0.8.250,
+- `tb-many`, one container holding 1,100 addresses (SO-02 step 7): 10.0.8.1–10.0.8.250,
   10.0.9.1–10.0.9.250, 10.0.10.1–10.0.10.250, 10.0.11.1–10.0.11.250 and 10.0.12.1–10.0.12.100.
 
 A container with several addresses sends each connection from the address the scenario names
@@ -264,8 +264,9 @@ SO-02. Times are minutes after the start:
 | +35:00 | 10.0.0.5 → 10.0.0.20 | 5985 | Shortcut |
 | +40:00 | 10.0.0.9 → 10.0.0.20 | 3389 | Chain, hop 3 |
 | +50:00 | 10.0.0.77 → 10.0.0.9 | 80 | |
-| +55:00 to +57:00 | 10.0.3.2–12 → 10.0.3.1, 25 connections, as below | 8080 | Rarest peers (SO-02 step 5) |
-| +60:00 to +68:00 | each of `tb-many`'s 1,100 addresses → 10.0.1.3, one connection each | 9000 | More than one page of peers (SO-02 step 6) |
+| +55:00 to +57:00 | 10.0.3.2–12 → 10.0.3.1, 25 connections, as below | 8080 | Rarest peers (SO-02 step 6) |
+| +58:00 | 10.0.2.1 → 10.0.2.10, a SYN scan of ports 400–499 (e.g. `nmap -sS -p 400-499`) | 400–499 | Refused connections (SO-02 step 5): 99 closed ports reset, 445 open |
+| +60:00 to +68:00 | each of `tb-many`'s 1,100 addresses → 10.0.1.3, one connection each | 9000 | More than one page of peers (SO-02 step 7) |
 | +70:00 to +89:50 | 10.0.1.1 → 10.0.1.2, 120 connections 10 s apart | 8443 | Paging |
 | +90:00 on | 10.0.1.1 → 10.0.1.3, 12,000 short connections | 9000 | More than SOC's 10,000-flow page limit (SO-02) |
 
@@ -292,8 +293,8 @@ Requirements for the scenario:
   in Zeek's records.
 - Write a **manifest** to the tester workstation (CSV and JSON): source, destination, port,
   protocol, and the actual start time in UTC to the millisecond, for every connection except
-  the 1,100 and the 12,000. Write each of those two sets as one summary line with its count and
-  first and last times.
+  the scan, the 1,100 and the 12,000. Write each of those three sets as one summary line with
+  its count and first and last times.
 - While the scenario runs, capture the lab on `tb-tester`'s capture NIC
   (`tcpdump -i <nic> -s 0 -w <file>`), and leave the pcap on `tb-tester`. With it, the
   post-mortem tests can also run on this traffic (`python -m threatbridge --case <pcap>`).
@@ -390,12 +391,16 @@ Run all of these and put the results in your report:
    - over 10,000 conn records 10.0.1.1 → 10.0.1.3:9000;
    - conn records to 10.0.1.3:9000 from 1,101 distinct sources;
    - conn records to 10.0.3.1:8080 from 11 sources, with the counts of the table above;
+   - 99 conn records 10.0.2.1 → 10.0.2.10 with `connection.state` `REJ` (the scan), and one
+     more to 445 that isn't;
    - conn counts per pair that match the manifest. Explain any difference.
 5. **ThreatBridge, from the tester workstation:**
    - with the client certificate, `https://<tb-so>:5443/healthz` answers
      `{"backend":"elastic","status":"ok"}`;
    - without one, the TLS handshake fails;
    - mapping 10.0.0.9 inbound at a time after the scenario shows 10.0.0.5 and 10.0.0.77;
+   - mapping 10.0.2.10 inbound shows the arrow 10.0.2.1 → 10.0.2.10 with count 2: the scan's
+     refused connections aren't mapped;
    - Peers *Bottom (rarest)*, N 5, on 10.0.3.1 and on 10.0.1.3 inbound shows the five peers and
      the peer counts given above (in the map, or through `/api/neighbors`, `docs/API.md`);
    - a flow's *PCAP in SOC* link opens SOC's PCAP job and shows that connection's packets.

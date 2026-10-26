@@ -14,6 +14,7 @@ T1 = T0 + timedelta(hours=1)
 RANGE = {"range": {"@timestamp": {"gte": "2024-05-01T12:00:00.000Z", "lte": "2024-05-01T13:00:00.000Z",
                                   "format": "strict_date_optional_time"}}}
 DATASETS = {"terms": {"event.dataset": ["conn", "zeek.conn"]}}
+REJ = {"match": {"connection.state": "REJ"}}        # refused connections are left out
 DETAILS = {"first_seen": {"min": {"field": "@timestamp"}}, "last_seen": {"max": {"field": "@timestamp"}},
            "ports": {"terms": {"field": "destination.port", "size": 5}}}
 
@@ -103,23 +104,25 @@ def test_es_filter_direction_and_excludes():
     f = q.es_filter(cfg, "10.0.0.5", "in", T0, T0, ["10.9.0.0/16"])["bool"]
     assert {"term": {"destination.ip": "10.0.0.5"}} in f["filter"]
     assert {"terms": {"event.dataset": ["conn", "zeek.conn"]}} in f["filter"]
-    assert f["must_not"] == [{"term": {"source.ip": "10.9.0.0/16"}}]
+    assert f["must_not"] == [{"term": {"source.ip": "10.9.0.0/16"}}, REJ]
     f = q.es_filter(cfg, "10.0.0.5", "out", T0, T0, [])["bool"]
-    assert {"term": {"source.ip": "10.0.0.5"}} in f["filter"]
+    assert {"term": {"source.ip": "10.0.0.5"}} in f["filter"] and f["must_not"] == [REJ]
+    # TB_FIELD_CONN_STATE= (empty): refused connections are kept.
+    assert q.es_filter(Config(f_conn_state=""), "10.0.0.5", "out", T0, T0, [])["bool"]["must_not"] == []
 
 
 def test_es_top_body_exactly():
     assert q.es_top_body(Config(), "10.0.0.5", "in", T0, T1, 7, ["10.9.0.0/16"]) == {
         "size": 0, "track_total_hits": False,
         "query": {"bool": {"filter": [{"term": {"destination.ip": "10.0.0.5"}}, RANGE, DATASETS],
-                           "must_not": [{"term": {"source.ip": "10.9.0.0/16"}}]}},
+                           "must_not": [{"term": {"source.ip": "10.9.0.0/16"}}, REJ]}},
         "aggs": {"peers": {"terms": {"field": "source.ip", "size": 7, "order": {"_count": "desc"}},
                            "aggs": DETAILS},
                  "distinct": {"cardinality": {"field": "source.ip"}}}}
 
 
 def test_es_scan_and_details_bodies_exactly():
-    out_filter = {"bool": {"filter": [{"term": {"source.ip": "10.0.0.5"}}, RANGE, DATASETS], "must_not": []}}
+    out_filter = {"bool": {"filter": [{"term": {"source.ip": "10.0.0.5"}}, RANGE, DATASETS], "must_not": [REJ]}}
     assert q.es_scan_body(Config(), "10.0.0.5", "out", T0, T1, [], 1000, {"peer": "10.0.0.9"}) == {
         "size": 0, "track_total_hits": False, "query": out_filter,
         "aggs": {"scan": {"composite": {"size": 1000, "after": {"peer": "10.0.0.9"},
@@ -128,7 +131,7 @@ def test_es_scan_and_details_bodies_exactly():
     assert body == {
         "size": 0, "track_total_hits": False,
         "query": {"bool": {"filter": out_filter["bool"]["filter"] +
-                           [{"terms": {"destination.ip": ["10.0.0.7", "10.0.0.8"]}}], "must_not": []}},
+                           [{"terms": {"destination.ip": ["10.0.0.7", "10.0.0.8"]}}], "must_not": [REJ]}},
         "aggs": {"peers": {"terms": {"field": "destination.ip", "size": 2}, "aggs": DETAILS}}}
     assert q.es_details_body(Config(), "10.0.0.5", "out", T0, T1, [], [])["aggs"]["peers"]["terms"]["size"] == 1
 
@@ -137,7 +140,7 @@ def test_es_bodies_for_inbound_peers():
     body = q.es_scan_body(Config(), "10.0.0.5", "in", T0, T1, ["10.9.0.0/16"], 10)
     assert body["aggs"]["scan"]["composite"]["sources"] == [{"peer": {"terms": {"field": "source.ip"}}}]
     assert body["query"]["bool"]["filter"][0] == {"term": {"destination.ip": "10.0.0.5"}}
-    assert body["query"]["bool"]["must_not"] == [{"term": {"source.ip": "10.9.0.0/16"}}]
+    assert body["query"]["bool"]["must_not"] == [{"term": {"source.ip": "10.9.0.0/16"}}, REJ]
     body = q.es_details_body(Config(), "10.0.0.5", "in", T0, T1, ["10.0.0.7"], [])
     assert body["aggs"]["peers"]["terms"]["field"] == "source.ip"
     assert body["query"]["bool"]["filter"][0] == {"term": {"destination.ip": "10.0.0.5"}}
@@ -173,12 +176,13 @@ def test_es_dns_body_asks_about_every_entry_at_once():
 
 def test_field_names_and_datasets_come_from_the_config():
     cfg = Config(f_src="src", f_dst="dst", f_ts="ts", f_dport="dport", f_dataset="ds", datasets=["c"],
-                 f_sport="sport", f_proto="proto", f_duration="dur", f_packets=["p1", "p2"], f_bytes=["b1"])
+                 f_sport="sport", f_proto="proto", f_duration="dur", f_packets=["p1", "p2"], f_bytes=["b1"],
+                 f_conn_state="state")
     in_range = {"range": {"ts": {"gte": "2024-05-01T12:00:00.000Z", "lte": "2024-05-01T13:00:00.000Z",
                                  "format": "strict_date_optional_time"}}}
     top = q.es_top_body(cfg, "10.0.0.5", "in", T0, T1, 7, ["10.9.0.0/16"])
     assert top["query"] == {"bool": {"filter": [{"term": {"dst": "10.0.0.5"}}, in_range, {"terms": {"ds": ["c"]}}],
-                                     "must_not": [{"term": {"src": "10.9.0.0/16"}}]}}
+                                     "must_not": [{"term": {"src": "10.9.0.0/16"}}, {"match": {"state": "REJ"}}]}}
     assert top["aggs"]["peers"]["terms"]["field"] == "src"
     assert top["aggs"]["distinct"] == {"cardinality": {"field": "src"}}
     assert top["aggs"]["peers"]["aggs"] == {"first_seen": {"min": {"field": "ts"}},

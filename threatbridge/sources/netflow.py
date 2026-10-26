@@ -10,7 +10,7 @@ import socket
 import subprocess
 import tempfile
 
-from ..model import SourceError, icmp_flags, idle_timeout, oriented, proto_name, settle
+from ..model import SourceError, icmp_flags, idle_timeout, oriented, proto_name, refused, settle
 from .workers import in_order
 
 log = logging.getLogger(__name__)
@@ -94,10 +94,12 @@ class _Conn:
         self.oflags = self.rflags = 0      # each half's TCP flags, ORed together (0: not seen)
 
     def flows(self):
-        """As flows (see model.oriented). Time decides who started the connection when both
+        """As flows (see model.oriented); none if it was refused. Time decides who started the connection when both
         halves were recorded and one started first: records are taken in start order, so this
         one. Otherwise (both started in the same millisecond, or one half alone) the flags, then
         the ports."""
+        if refused(self.oflags, self.rflags):
+            return []
         if self.reverse_seen and not self.tie:
             flip = False
         else:
@@ -110,14 +112,21 @@ def pair_records(records):
     """Merge one-way records (start, end, proto, src, sport, dst, dport, packets, bytes, TCP
     flags, source) into connections. Records of the same endpoints closer together than the idle timeout
     belong to one connection; that also rejoins long connections split by the exporter."""
-    flows, open_ = [], {}
+    flows, open_, left_out = [], {}, 0
+
+    def close(conn):
+        nonlocal left_out
+        out = conn.flows()
+        flows.extend(out)
+        left_out += not out             # refused
+
     for rec in sorted(records, key=lambda r: r[0]):
         start, end, proto, src, sport, dst, dport, packets, nbytes, flags, source = rec
         key = (proto, src, sport, dst, dport) if (src, sport) <= (dst, dport) \
             else (proto, dst, dport, src, sport)
         conn = open_.get(key)
         if conn is not None and start > conn.last + idle_timeout(proto):
-            flows.extend(open_.pop(key).flows())
+            close(open_.pop(key))
             conn = None
         if conn is None:
             conn = open_[key] = _Conn(rec, source)
@@ -133,7 +142,9 @@ def pair_records(records):
         if end > conn.last:
             conn.last = end
     for c in open_.values():
-        flows.extend(c.flows())
+        close(c)
+    if left_out:
+        log.info("%d refused connection(s) left out", left_out)
     return flows
 
 

@@ -51,6 +51,7 @@ python -m threatbridge --case /cases/incident-42/      # files or directories, i
   - In testing on 4 CPUs, 8 rotated captures of TCP traffic (538 MB) were read in 4.2 s instead of 15.5 s. With every packet a connection of its own (1.2M), 12.5 s instead of 23.7 s: following the connections is then most of the work.
   - While a case is built, the terminal shows the stage, the file, how far it has got and the time left, e.g. `Reading 8 evidence file(s): 41%, file 4 of 8, 612,330 packets, about 3 s left`. Without a terminal (gunicorn, Docker) the same goes to the log every 10 seconds.
 - **NetFlow records are one-way,** so the two halves of a connection are merged into one flow.
+- **Refused connections aren't mapped,** so a port scan doesn't swamp the map: a SYN answered only by a RST, never a SYN-ACK (Zeek's `REJ`). The log says how many were left out. A SYN nobody answered, a scan's hit on an open port (SYN, SYN-ACK, then the scanner's RST) and a SYN-ACK scan's reset are mapped.
 - **Who started a connection** (the initiator) is decided by time, then TCP flags, then ports:
   1. **Time,** when both sides were seen: the side whose first packet came first; in NetFlow, the half that started first.
   2. **TCP flags,** when both sides' first packets (or both NetFlow halves) have the same time, or only one side was seen. NetFlow keeps milliseconds, and softflowd gives both halves one start.
@@ -167,6 +168,7 @@ Deployment on a live Security Onion install has **not been tested**. These point
 8. **Whether SOC Dashboards accepts `@timestamp:["…" TO "…"]` and `["…" TO *]`,** which pivots carry when a time range is set.
 9. **The Zeek DNS records** (`event.dataset` `dns`, `dns.query.name`, `dns.resolved_ip`; taken from Security Onion's 2.4 ingest parser). The question name must be a keyword field: names are matched exactly and case-insensitively, `*.suffix` with a wildcard query.
 10. **The PCAP links:** *PCAP in SOC* uses the same `/joblookup` link as SOC's own PCAP action. *Download PCAP* follows SOC's Connect API as published in its source (token, `/connect/joblookup/`, `/connect/job/{id}`, `/connect/stream/{id}`); it was tested against a stand-in, not a real SOC.
+11. **Refused connections** are left out by Zeek's `connection.state` `REJ` (`TB_FIELD_CONN_STATE`). The field name is from Security Onion's 2.4 ingest pipeline (`zeek.conn`); whether it is indexed as keyword or text isn't known, so a `match` query is used, which finds it either way.
 
 ## Configuration (env vars)
 
@@ -185,6 +187,7 @@ Deployment on a live Security Onion install has **not been tested**. These point
 | `TB_FIELD_SRC/DST/TS/DPORT/DATASET` | ECS names | |
 | `TB_FIELD_SPORT/PROTO/DURATION` | `source.port` / `network.transport` / `event.duration` | flow list |
 | `TB_FIELD_PACKETS` / `TB_FIELD_BYTES` | `client.packets,server.packets` / `client.ip_bytes,server.ip_bytes` | flow list; the fields are summed |
+| `TB_FIELD_CONN_STATE` | `connection.state` | Zeek's `conn_state`: records of refused connections (`REJ`) are left out; empty = keep them |
 | `TB_DNS_DATASETS` | `dns,zeek.dns` | Zeek DNS records, for domain names on the exclude list; empty = no dataset filter |
 | `TB_FIELD_DNS_QUERY` / `TB_FIELD_DNS_IP` | `dns.query.name` / `dns.resolved_ip` | their question name and answer addresses |
 | `TB_SOC_URL` / `TB_SOC_PATH` | `https://securityonion` / `/#/dashboards?q={query}` | pivot target; also SOC's PCAP job links |

@@ -58,6 +58,8 @@ class Config:
     f_ts: str = "@timestamp"
     f_dport: str = "destination.port"
     f_dataset: str = "event.dataset"
+    # Zeek's conn_state: records of refused connections (REJ) are left out. Empty: no filter.
+    f_conn_state: str = "connection.state"
     # Shown in a connection's flow list. Defaults: Security Onion 2.4's Zeek conn records,
     # duration in seconds; packets and bytes add up the listed fields (both directions).
     f_sport: str = "source.port"
@@ -131,6 +133,7 @@ class Config:
             f_ts=_env("TB_FIELD_TS", cls.f_ts),
             f_dport=_env("TB_FIELD_DPORT", cls.f_dport),
             f_dataset=_env("TB_FIELD_DATASET", cls.f_dataset),
+            f_conn_state=os.environ.get("TB_FIELD_CONN_STATE", cls.f_conn_state),
             f_sport=_env("TB_FIELD_SPORT", cls.f_sport),
             f_proto=_env("TB_FIELD_PROTO", cls.f_proto),
             f_duration=_env("TB_FIELD_DURATION", cls.f_duration),

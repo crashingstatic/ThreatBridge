@@ -33,7 +33,7 @@ def test_config_from_the_environment(monkeypatch, no_settings):
         "TB_DNS_TIMEOUT": "0.5", "TB_THREAT_HOPS": "4", "TB_THREAT_MAX_HOSTS": "50", "TB_MAX_PATHS": "20",
         "TB_READ_WORKERS": "3", "TB_DNS_DATASETS": "dns", "TB_FIELD_DNS_QUERY": "dq", "TB_FIELD_DNS_IP": "di",
         "TB_SOC_CLIENT_ID": "tb", "TB_SOC_CLIENT_SECRET": "s3", "TB_SOC_CA": "/soc.pem",
-        "TB_PCAP_TIMEOUT": "30", "TB_SESSIONS_DIR": "/d/sessions",
+        "TB_PCAP_TIMEOUT": "30", "TB_SESSIONS_DIR": "/d/sessions", "TB_FIELD_CONN_STATE": "cs",
     }
     for k, v in env.items():
         monkeypatch.setenv(k, v)
@@ -47,13 +47,15 @@ def test_config_from_the_environment(monkeypatch, no_settings):
         exclude_file="/d/ex.json", compromised_file="/d/c.json", live_dns=False, dns_ttl=11,
         dns_timeout=0.5, threat_hops=4, threat_max_hosts=50, max_paths=20, read_workers=3,
         dns_datasets=["dns"], f_dns_query="dq", f_dns_ip="di", soc_client_id="tb", soc_client_secret="s3",
-        soc_ca="/soc.pem", pcap_timeout=30, sessions_dir="/d/sessions")
+        soc_ca="/soc.pem", pcap_timeout=30, sessions_dir="/d/sessions", f_conn_state="cs")
     for value, expected in (("1", True), ("TRUE", True), ("yes", True), ("on", True), ("off", False), ("", True)):
         monkeypatch.setenv("TB_ES_VERIFY", value)
         assert Config.from_env().es_verify is expected, value
     # Set but empty means "none" (README: "empty = no dataset filter"); unset means the default.
     monkeypatch.setenv("TB_DATASETS", "")
     assert Config.from_env().datasets == []
+    monkeypatch.setenv("TB_FIELD_CONN_STATE", "")                   # keep refused connections
+    assert Config.from_env().f_conn_state == ""
     t = datetime(2024, 5, 1, 12, 0, tzinfo=timezone.utc)
     filters = q.es_filter(Config.from_env(), "10.0.0.5", "in", t, t, [])["bool"]["filter"]
     assert not any("event.dataset" in f.get("terms", {}) for f in filters)

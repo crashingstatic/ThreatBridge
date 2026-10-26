@@ -214,12 +214,32 @@ def test_flow_start_and_source_with_packets_out_of_order(tmp_path):
 
 
 def test_rst_and_port_reuse_start_new_flows(tmp_path):
-    pkts = [(T, tcp(C, S, 50000, 80, SYN)), (T + 0.1, tcp(S, C, 80, 50000, RST | ACK))]
+    pkts = [(T, tcp(C, S, 50000, 80, SYN)), (T + 0.05, tcp(S, C, 80, 50000, SYN | ACK)),
+            (T + 0.1, tcp(S, C, 80, 50000, RST | ACK))]
     pkts += handshake(sport=80, t=T + 1)              # same 5-tuple after the RST
     pkts += handshake(sport=80, t=T + 2)              # and again after FINs
     flows = load_packets(tmp_path, pkts)
-    assert [f.packets for f in flows] == [2, 8, 8]
+    assert [f.packets for f in flows] == [3, 8, 8]
     assert set(endpoints(flows)) == {(C, 50000, S, 80, "tcp")}
+
+
+def test_refused_connections_are_left_out(tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger="threatbridge")
+    # A port scan: each closed port answers the SYN with a RST. None of these is mapped ...
+    pkts = []
+    for i, port in enumerate(range(1000, 1100)):
+        pkts += [(T + i * 0.01, tcp(C, S, 50000, port, SYN)),
+                 (T + i * 0.01 + 0.001, tcp(S, C, port, 50000, RST | ACK))]
+    # ... but an open port it found is: the server answered with a SYN-ACK, the scanner reset.
+    pkts += [(T + 2, tcp(C, S, 50000, 445, SYN)), (T + 2.001, tcp(S, C, 445, 50000, SYN | ACK)),
+             (T + 2.002, tcp(C, S, 50000, 445, RST))]
+    # So are a SYN nobody answered and a SYN-ACK scan's reset: neither is an attempt refused.
+    pkts += [(T + 3, tcp(C, S, 50001, 81, SYN)),
+             (T + 4, tcp(R, S, 80, 50002, SYN | ACK)), (T + 4.001, tcp(S, R, 50002, 80, RST))]
+    flows = load_packets(tmp_path, pkts)
+    assert sorted(endpoints(flows)) == [(C, 50000, S, 445, "tcp"), (C, 50001, S, 81, "tcp"),
+                                       (R, 80, S, 50002, "tcp")]
+    assert "100 refused connection(s) left out" in caplog.text
 
 
 def test_udp_idle_timeout_splits_and_lone_reply_is_flipped(tmp_path):
@@ -469,16 +489,16 @@ def test_pairing_merges_halves_and_orients():
     [f] = pair_records([rec(S, 50000, C, 49668, T, T, flags=SYN)])
     assert (f.src, f.sport) == (S, 50000)
     # Same millisecond (softflowd gives both halves one start): the flags first. A half with a
-    # SYN but no ACK is the client's, e.g. a refused connection on ports that can't tell ...
-    refused = [rec(S, 49668, C, 50000, T, T, flags=RST | ACK), rec(C, 50000, S, 49668, T, T, flags=SYN)]
-    for records in (refused, refused[::-1]):
-        [f] = pair_records(records)
-        assert (f.src, f.sport, f.dst, f.dport) == (C, 50000, S, 49668)
-    # ... and where the ports would say otherwise (a server on an ephemeral port) ...
-    odd = [rec(C, 3000, S, 40000, T, T, flags=SYN), rec(S, 40000, C, 3000, T, T, flags=RST | ACK)]
+    # SYN but no ACK is the client's (one that never finished the handshake), even where the
+    # ports would say otherwise (a server on an ephemeral port) ...
+    odd = [rec(C, 3000, S, 40000, T, T, flags=SYN), rec(S, 40000, C, 3000, T, T, flags=SYN | ACK)]
     for records in (odd, odd[::-1]):
         [f] = pair_records(records)
         assert (f.src, f.sport) == (C, 3000)
+    # A refused connection (a SYN answered only by a RST) isn't mapped at all.
+    refused = [rec(S, 49668, C, 50000, T, T, flags=RST | ACK), rec(C, 50000, S, 49668, T, T, flags=SYN)]
+    for records in (refused, refused[::-1]):
+        assert pair_records(records) == []
     # ... but both halves of a completed connection carry SYN and ACK: then the ports. No
     # well-known port: the half from an ephemeral port is the client's.
     done = FIN | SYN | PSH | ACK
@@ -497,9 +517,19 @@ def test_pairing_merges_halves_and_orients():
     assert [(f.src, f.sport, f.dst, f.dport, f.packets) for f in flows] == \
         [(S, 49668, C, 50000, 7), (C, 50000, S, 49668, 7)]
     # Time comes before the flags: a strictly earlier half wins whatever they say.
-    [f] = pair_records([rec(S, 49668, C, 50000, T, T + 1, flags=RST | ACK),
+    [f] = pair_records([rec(S, 49668, C, 50000, T, T + 1, flags=SYN | ACK),
                         rec(C, 50000, S, 49668, T + 0.5, T + 1, flags=SYN)])
     assert (f.src, f.sport) == (S, 49668)
+
+
+def test_refused_netflow_connections_are_left_out(caplog):
+    caplog.set_level(logging.INFO, logger="threatbridge")
+    scan = [r for port in range(1000, 1050)
+            for r in (rec(C, 50000, S, port, T, T, flags=SYN), rec(S, port, C, 50000, T, T, flags=RST | ACK))]
+    done = FIN | SYN | PSH | ACK
+    kept = [rec(C, 50001, S, 445, T, T + 1, flags=done), rec(S, 445, C, 50001, T, T + 1, flags=done)]
+    assert [(f.src, f.dport) for f in pair_records(scan + kept)] == [(C, 445)]
+    assert "50 refused connection(s) left out" in caplog.text
 
 
 def test_pairing_rejoins_exporter_splits_but_not_idle_gaps():
@@ -795,6 +825,12 @@ def test_model_helpers():
     assert say(SYN, SYN | ACK, packets=True) is False and say(SYN | ACK, SYN, packets=True) is True
     assert say(SYN | ACK, SYN | ACK, packets=True) is None
     assert say(FIN | SYN | ACK, FIN | SYN | ACK) is None and say(RST | ACK, SYN) is True
+    # Refused: a SYN answered only by a RST (Zeek's REJ).
+    assert model.refused(SYN, RST | ACK) and model.refused(RST, SYN) and model.refused(RST | ACK, SYN)
+    assert not model.refused(SYN, SYN | ACK | RST)                     # it sent a SYN-ACK first
+    assert not model.refused(SYN | ACK | RST, SYN | ACK)               # established, then reset
+    assert not model.refused(SYN | ACK, RST)                           # a SYN-ACK scan's reset
+    assert not model.refused(SYN, 0) and not model.refused(SYN | RST, SYN | ACK)  # unanswered; half-open
     # ICMP echo requests and replies count as a SYN and a SYN-ACK.
     assert [model.icmp_flags(1, t) for t in (8, 0, 3)] == [SYN, SYN | ACK, 0]
     assert [model.icmp_flags(58, t) for t in (128, 129, 0)] == [SYN, SYN | ACK, 0]

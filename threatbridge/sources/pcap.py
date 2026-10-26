@@ -6,7 +6,7 @@ import struct
 
 import dpkt
 
-from ..model import SourceError, icmp_flags, idle_timeout, oriented, proto_name, settle
+from ..model import SourceError, icmp_flags, idle_timeout, oriented, proto_name, refused, settle
 from ..progress import counted
 from .workers import in_order
 
@@ -37,32 +37,37 @@ _DECODERS = {
 
 
 class _Conn:
+    """A connection being followed. `orig` is the side seen first in the capture; who started
+    it is settled when it closes (flows)."""
     __slots__ = ("orig", "oport", "resp", "rport", "proto", "start", "last", "packets",
-                 "bytes", "source", "closing", "first_flags", "other_flags", "timed")
+                 "bytes", "source", "closing", "first_flags", "other_flags", "time_flip",
+                 "oall", "rall")
 
     def __init__(self, orig, oport, resp, rport, proto, ts, source, flags):
         self.orig, self.oport, self.resp, self.rport = orig, oport, resp, rport
         self.proto, self.start, self.last, self.source = proto, ts, ts, source
         self.packets = self.bytes = 0
         self.closing = False
-        # Each side's first packet's flags (None: the other side not seen yet), and whether
-        # time has told who started the connection.
-        self.first_flags, self.other_flags, self.timed = flags, None, False
+        # Each side's first packet's flags (None: the other side not seen yet), and what time
+        # says about who started it (None: it can't, or can't yet).
+        self.first_flags, self.other_flags, self.time_flip = flags, None, None
+        self.oall = self.rall = 0          # all of each side's flags, ORed together
 
     def answer(self, ts, flags):
         """The other side's first packet, at `ts` with `flags`. If it came at another time than
         the first side's, time tells who started the connection: the side seen first."""
         self.other_flags = flags
         if ts != self.start:
-            self.timed = True
-            if ts < self.start:
-                self.orig, self.oport, self.resp, self.rport = self.resp, self.rport, self.orig, self.oport
+            self.time_flip = ts < self.start
 
     def flows(self):
-        """As flows (see model.oriented): when time didn't tell, the first packets' flags, then
-        the ports, decide who started it."""
-        flip = False if self.timed else settle(self.first_flags, self.other_flags, self.oport,
-                                               self.rport, packets=True)
+        """As flows (see model.oriented); none if it was refused. When time didn't tell who
+        started it, the first packets' flags, then the ports, decide."""
+        if refused(self.oall, self.rall):
+            return []
+        flip = self.time_flip
+        if flip is None:
+            flip = settle(self.first_flags, self.other_flags, self.oport, self.rport, packets=True)
         return oriented(flip, self.orig, self.oport, self.resp, self.rport, self.proto,
                         self.start, self.last, self.packets, self.bytes, self.source)
 
@@ -71,12 +76,14 @@ class FlowTracker:
     """Groups packets into connections, keyed by protocol and both endpoints.
 
     A connection ends after its idle timeout, on a TCP RST, or when a new SYN arrives after
-    a FIN. Who started it is decided by time, then flags, then ports (see _Conn).
+    a FIN. Who started it is decided by time, then flags, then ports (see _Conn). Refused
+    connections are counted, not kept.
     """
 
     def __init__(self):
         self.open = {}
         self.flows = []
+        self.refused = 0
         self.now = 0.0
         self.next_sweep = 0.0
 
@@ -95,8 +102,12 @@ class FlowTracker:
             conn = None
         if conn is None:
             conn = self.open[key] = _Conn(src, sport, dst, dport, proto, ts, source, flags)
-        elif conn.other_flags is None and (src, sport) != (conn.orig, conn.oport):
-            conn.answer(ts, flags)
+        if (src, sport) == (conn.orig, conn.oport):
+            conn.oall |= flags
+        else:
+            conn.rall |= flags
+            if conn.other_flags is None:
+                conn.answer(ts, flags)
         conn.packets += 1
         conn.bytes += nbytes
         if ts < conn.start:
@@ -115,11 +126,15 @@ class FlowTracker:
             self._close(key)
 
     def _close(self, key):
-        self.flows.extend(self.open.pop(key).flows())
+        flows = self.open.pop(key).flows()
+        self.flows.extend(flows)
+        self.refused += not flows
 
     def finish(self):
         for key in list(self.open):
             self._close(key)
+        if self.refused:
+            log.info("%d refused connection(s) left out", self.refused)
         return self.flows
 
 

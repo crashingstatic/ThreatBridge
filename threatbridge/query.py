@@ -156,6 +156,10 @@ def es_filter(cfg, ip, direction, start, end, exclude, peers=None):
         filters.append({"terms": {peer_field: list(peers)}})
     # term on an ip field accepts CIDR notation.
     must_not = [{"term": {peer_field: e}} for e in exclude]
+    if cfg.f_conn_state:
+        # Refused connections (Zeek's REJ): a single port scan would swamp the map. A match
+        # query finds the value whether the field is mapped as keyword or as text.
+        must_not.append({"match": {cfg.f_conn_state: "REJ"}})
     return {"bool": {"filter": filters, "must_not": must_not}}
 
 
