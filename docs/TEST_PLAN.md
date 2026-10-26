@@ -302,7 +302,7 @@ differ in these cases:
   `tcp_close_delay`). ThreatBridge ends it at the reset; after a FIN, it ends it at the next SYN.
 - UDP and ICMP have no SYN, nor has a TCP connection already open when the capture started.
   Zeek then goes by the first sender and its own list of server ports, ThreatBridge by the
-  first sender alone (README, *Post-mortem mode*).
+  first sender when both sides were seen (README, *Post-mortem mode*).
 
 So the comparison is for pairs of hosts all of whose Zeek records, either way, are TCP
 connections seen from the handshake (`history` starts with `Sh`) to the close (`conn_state`
@@ -335,7 +335,8 @@ REAL-01's traffic, and compares them with Zeek's reading of the capture.
 
 softflowd follows each connection as one two-way flow, and exports it as two one-way records
 with the same start time. Time then can't tell ThreatBridge which side started the connection,
-so it goes by the TCP flags, then the ports (README, *Post-mortem mode*). The flags can't tell
+so it goes by the TCP flags, then the ports, and failing both records the connection both ways
+(README, *Post-mortem mode*). The flags can't tell
 for a completed connection, whose two halves both carry SYN and ACK, so this test uses
 connections the ports decide: to a port below 1024, or to one below 32768 from the ephemeral
 range 32768–65535. It doesn't compare bytes with Zeek: softflowd counts each packet's length on

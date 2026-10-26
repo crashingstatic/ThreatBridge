@@ -6,7 +6,7 @@ import struct
 
 import dpkt
 
-from ..model import Flow, SourceError, flags_say_reversed, idle_timeout, looks_reversed, proto_name
+from ..model import SourceError, icmp_flags, idle_timeout, oriented, proto_name, settle
 from ..progress import counted
 from .workers import in_order
 
@@ -38,34 +38,40 @@ _DECODERS = {
 
 class _Conn:
     __slots__ = ("orig", "oport", "resp", "rport", "proto", "start", "last", "packets",
-                 "bytes", "source", "closing", "first_flags", "answered")
+                 "bytes", "source", "closing", "first_flags", "other_flags", "timed")
 
     def __init__(self, orig, oport, resp, rport, proto, ts, source, flags):
         self.orig, self.oport, self.resp, self.rport = orig, oport, resp, rport
         self.proto, self.start, self.last, self.source = proto, ts, ts, source
         self.packets = self.bytes = 0
         self.closing = False
-        self.first_flags, self.answered = flags, False   # the first sender's; the other side's yet?
+        # Each side's first packet's flags (None: the other side not seen yet), and whether
+        # time has told who started the connection.
+        self.first_flags, self.other_flags, self.timed = flags, None, False
 
-    def orient(self, ts, flags):
-        """The other side's first packet, at `ts` with `flags`: settle who started the
-        connection. Time first: the side that sent first. On a tie, the TCP flags of each side's
-        first packet, then the ports; failing both, capture order."""
-        if ts == self.start:
-            flip = flags_say_reversed(self.first_flags, flags, packets=True)
-            if flip is None:
-                flip = looks_reversed(self.oport, self.rport)
-        else:
-            flip = ts < self.start
-        if flip:
-            self.orig, self.oport, self.resp, self.rport = self.resp, self.rport, self.orig, self.oport
+    def answer(self, ts, flags):
+        """The other side's first packet, at `ts` with `flags`. If it came at another time than
+        the first side's, time tells who started the connection: the side seen first."""
+        self.other_flags = flags
+        if ts != self.start:
+            self.timed = True
+            if ts < self.start:
+                self.orig, self.oport, self.resp, self.rport = self.resp, self.rport, self.orig, self.oport
+
+    def flows(self):
+        """As flows (see model.oriented): when time didn't tell, the first packets' flags, then
+        the ports, decide who started it."""
+        flip = False if self.timed else settle(self.first_flags, self.other_flags, self.oport,
+                                               self.rport, packets=True)
+        return oriented(flip, self.orig, self.oport, self.resp, self.rport, self.proto,
+                        self.start, self.last, self.packets, self.bytes, self.source)
 
 
 class FlowTracker:
     """Groups packets into connections, keyed by protocol and both endpoints.
 
     A connection ends after its idle timeout, on a TCP RST, or when a new SYN arrives after
-    a FIN. The initiator is the side that sent first (see _Conn.orient).
+    a FIN. Who started it is decided by time, then flags, then ports (see _Conn).
     """
 
     def __init__(self):
@@ -89,9 +95,8 @@ class FlowTracker:
             conn = None
         if conn is None:
             conn = self.open[key] = _Conn(src, sport, dst, dport, proto, ts, source, flags)
-        elif not conn.answered and (src, sport) != (conn.orig, conn.oport):
-            conn.answered = True
-            conn.orient(ts, flags)
+        elif conn.other_flags is None and (src, sport) != (conn.orig, conn.oport):
+            conn.answer(ts, flags)
         conn.packets += 1
         conn.bytes += nbytes
         if ts < conn.start:
@@ -110,9 +115,7 @@ class FlowTracker:
             self._close(key)
 
     def _close(self, key):
-        c = self.open.pop(key)
-        self.flows.append(Flow(c.orig, c.resp, c.oport, c.rport, c.proto, c.start, c.last,
-                               c.packets, c.bytes, c.source))
+        self.flows.extend(self.open.pop(key).flows())
 
     def finish(self):
         for key in list(self.open):
@@ -251,6 +254,8 @@ def _decoded(path, dns, counts, report=None):
                     continue
                 sport, dport = struct.unpack("!HH", t[:4])
                 flags = t[13] if ip.p == dpkt.ip.IP_PROTO_TCP and len(t) > 13 else 0
+            elif isinstance(t, (dpkt.icmp.ICMP, dpkt.icmp6.ICMP6)):
+                sport, dport, flags = 0, 0, icmp_flags(ip.p, t.type)
             else:
                 sport = dport = flags = 0
             yield ts, version, ip.p, ip.src, ip.dst, sport, dport, nbytes, flags

@@ -168,30 +168,40 @@ def test_tcp_connection_is_one_flow_from_initiator(tmp_path):
     assert f.source == str(tmp_path / "cap.pcap")
 
 
-def test_who_started_it_time_then_flags_then_ports(tmp_path):
-    # Time first: the side that sent first, even when the capture starts at the SYN-ACK, or
-    # mid-stream with the server talking.
+def test_who_started_it_time_then_flags_then_ports_then_both_ways(tmp_path):
+    # Time first, when both sides were seen: the side seen first, even when the capture starts
+    # at the SYN-ACK, or mid-stream with the server talking.
     syn_ack = load_packets(tmp_path, handshake()[1:])
     midstream = load_packets(tmp_path, [(T, tcp(S, C, 443, 51000, ACK)),
                                         (T + 1, tcp(C, S, 51000, 443, ACK))])
     assert endpoints(syn_ack) == [(S, 445, C, 50000, "tcp")]
     assert endpoints(midstream) == [(S, 443, C, 51000, "tcp")]
-    # Both sides' first packets at the same time: the flags of each one ...
-    tie = lambda a, b: endpoints(load_packets(tmp_path, [(T, a), (T, b)]))  # noqa: E731
-    assert tie(tcp(S, C, 49668, 50000, SYN | ACK), tcp(C, S, 50000, 49668, ACK)) \
-        == [(C, 50000, S, 49668, "tcp")]                               # a SYN-ACK: the server
-    assert tie(tcp(S, C, 49668, 50000, ACK), tcp(C, S, 50000, 49668, SYN)) \
-        == [(C, 50000, S, 49668, "tcp")]                               # a SYN alone: the client
-    assert tie(tcp(C, S, 3000, 40000, SYN), tcp(S, C, 40000, 3000, SYN | ACK)) \
-        == [(C, 3000, S, 40000, "tcp")]                                # where the ports say otherwise
-    [f] = load_packets(tmp_path, [(T, tcp(S, C, 49668, 50000, SYN | ACK)), (T, tcp(C, S, 50000, 49668, ACK)),
-                                  (T, tcp(S, C, 49668, 50000, ACK | PSH, b"x"))])
-    assert (f.src, f.packets) == (C, 3)                  # settled once: at the other side's first packet
-    # ... then the ports ...
-    assert tie(tcp(S, C, 443, 51000, ACK), tcp(C, S, 51000, 443, ACK)) == [(C, 51000, S, 443, "tcp")]
-    assert tie(udp(S, C, 3389, 50000), udp(C, S, 50000, 3389)) == [(C, 50000, S, 3389, "udp")]
-    # ... then capture order.
-    assert tie(udp(S, C, 49668, 50000), udp(C, S, 50000, 49668)) == [(S, 49668, C, 50000, "udp")]
+    # When time can't tell (both sides' first packets at the same time, or one side alone), the
+    # flags of each side's first packet. A SYN without ACK is the client's ...
+    seen = lambda *pkts: endpoints(load_packets(tmp_path, [(T, p) for p in pkts]))  # noqa: E731
+    assert seen(tcp(S, C, 49668, 50000, ACK), tcp(C, S, 50000, 49668, SYN)) == [(C, 50000, S, 49668, "tcp")]
+    assert seen(tcp(C, S, 50000, 49668, SYN)) == [(C, 50000, S, 49668, "tcp")]          # a SYN scan
+    # ... a SYN-ACK answered by the handshake is the server's, even where the ports say otherwise ...
+    assert seen(tcp(S, C, 49668, 50000, SYN | ACK), tcp(C, S, 50000, 49668, ACK)) == [(C, 50000, S, 49668, "tcp")]
+    assert seen(tcp(C, S, 3000, 40000, SYN), tcp(S, C, 40000, 3000, SYN | ACK)) == [(C, 3000, S, 40000, "tcp")]
+    # ... but one reset by its target (RST, no ACK) is a SYN-ACK scan: its sender started it,
+    # even from a well-known port.
+    assert seen(tcp(S, C, 80, 50000, SYN | ACK), tcp(C, S, 50000, 80, RST)) == [(S, 80, C, 50000, "tcp")]
+    # Echo requests and replies count as a SYN and a SYN-ACK.
+    assert seen(icmp_echo(C, S)) == [(C, 0, S, 0, "icmp")]                              # unanswered
+    assert seen(icmp_echo(S, C, reply=True), icmp_echo(C, S)) == [(C, 0, S, 0, "icmp")]
+    # Each side's first packet settles it, not later ones.
+    assert seen(tcp(S, C, 49668, 50000, SYN | ACK), tcp(C, S, 50000, 49668, ACK),
+                tcp(C, S, 50000, 49668, RST)) == [(C, 50000, S, 49668, "tcp")]
+    # Then the ports. A SYN-ACK nobody answered can't be told from a scan, so they decide.
+    assert seen(tcp(S, C, 443, 51000, SYN | ACK)) == [(C, 51000, S, 443, "tcp")]
+    assert seen(tcp(S, C, 443, 51000, ACK), tcp(C, S, 51000, 443, ACK)) == [(C, 51000, S, 443, "tcp")]
+    assert seen(udp(S, C, 3389, 50000)) == [(C, 50000, S, 3389, "udp")]
+    # Failing them too, the connection is taken both ways: two identical flows.
+    both = load_packets(tmp_path, [(T, udp(S, C, 49668, 50000)), (T, udp(C, S, 50000, 49668))])
+    assert sorted(endpoints(both)) == [(C, 50000, S, 49668, "udp"), (S, 49668, C, 50000, "udp")]
+    assert [(f.start, f.end, f.packets, f.bytes) for f in both] == [(T, T, 2, both[0].bytes)] * 2
+    assert sorted(seen(icmp_echo(S, C, reply=True))) == [(C, 0, S, 0, "icmp"), (S, 0, C, 0, "icmp")]
 
 
 def test_flow_start_and_source_with_packets_out_of_order(tmp_path):
@@ -212,14 +222,14 @@ def test_rst_and_port_reuse_start_new_flows(tmp_path):
     assert set(endpoints(flows)) == {(C, 50000, S, 80, "tcp")}
 
 
-def test_udp_idle_timeout_splits_and_a_lone_reply_keeps_its_sender(tmp_path):
+def test_udp_idle_timeout_splits_and_lone_reply_is_flipped(tmp_path):
     pkts = [
         (T, udp(C, R, 53000, 53, b"q")), (T + 0.01, udp(R, C, 53, 53000, b"a")),
         (T + 120, udp(C, R, 53000, 53, b"q")),       # > 60 s idle: a new flow
         (T + 200, udp(R, C, 53, 53001, b"a")),       # response whose query was not captured
     ]
     flows = load_packets(tmp_path, pkts)
-    assert endpoints(flows) == [(C, 53000, R, 53, "udp")] * 2 + [(R, 53, C, 53001, "udp")]
+    assert endpoints(flows) == [(C, 53000, R, 53, "udp")] * 2 + [(C, 53001, R, 53, "udp")]
     assert [f.packets for f in flows] == [2, 1, 1]
 
 
@@ -253,8 +263,10 @@ def test_other_ip_protocols_are_flows_too(tmp_path):
     gre = dpkt.ip.IP(src=socket.inet_aton(C), dst=socket.inet_aton(S), p=47, ttl=64, data=b"\0" * 24)
     gre.len = 44
     raw = bytes(dpkt.ethernet.Ethernet(src=MAC, dst=MAC, type=0x0800, data=gre))
-    [f] = load_packets(tmp_path, [(T, raw), (T + 30, raw)])
-    assert (f.proto, f.sport, f.dport, f.packets) == ("47", 0, 0, 2)
+    flows = load_packets(tmp_path, [(T, raw), (T + 30, raw)])
+    # One side only, no flags, no ports: nothing tells who started it, so both ways.
+    assert [(f.src, f.dst, f.proto, f.sport, f.dport, f.packets) for f in flows] == \
+        [(C, S, "47", 0, 0, 2), (S, C, "47", 0, 0, 2)]
 
 
 # ---- pcap: decoding packets ---------------------------------------------------------------
@@ -318,9 +330,9 @@ def test_snap_length_boundaries(tmp_path):
     synack, ack = frame(tcp(S, C, 49668, 50000, SYN | ACK)), tcp(C, S, 50000, 49668, ACK)
     [f] = load_packets(tmp_path, [(T, synack[:14 + 20 + 14]), (T, ack)])
     assert (f.src, f.dst) == (C, S)
-    # ... unless they were cut off too (13 bytes): then capture order.
-    [f] = load_packets(tmp_path, [(T, synack[:14 + 20 + 13]), (T, ack)])
-    assert (f.src, f.dst) == (S, C)
+    # ... unless they were cut off too (13 bytes): then nothing tells, and it goes both ways.
+    flows = load_packets(tmp_path, [(T, synack[:14 + 20 + 13]), (T, ack)])
+    assert sorted((f.src, f.dst) for f in flows) == [(C, S), (S, C)]
 
 
 def test_ipv6_fragments(tmp_path):
@@ -423,7 +435,7 @@ def test_parse_pipe_lines():
     assert rec[3] == "2001:db8:aaaa:bbbb:cccc:dddd:eeee:1"
     assert rec[5] == "2001:db8:1111:2222:3333:4444:5555:6666"
     icmp = parse_pipe_line("2|0|0|1|0|0|0|167772165|0|0|0|0|134744072|2048|0|0|0|0|0|0|1|84")
-    assert (icmp[2], icmp[4], icmp[6]) == ("icmp", 0, 0)
+    assert (icmp[2], icmp[4], icmp[6], icmp[9]) == ("icmp", 0, 0, SYN)       # an echo request
     with pytest.raises(SourceError, match="unexpected nfdump output"):
         parse_pipe_line("2|1|2|6")
 
@@ -450,9 +462,12 @@ def test_pairing_merges_halves_and_orients():
     # A strictly earlier half wins over the port heuristic.
     [f] = pair_records([rec(S, 443, C, 50000, T, T + 1), rec(C, 50000, S, 443, T + 0.5, T + 1)])
     assert (f.src, f.dst) == (S, C)
-    # Only the reply was exported: it started first, so its sender is taken as the initiator.
+    # Only the reply was exported: time can't tell, nor flags; the ports can.
     [f] = pair_records([rec(R, 53, C, 53000, T, T, proto="udp")])
-    assert (f.src, f.sport, f.dst, f.dport) == (R, 53, C, 53000)
+    assert (f.src, f.sport, f.dst, f.dport) == (C, 53000, R, 53)
+    # One half alone with a SYN but no ACK: an unanswered SYN, from the client.
+    [f] = pair_records([rec(S, 50000, C, 49668, T, T, flags=SYN)])
+    assert (f.src, f.sport) == (S, 50000)
     # Same millisecond (softflowd gives both halves one start): the flags first. A half with a
     # SYN but no ACK is the client's, e.g. a refused connection on ports that can't tell ...
     refused = [rec(S, 49668, C, 50000, T, T, flags=RST | ACK), rec(C, 50000, S, 49668, T, T, flags=SYN)]
@@ -471,9 +486,16 @@ def test_pairing_merges_halves_and_orients():
     for records in (rdp, rdp[::-1]):
         [f] = pair_records(records)
         assert (f.src, f.sport, f.dst, f.dport) == (C, 51000, S, 3389)
-    # Both ports ephemeral: nothing to go by, so the half listed first stays the initiator.
-    [f] = pair_records([rec(S, 49668, C, 50000, T, T + 1), rec(C, 50000, S, 49668, T, T + 1)])
-    assert (f.src, f.sport) == (S, 49668)
+    # A SYN-ACK scan: one half SYN-ACK only, reset by the other (RST, no ACK). The scanner
+    # started it, though it used port 80.
+    scan = [rec(S, 80, C, 50000, T, T, flags=SYN | ACK), rec(C, 50000, S, 80, T, T, flags=RST)]
+    for records in (scan, scan[::-1]):
+        [f] = pair_records(records)
+        assert (f.src, f.sport, f.dst, f.dport) == (S, 80, C, 50000)
+    # Both ports ephemeral and no flags to go by: both ways, two identical flows.
+    flows = pair_records([rec(S, 49668, C, 50000, T, T + 1, 3), rec(C, 50000, S, 49668, T, T + 1, 4)])
+    assert [(f.src, f.sport, f.dst, f.dport, f.packets) for f in flows] == \
+        [(S, 49668, C, 50000, 7), (C, 50000, S, 49668, 7)]
     # Time comes before the flags: a strictly earlier half wins whatever they say.
     [f] = pair_records([rec(S, 49668, C, 50000, T, T + 1, flags=RST | ACK),
                         rec(C, 50000, S, 49668, T + 0.5, T + 1, flags=SYN)])
@@ -752,18 +774,28 @@ def test_model_helpers():
     assert (model.idle_timeout("tcp"), model.idle_timeout("udp"), model.idle_timeout("icmp")) == (300, 60, 60)
     assert model.idle_timeout("47") == 60                                   # anything else
     assert (model.proto_name(6), model.proto_name(58), model.proto_name(47)) == ("tcp", "icmp", "47")
-    assert model.looks_reversed(1023, 1024) and not model.looks_reversed(1024, 1024)
-    assert not model.looks_reversed(80, 1023) and model.looks_reversed(0, 65535)
-    # Failing that, a port outside the ephemeral ranges talking to one inside is the server's.
-    assert model.looks_reversed(3389, 50000) and model.looks_reversed(32767, 32768)
-    assert model.looks_reversed(5985, 60999) and model.looks_reversed(8443, 65535)
-    assert not model.looks_reversed(50000, 3389) and not model.looks_reversed(32768, 32767)
-    assert not model.looks_reversed(8080, 9000)                       # neither ephemeral
-    assert not model.looks_reversed(49668, 40000)                     # both: e.g. Windows RPC
-    # TCP flags: a SYN without ACK is the client's; in one packet, a SYN-ACK the server's.
+    # Ports: a well-known port facing one of 1024 or above is the server's ...
+    ports = model.ports_say_reversed
+    assert ports(1023, 1024) is True and ports(1024, 1023) is False and ports(0, 65535) is True
+    assert ports(1024, 1024) is None and ports(80, 1023) is None
+    # ... failing that, a port in the ephemeral ranges facing one outside is the client's.
+    assert ports(3389, 50000) is True and ports(32767, 32768) is True
+    assert ports(5985, 60999) is True and ports(8443, 65535) is True
+    assert ports(50000, 3389) is False and ports(32768, 32767) is False
+    assert ports(8080, 9000) is None and ports(49668, 40000) is None    # neither; both (Windows RPC)
+    # TCP flags: a SYN without ACK is the client's; in one packet, an answered SYN-ACK the
+    # server's; a SYN-ACK reset (RST, no ACK) is a scan, the client's.
     say = model.flags_say_reversed
     assert say(0, SYN) is True and say(SYN, 0) is False and say(SYN, SYN) is None
-    assert say(SYN | ACK, 0) is None and say(SYN | ACK, 0, packets=True) is True
+    assert say(SYN, None) is False and say(None, SYN) is True and say(None, ACK) is None
+    assert say(SYN | ACK, ACK) is None and say(SYN | ACK, ACK, packets=True) is True
+    assert say(SYN | ACK, None, packets=True) is None                    # unanswered: maybe a scan
+    assert say(SYN | ACK, RST) is False and say(RST, SYN | ACK, packets=True) is True
+    assert say(SYN | ACK, RST | ACK, packets=True) is True
     assert say(SYN, SYN | ACK, packets=True) is False and say(SYN | ACK, SYN, packets=True) is True
     assert say(SYN | ACK, SYN | ACK, packets=True) is None
     assert say(FIN | SYN | ACK, FIN | SYN | ACK) is None and say(RST | ACK, SYN) is True
+    # ICMP echo requests and replies count as a SYN and a SYN-ACK.
+    assert [model.icmp_flags(1, t) for t in (8, 0, 3)] == [SYN, SYN | ACK, 0]
+    assert [model.icmp_flags(58, t) for t in (128, 129, 0)] == [SYN, SYN | ACK, 0]
+    assert model.settle(None, None, 49668, 50000) is None and model.settle(SYN, None, 49668, 50000) is False

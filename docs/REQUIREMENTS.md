@@ -13,7 +13,7 @@ Status last updated 2026-10-25. **Done**, **Partial**, **Missing**, **Unverified
 | D4 | Graph storage: NetworkX `DiGraph`, one edge per host pair, carrying the sorted start times of its flows; the flows themselves in SQLite. |
 | D5 | PCAP export (ATK-2, EXT-2) deferred. |
 | D6 | File inputs: tcpdump captures (classic pcap) and nfcapd files read with nfdump (tested with 1.7.3). |
-| D7 | A flow is one connection, oriented initiator -> responder like a Zeek conn record. Idle timeouts are 5 min for TCP and 1 min for UDP/ICMP, and the two halves of a NetFlow connection are merged. Details in the README, "Post-mortem mode". |
+| D7 | A flow is one connection, oriented initiator -> responder like a Zeek conn record. Who started it is decided by time, then TCP flags, then ports; when none tells, it is recorded as two identical flows, one each way. Idle timeouts are 5 min for TCP and 1 min for UDP/ICMP, and the two halves of a NetFlow connection are merged. Details in the README, "Post-mortem mode". |
 | D8 | Attack paths and threat lines follow time order: a hop must start after the previous one, and within the map's Window of it. Limits: 6 hops, 300 hosts per threat-line direction. Post-mortem (case) backend only. The searches are exact: every arrival time at a host is kept, not only the earliest, because a later arrival can allow a hop an earlier one can't (its Window ends later). |
 | D9 | Domain names on the exclude list resolve from DNS answers in the capture first, then live DNS, and the two are combined. |
 | D10 | GRA-3 means: a connection's flows can be listed in time order (oldest first, paged), and an optional time range (from/to) limits every query. A flow is in the range if it started in it. Both work with all data sources. |

@@ -52,12 +52,16 @@ python -m threatbridge --case /cases/incident-42/      # files or directories, i
   - While a case is built, the terminal shows the stage, the file, how far it has got and the time left, e.g. `Reading 8 evidence file(s): 41%, file 4 of 8, 612,330 packets, about 3 s left`. Without a terminal (gunicorn, Docker) the same goes to the log every 10 seconds.
 - **NetFlow records are one-way,** so the two halves of a connection are merged into one flow.
 - **Who started a connection** (the initiator) is decided by time, then TCP flags, then ports:
-  1. **Time.** The side whose first packet came first; in NetFlow, the half that started first. A connection seen from one side only (a lone reply, or one NetFlow half) is taken as started by that side.
-  2. **TCP flags,** when both sides' first packets, or both NetFlow halves, have the same time. NetFlow keeps milliseconds, and softflowd gives both halves one start. A SYN without ACK is the client's. In a capture, a SYN-ACK is the server's; a NetFlow half's flags are ORed over the whole connection, so there only a SYN without ACK counts.
-  3. **Ports.** A well-known port (below 1024) talking to a port of 1024 or above is the server's. Failing that, a port outside the default ephemeral range talking to one inside it is the server's.
-  4. Failing all three, the order of the capture, or the order nfdump lists the halves in.
-  - The ephemeral range is 32768–65535: Linux gives outgoing connections ports 32768–60999 (`net.ipv4.ip_local_port_range`), Windows since Vista 49152–65535. Older Windows used 1025–5000, which isn't counted: real services live there. A host whose range was changed, or a service on an ephemeral port (Windows RPC, for one), can defeat the port rule.
-  - Time comes first even when a capture missed the start of a connection: one that begins at the SYN-ACK, or mid-connection with the server talking, is taken as started by the server.
+  1. **Time,** when both sides were seen: the side whose first packet came first; in NetFlow, the half that started first.
+  2. **TCP flags,** when both sides' first packets (or both NetFlow halves) have the same time, or only one side was seen. NetFlow keeps milliseconds, and softflowd gives both halves one start.
+     - A SYN without ACK is the client's.
+     - A SYN-ACK answered by a RST without ACK is a SYN-ACK scan: its sender is the client.
+     - In a capture, a SYN-ACK answered otherwise is the server's. One nobody answered can't be told from a scan, and a NetFlow half's flags are ORed over the whole connection, so neither decides.
+     - ICMP echo requests count as a SYN, echo replies as a SYN-ACK.
+  3. **Ports.** A well-known port (below 1024) facing a port of 1024 or above is the server's. Failing that, a port in the default ephemeral range facing one outside it is the client's.
+  4. **Both ways.** When none of these tells, the connection is recorded as two identical flows, one each way: an edge in each direction, each with the connection's packets and bytes.
+  - The ephemeral range is 32768–65535: Linux gives outgoing connections ports 32768–60999 (`net.ipv4.ip_local_port_range`), Windows since Vista 49152–65535. Older Windows used 1025–5000, which isn't counted: real services live there. A host whose range was changed, or a service on an ephemeral port (Windows RPC, for one), can defeat the ports step.
+  - Time comes first even when a capture missed the start of a connection: if it begins at the SYN-ACK, or mid-connection with the server talking, and the client is seen after that, the server is taken as the initiator.
 - **Default anchor.** With no anchor time, the map looks back from the end of the data (inbound) or forward from its start (outbound). With a time range set, from the range's end or start when it lies inside the data.
 - **SOC pivots** are hidden in this mode.
 
