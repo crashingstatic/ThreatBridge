@@ -271,6 +271,8 @@ ThreatBridge is deployed on the manager as the README describes (*Deploy on the 
 manager*), with the default `elastic` backend. Both SOC actions from
 `securityonion/soc-actions.json` are added to SOC. The analyst's browser trusts `certs/ca.crt`
 and holds a client certificate. The sensors have recorded Zeek conn and DNS logs.
+[TEST_RANGE_PROMPT.md](TEST_RANGE_PROMPT.md) is a prompt for an agent to build such a range on
+Proxmox, with traffic that reproduces the ENV-CASE attack chain.
 
 Variant **ENV-SO-PRO**: also a SOC API client in `deploy/threatbridge.env` (`TB_SOC_CLIENT_ID`,
 `TB_SOC_CLIENT_SECRET`). This needs Security Onion Pro 2.4.120 or later, Hydra enabled, and the

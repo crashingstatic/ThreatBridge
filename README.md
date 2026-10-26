@@ -200,7 +200,7 @@ Deployment on a live Security Onion install has **not been tested**. These point
 ## Requirements
 
 Requirement IDs, current status and design decisions: [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md).
-A step-by-step GUI test plan for every feature and requirement: [docs/TEST_PLAN.md](docs/TEST_PLAN.md).
+A step-by-step GUI test plan for every feature and requirement: [docs/TEST_PLAN.md](docs/TEST_PLAN.md). A prompt for an agent to build a Security Onion test range for it on Proxmox (OpenTofu and Ansible): [docs/TEST_RANGE_PROMPT.md](docs/TEST_RANGE_PROMPT.md).
 
 ## Development
 
