@@ -155,7 +155,8 @@ sudo SO_CA="$PWD/certs/ca.crt" deploy/run.sh
 ### ENV-REAL: a real capture, and Zeek's reading of it
 
 Use 10–15 minutes of varied traffic: a busy workstation, a server, or the lab network of the
-range in [TEST_RANGE_PROMPT.md](TEST_RANGE_PROMPT.md). Zeek runs from its official container
+range in [TEST_RANGE_PROMPT.md](TEST_RANGE_PROMPT.md), whose `real-traffic` playbook makes the
+capture and the NetFlow files for you. Zeek runs from its official container
 image, `zeek/zeek` (put `sudo` before `docker` if your user isn't in the `docker` group).
 
 ```bash
@@ -238,9 +239,16 @@ console open (Firefox: Web Console).
 CI presents the client certificate through Playwright, not through the browser's certificate
 store, so how a real browser offers, chooses and remembers the certificate is only checked here.
 
-**Environment:** ENV-MTLS, or the ENV-SO deployment with its own certificates. **Starting
-state:** container running. Use a separate browser profile for each step's certificate:
-browsers remember the certificate chosen for a site.
+**Environment:** ENV-MTLS, or the ENV-SO deployment with its own certificates (then make
+`certs-foreign` as ENV-MTLS does, and use a client certificate of the deployment for alice's).
+**Starting state:** container running.
+
+Each step needs its own, empty certificate store, as browsers also remember the certificate
+chosen for a site. Firefox keeps a store per profile: use a new profile for each step
+(`firefox -P`). Chrome, Chromium and Edge use the operating system user's store (on Linux,
+`~/.pki/nssdb`), which all their profiles share: use a separate OS user for each step, or, on
+Linux, start Chromium with an empty home of its own, e.g. `HOME=$(mktemp -d) chromium`. Below,
+*profile N* means step N's store.
 
 | # | Do | Expect | Proves | Result |
 |---|---|---|---|---|
@@ -346,7 +354,8 @@ serving it; page open.
 | 3 | Find a connection with more than 10,000 flows in the window (e.g. a workstation to a DNS server over `7d`); left-click it; click **Last**. | Red: `Security Onion lists only the first 10000 flows of a connection; narrow the time range to see later ones`. Set Range from to a later time and click the arrow again: the later flows are listed. | The 10,000-flow limit is reported, and the time range reaches past it (GRA-3). | |
 | 4 | Add one peer's /24 to the exclude list; Map again. | Peers in that /24 no longer appear. | Excludes apply to Elasticsearch queries (FIL-1). | |
 | 5 | Add `TB_RARE_SCAN_CAP=5` to `deploy/threatbridge.env` and re-run `deploy/run.sh`. Peers *Bottom (rarest)*; map a host with more than 5 distinct peers. | Amber status ending `— WARNING: scan hit the peer cap; rarest list may be incomplete`. Remove the setting and redeploy afterwards. | Bottom N warns when the scan reaches the cap. | |
-| 6 | Remove step 4's /24 from the exclude list. Peers *Bottom (rarest)*, N `5`. Map inbound a host H with 6 to 20 distinct peers in the window. In SOC Hunt, query `event.dataset:conn AND destination.ip:"H" \| groupby source.ip` over the status line's times, and sort the groups by count, fewest first. | The map shows the five peers with the fewest connections, each arrow's count equal to Hunt's. Among peers tied on a count, those first in text order are shown (`10.0.0.10` before `10.0.0.9`). The status starts `H: showing rarest 5 of N distinct peer(s)`, N being Hunt's number of groups. | Bottom N is exact: every distinct peer is counted through Elasticsearch's paged scan (README, *Peer selection*). | |
+| 6 | Remove step 4's /24 from the exclude list. Peers *Bottom (rarest)*, N `5`. Map inbound a host H with 6 to 20 distinct peers in the window (on the range of [TEST_RANGE_PROMPT.md](TEST_RANGE_PROMPT.md), 10.0.3.1). In SOC Hunt, query `event.dataset:conn AND destination.ip:"H" \| groupby source.ip` over the status line's times, and sort the groups by count, fewest first. | The map shows the five peers with the fewest connections, each arrow's count equal to Hunt's. Among peers tied on a count, those first in text order are shown (`10.0.0.10` before `10.0.0.9`). The status starts `H: showing rarest 5 of N distinct peer(s)`, N being Hunt's number of groups. On the range: 10.0.3.10, 10.0.3.9, 10.0.3.11, 10.0.3.2 and 10.0.3.3, of 11 (10.0.3.4 is tied with the last three, but after them in text order). | Bottom N is exact on a live install: every peer's connections are counted (README, *Peer selection*). | |
+| 7 | Peers *Bottom (rarest)*, N `5`. Map inbound a host with more than 1,000 distinct peers in the window (on the range, 10.0.1.3). Then choose Peers *Top* and map it again. | Bottom: the status says `of N distinct peer(s)` with N over 1000, the host's number of distinct peers. Top's status gives Elasticsearch's estimate, which is the same or very close. The five shown have the fewest connections, ties in text order. On the range: N is 1101, and the five are 10.0.10.1, 10.0.10.10, 10.0.10.100, 10.0.10.101 and 10.0.10.102. | The scan reads past its first page of 1,000 peers. | |
 
 ### SO-03 · Zeek DNS records resolve domain names on the exclude list (ING-S2, FIL-2)
 
@@ -422,7 +431,7 @@ and `ui_mtls.mjs` (the container). *Manual* names the tests above.
 | GRA-4 Interactive, clickable | `ui_smoke.mjs`, `ui_case.mjs`, `ui_actions.mjs` (clicks, menus, details) | VIS-01, XB-01 (other browsers) |
 | GRA-S2 Time-range filtering | `test_case.py`, `test_api.py`; `ui_smoke.mjs`, `ui_case.mjs`, `ui_actions.mjs` | |
 | GRA-S3 Connection metadata | `test_sources.py`, `test_backends.py`; `ui_case.mjs`, `ui_actions.mjs` | REAL-01, SO-02 |
-| Bottom N exact (README, *Peer selection*) | `test_backends.py` (the paged scan, the cap), `test_case.py`; `ui_smoke.mjs` (rarest and the cap warning in the status) | SO-02 steps 5, 6 |
+| Bottom N exact (README, *Peer selection*) | `test_backends.py` (the paged scan, the cap), `test_case.py`; `ui_smoke.mjs` (rarest and the cap warning in the status) | SO-02 steps 5 to 7 |
 | ATK-1 Attack paths | `test_analysis.py` (against brute force), `test_case.py`; `ui_case.mjs`, `ui_actions.mjs` | VIS-02 |
 | ATK-3 Predecessors and successors | `test_case.py`; `ui_smoke.mjs`, `ui_actions.mjs` | |
 | ATK-4 Mark hosts compromised | `test_case.py`, `test_stores.py`; `ui_smoke.mjs`, `ui_case.mjs`, `ui_actions.mjs` | VIS-02 |
