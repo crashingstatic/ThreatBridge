@@ -11,7 +11,7 @@ import threading
 from .model import Flow
 from .progress import QUIET, counted
 
-VERSION = "2"
+VERSION = "3"   # changes when flows are read differently, so older stores are rebuilt
 _SCHEMA = """
 CREATE TABLE flow (src TEXT, dst TEXT, sport INTEGER, dport INTEGER, proto TEXT,
                    start_ts REAL, end_ts REAL, packets INTEGER, bytes INTEGER, source TEXT);

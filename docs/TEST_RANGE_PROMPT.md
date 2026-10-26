@@ -170,7 +170,7 @@ listener that accepts and closes), as the scenario needs:
 - 8443 on 10.0.1.2;
 - 9000 on 10.0.1.3;
 - 8080 on 10.0.3.1;
-- on 10.0.5.1: a real web server on 80 serving files from 1 KB to 50 MB, with keep-alive;
+- on 10.0.5.1: a real web server on 80 and 8080 serving files from 1 KB to 50 MB, with keep-alive;
   sshd on 22; a UDP service on 514 (e.g. syslog); and nothing on 81, so connections to it are
   refused.
 
@@ -307,10 +307,10 @@ with a **duration** parameter (default 15 minutes). Run it apart from the scenar
 sensor sees this traffic too; it doesn't touch 10.0.1.3, 10.0.3.0/24, or any pair of the
 scenario.
 
-- **Clean pairs:** 10.0.5.2 and 10.0.5.3 fetch files of 1 KB to 50 MB from 10.0.5.1:80
-  throughout, sometimes several on one keep-alive connection, and sometimes in parallel.
-  Rate-limit each transfer (e.g. 50 Mbit/s), so that neither tcpdump nor softflowd drops
-  packets. One of 10.0.5.3's keep-alive connections pauses 4 minutes between two requests; set
+- **Clean pairs:** 10.0.5.2 fetches files of 1 KB to 50 MB from 10.0.5.1:80, and 10.0.5.3 from
+  10.0.5.1:8080 (so REAL-02 tests both of ThreatBridge's port rules), throughout: sometimes
+  several on one keep-alive connection, and sometimes in parallel. Rate-limit each transfer
+  (e.g. 50 Mbit/s), so that neither tcpdump nor softflowd drops packets. One of 10.0.5.3's keep-alive connections pauses 4 minutes between two requests; set
   the web server's keep-alive timeout to 10 minutes, so it doesn't close that connection
   meanwhile. These two hosts send 10.0.5.1 nothing else: no pings, no UDP, no resets. REAL-01
   and REAL-02 compare these pairs exactly.
@@ -415,7 +415,7 @@ Run all of these and put the results in your report:
    - ThreatBridge, serving the capture, gives one of them the count the listing gives.
    - Neither tcpdump nor softflowd dropped packets.
    - `nfdump -R $W/nf` lists records. ThreatBridge, serving `$W/nf`, gives 10.0.5.2 → 10.0.5.1
-     the listing's count (REAL-02 step 1).
+     and 10.0.5.3 → 10.0.5.1 the listing's counts, in that direction (REAL-02 step 1).
    - Zeek's `dns.log` holds UDP answers for `cdn.example.com`, `dual.example.com` and
      `pool.example.com`.
 10. **Reset:** the reset playbook rolls back to `baseline`, and step 4 passes again after a new

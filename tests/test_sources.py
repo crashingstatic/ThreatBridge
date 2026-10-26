@@ -207,6 +207,13 @@ def test_udp_idle_timeout_splits_and_lone_reply_is_flipped(tmp_path):
     assert [f.packets for f in flows] == [2, 1, 1]
 
 
+def test_a_connection_seen_from_its_middle_is_oriented_by_the_ports(tmp_path):
+    # The capture began after the handshake, with a WinRM server's packet to the client.
+    flows = load_packets(tmp_path, [(T, tcp(S, C, 5985, 49800, ACK | PSH, b"r")),
+                                    (T + 0.01, tcp(C, S, 49800, 5985, ACK))])
+    assert endpoints(flows) == [(C, 49800, S, 5985, "tcp")]
+
+
 def test_idle_timeout_is_exclusive(tmp_path):
     q = lambda t: (t, udp(C, R, 53000, 53, b"q"))  # noqa: E731
     flows = load_packets(tmp_path, [q(T), q(T + 60), q(T + 120.001)])   # 60 s apart: same flow
@@ -301,8 +308,9 @@ def test_snap_length_boundaries(tmp_path):
     synack = frame(tcp(S, C, 445, 50000, SYN | ACK))[:14 + 20 + 14]
     [f] = load_packets(tmp_path, [(T, synack)])
     assert (f.src, f.sport, f.dst, f.dport) == (C, 50000, S, 445)
-    # A server on a high port, where the port heuristic would guess wrong: the flags decide...
-    synack = frame(tcp(S, C, 8443, 50000, SYN | ACK))
+    # A server on an ephemeral port (e.g. Windows RPC), where the ports can't tell: the flags
+    # decide...
+    synack = frame(tcp(S, C, 49668, 50000, SYN | ACK))
     [f] = load_packets(tmp_path, [(T, synack[:14 + 20 + 14])])
     assert (f.src, f.dst) == (C, S)
     # ... unless they were cut off too (13 bytes): then the sender is taken as the initiator.
@@ -439,6 +447,15 @@ def test_pairing_merges_halves_and_orients():
     # Only the reply was exported: port heuristic.
     [f] = pair_records([rec(R, 53, C, 53000, T, T, proto="udp")])
     assert (f.src, f.sport, f.dst, f.dport) == (C, 53000, R, 53)
+    # Same millisecond (softflowd gives both halves one start), no well-known port: the half
+    # from an ephemeral port is the client's, whichever nfdump lists first.
+    rdp = [rec(S, 3389, C, 51000, T, T + 10), rec(C, 51000, S, 3389, T, T + 10)]
+    for records in (rdp, rdp[::-1]):
+        [f] = pair_records(records)
+        assert (f.src, f.sport, f.dst, f.dport) == (C, 51000, S, 3389)
+    # Both ports ephemeral: nothing to go by, so the half listed first stays the initiator.
+    [f] = pair_records([rec(S, 49668, C, 50000, T, T + 1), rec(C, 50000, S, 49668, T, T + 1)])
+    assert (f.src, f.sport) == (S, 49668)
 
 
 def test_pairing_rejoins_exporter_splits_but_not_idle_gaps():
@@ -715,3 +732,9 @@ def test_model_helpers():
     assert (model.proto_name(6), model.proto_name(58), model.proto_name(47)) == ("tcp", "icmp", "47")
     assert model.looks_reversed(1023, 1024) and not model.looks_reversed(1024, 1024)
     assert not model.looks_reversed(80, 1023) and model.looks_reversed(0, 65535)
+    # Failing that, a port outside the ephemeral ranges talking to one inside is the server's.
+    assert model.looks_reversed(3389, 50000) and model.looks_reversed(32767, 32768)
+    assert model.looks_reversed(5985, 60999) and model.looks_reversed(8443, 65535)
+    assert not model.looks_reversed(50000, 3389) and not model.looks_reversed(32768, 32767)
+    assert not model.looks_reversed(8080, 9000)                       # neither ephemeral
+    assert not model.looks_reversed(49668, 40000)                     # both: e.g. Windows RPC

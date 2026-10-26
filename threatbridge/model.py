@@ -7,6 +7,10 @@ PROTO_NAMES = {1: "icmp", 6: "tcp", 17: "udp", 58: "icmp"}
 IDLE_TIMEOUT = {"tcp": 300.0, "udp": 60.0, "icmp": 60.0}
 DEFAULT_IDLE_TIMEOUT = 60.0
 
+# Ports operating systems give outgoing connections by default: Linux 32768-60999
+# (net.ipv4.ip_local_port_range), Windows since Vista 49152-65535 (IANA's dynamic range).
+EPHEMERAL_PORTS = range(32768, 65536)
+
 
 class SourceError(Exception):
     """An evidence file can't be read."""
@@ -39,8 +43,9 @@ def idle_timeout(proto):
 
 
 def looks_reversed(sport, dport):
-    """True when the sender looks like the server: well-known source port, ephemeral destination.
+    """True when the sender looks like the server: a well-known port (below 1024) talking to a
+    port of 1024 or above; failing that, a port outside EPHEMERAL_PORTS talking to one inside.
 
     Used only when the capture shows no handshake or timing to say who started the connection.
     """
-    return sport < 1024 <= dport
+    return sport < 1024 <= dport or (sport not in EPHEMERAL_PORTS and dport in EPHEMERAL_PORTS)

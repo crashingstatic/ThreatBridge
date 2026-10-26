@@ -335,10 +335,10 @@ REAL-01's traffic, and compares them with Zeek's reading of the capture.
 
 softflowd follows each connection as one two-way flow, and exports it as two one-way records
 with the same start time. Timing then can't tell ThreatBridge which side started the connection,
-so it goes by the port rule (README, *Post-mortem mode*): a port below 1024 talking to one of
-1024 or above is the responder. So this test uses connections to ports below 1024. It doesn't
-compare bytes with Zeek: softflowd counts each packet's length on the wire less its link header,
-which includes any Ethernet padding, where Zeek counts IP lengths.
+so it goes by the port rule (README, *Post-mortem mode*). This test uses connections the rule
+decides: to a port below 1024, or to one below 32768 from the ephemeral range 32768–65535. It
+doesn't compare bytes with Zeek: softflowd counts each packet's length on the wire less its link
+header, which includes any Ethernet padding, where Zeek counts IP lengths.
 
 **Environment:** ENV-REAL. **Starting state:** REAL-01 done, and its pair listing at hand. The
 NetFlow served on another port, and `http://127.0.0.1:5057/` open:
@@ -346,7 +346,7 @@ NetFlow served on another port, and `http://127.0.0.1:5057/` open:
 
 | # | Do | Expect | Proves | Result |
 |---|---|---|---|---|
-| 1 | From REAL-01's listing, take the pairs A → B whose connections all go to one port below 1024 from ports of 1024 or above: `zc id.orig_h id.orig_p id.resp_h id.resp_p < $W/conn.log \| awk -F'\t' -v a=A -v b=B '$1 == a && $3 == b {ok = $2 >= 1024 && $4 < 1024; print ok ? "ok" : "no", $4}' \| sort -u` prints one line, starting `ok`. For each, set N to `200` and map B inbound. | An arrow runs from A to B, and its count is the listing's. A higher count is right only if each extra flow lies partly outside the capture: it began before tcpdump started, or ended after it stopped (softflowd runs longer). | Each connection's two records become one flow, initiator → responder (ING-2, D7). | |
+| 1 | From REAL-01's listing, take the pairs A → B whose connections all go to one port that the port rule decides: `zc id.orig_h id.orig_p id.resp_h id.resp_p < $W/conn.log \| awk -F'\t' -v a=A -v b=B '$1 == a && $3 == b {ok = ($2 >= 1024 && $4 < 1024) \|\| ($2 >= 32768 && $4 < 32768); print ok ? "ok" : "no", $4}' \| sort -u` prints one line, starting `ok`. For each, set N to `200` and map B inbound. | An arrow runs from A to B, and its count is the listing's. A higher count is right only if each extra flow lies partly outside the capture: it began before tcpdump started, or ended after it stopped (softflowd runs longer). | Each connection's two records become one flow, initiator → responder (ING-2, D7). | |
 | 2 | Left-click the arrow. List Zeek's records with REAL-01 step 2's command, and compare the first page of flows, and the last (**Last**), with those lines. | Each line matches a flow: the same ports and packets, and a start and duration that agree to within 0.01 s (the exporter keeps times in milliseconds). Packets may differ only if tcpdump or softflowd reported dropped packets (ENV-REAL). | Per-flow fields from NetFlow (ING-4, GRA-S3). | |
 | 3 | For one flow, from port P, list its records: `TZ=UTC nfdump -R $W/nf -N -o long 'proto tcp and host A and host B and port P'`. | Two records, one each way, with the same *Date first seen*. The flow's packets and bytes are the sums of the two records'; its start is their *Date first seen*. | The two one-way records are merged (ING-2). | |
 
