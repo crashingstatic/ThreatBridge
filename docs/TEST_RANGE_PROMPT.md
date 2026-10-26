@@ -33,9 +33,9 @@ mode that reads pcap and nfcapd files, which the tester runs on a workstation.
 | VIS-01, VIS-02, PRF-01, TERM-01 (ENV-DEMO, ENV-CASE, ENV-BUSY, ENV-BIG) | `tb-tester` | The repository, Python, Chromium, two terminal emulators |
 | XB-01 (ENV-DEMO) | `tb-tester` | Firefox besides Chromium; Edge if the analysts use it |
 | TLS-01 (ENV-MTLS) | `tb-tester` | Docker, openssl, the ThreatBridge image built in advance |
-| REAL-01 (ENV-REAL) | `tb-tester` | A capture NIC on the lab, tcpdump, softflowd, nfdump, the `zeek/zeek` image, and the real-traffic playbook |
+| REAL-01 (ENV-REAL) | `tb-tester` | A capture NIC on the lab, tcpdump, the `zeek/zeek` image, and the real-traffic playbook |
 | SO-01 to SO-06 (ENV-SO, ENV-SO-PRO) | `tb-so`, `tb-tester` | Security Onion, ThreatBridge deployed, SOC actions, the scenario |
-| SO-02 steps 6 and 7 | `tb-so`, `tb-tester` | A host with 11 peers of known counts, and a host with 1,101 peers |
+| SO-02 steps 5 and 6 | `tb-so`, `tb-tester` | A host with 11 peers of known counts, and a host with 1,101 peers |
 | SO-07 | `tb-so`, `tb-tester`, `tb-tester2` | A second workstation let through SO's firewall; cheap redeploys |
 
 ## Facts to rely on, and what to check yourself
@@ -139,10 +139,10 @@ Proxmox host. ThreatBridge's results depend on time order.
 
 And, for the tests added since:
 
-- 10.0.3.1, and its peers 10.0.3.2 to 10.0.3.12 (SO-02 step 6). One container may hold the
+- 10.0.3.1, and its peers 10.0.3.2 to 10.0.3.12 (SO-02 step 5). One container may hold the
   eleven peers as addresses on its `eth0`.
 - 10.0.5.1 to 10.0.5.4, one container each (the real traffic of REAL-01).
-- `tb-many`, one container holding 1,100 addresses (SO-02 step 7): 10.0.8.1–10.0.8.250,
+- `tb-many`, one container holding 1,100 addresses (SO-02 step 6): 10.0.8.1–10.0.8.250,
   10.0.9.1–10.0.9.250, 10.0.10.1–10.0.10.250, 10.0.11.1–10.0.11.250 and 10.0.12.1–10.0.12.100.
 
 A container with several addresses sends each connection from the address the scenario names
@@ -186,8 +186,8 @@ listener that accepts and closes), as the scenario needs:
 **Tester workstation (`tb-tester`):**
 
 - The ThreatBridge repository cloned, `python -m pip install -r requirements.txt pytest`
-  (Python 3.11 or later), and `nfdump`. It can run all the plan's local environments: ENV-DEMO,
-  ENV-CASE, ENV-BUSY, ENV-BIG, ENV-MTLS and ENV-REAL.
+  (Python 3.11 or later). It can run all the plan's local environments: ENV-DEMO, ENV-CASE,
+  ENV-BUSY, ENV-BIG, ENV-MTLS and ENV-REAL.
 - **Browsers:** Chromium and `firefox-esr` (XB-01), and Edge if the operator said the analysts
   use it.
 - **Terminals** (TERM-01): `xfce4-terminal`, which reflows lines when resized, and `xterm`,
@@ -199,17 +199,17 @@ listener that accepts and closes), as the scenario needs:
     so that `deploy/run.sh` rebuilds it from the cache;
   - pull `zeek/zeek`, and record its Zeek version (`docker run --rm zeek/zeek zeek --version`)
     in your report.
-- **Capture** (ENV-REAL): `tcpdump`, `softflowd` and `nfdump`. The capture NIC on `tblab`:
+- **Capture** (ENV-REAL): `tcpdump`, and the capture NIC on `tblab`:
   - link up, with no IPv4 or IPv6 address: turn IPv6 off on it (`disable_ipv6`), and keep
     NetworkManager, DHCP and router solicitations off it;
   - offloading off (`ethtool -K <nic> gro off lro off tso off gso off`), so captures show
     packets as they crossed the wire;
-  - the tester can run `sudo tcpdump -i <nic>` and `sudo softflowd -i <nic> …`. Give the NIC a
-    fixed name (e.g. `lab0`); ENV-REAL calls it `<interface>`.
+  - the tester can run `sudo tcpdump -i <nic>`. Give the NIC a fixed name (e.g. `lab0`);
+    ENV-REAL calls it `<interface>`.
 - **Certificates:** the ThreatBridge client certificate (`.p12`) for the SO deployment is in the
   tester's own Chromium and Firefox stores, with the ThreatBridge CA and SO's CA trusted, so the
-  tester opens `https://<tb-so>:5443/` without warnings. TLS-01 makes its own empty stores (new
-  Firefox profiles, or Chromium with an empty home, as the test says); leave those to the
+  tester opens `https://<tb-so>:5443/` without warnings. TLS-01 uses a new, empty store (a new
+  Firefox profile, or Chromium with an empty home, as the test says); leave that to the
   tester.
 - The tester reaches the desktop through the Proxmox console or a remote desktop on `tbmgmt`.
 - PRF-01 judges how smoothly a browser draws a large map. A VM with software rendering, seen
@@ -242,7 +242,7 @@ over SSH with Ansible:
    mechanism; otherwise give the operator the exact steps.
 5. With a Pro licence: enable Hydra, create the API client with `events/read`, `jobs/read` and
    `jobs/write`, and set `TB_SOC_CLIENT_ID` / `TB_SOC_CLIENT_SECRET`.
-6. Make redeploying cheap: SO-02 and SO-05 change `deploy/threatbridge.env` and re-run
+6. Make redeploying cheap: SO-05 changes `deploy/threatbridge.env` and re-runs
    `deploy/run.sh`, and SO-07 re-runs it unchanged. Provide a playbook (or tag) that sets one
    variable, or none, and redeploys. It must keep the `threatbridge-data` volume.
 
@@ -263,8 +263,8 @@ SO-02. Times are minutes after the start:
 | +35:00 | 10.0.0.5 → 10.0.0.20 | 5985 | Shortcut |
 | +40:00 | 10.0.0.9 → 10.0.0.20 | 3389 | Chain, hop 3 |
 | +50:00 | 10.0.0.77 → 10.0.0.9 | 80 | |
-| +55:00 to +57:00 | 10.0.3.2–12 → 10.0.3.1, 25 connections, as below | 8080 | Rarest peers (SO-02 step 6) |
-| +60:00 to +68:00 | each of `tb-many`'s 1,100 addresses → 10.0.1.3, one connection each | 9000 | More than one page of peers (SO-02 step 7) |
+| +55:00 to +57:00 | 10.0.3.2–12 → 10.0.3.1, 25 connections, as below | 8080 | Rarest peers (SO-02 step 5) |
+| +60:00 to +68:00 | each of `tb-many`'s 1,100 addresses → 10.0.1.3, one connection each | 9000 | More than one page of peers (SO-02 step 6) |
 | +70:00 to +89:50 | 10.0.1.1 → 10.0.1.2, 120 connections 10 s apart | 8443 | Paging |
 | +90:00 on | 10.0.1.1 → 10.0.1.3, 12,000 short connections | 9000 | More than SOC's 10,000-flow page limit (SO-02) |
 
@@ -321,11 +321,10 @@ scenario.
 The playbook does what ENV-REAL's first commands do, in a new directory `$W` on `tb-tester`:
 
 1. It starts the slow download.
-2. It starts `tcpdump -i <nic> -s 0 -w $W/real.pcap`, `nfcapd -w $W/nf -p 9995` (after
-   `mkdir $W/nf`), and `softflowd -i <nic> -n 127.0.0.1:9995 -v 9 -d`.
+2. It starts `tcpdump -i <nic> -s 0 -w $W/real.pcap`.
 3. It runs the traffic for the duration.
-4. It stops softflowd, waits 5 s, and stops nfcapd (which then closes its file) and tcpdump.
-5. It hands the files to the tester's user and prints `$W`. The tester sets `W` to it and
+4. It stops tcpdump.
+5. It hands the capture to the tester's user and prints `$W`. The tester sets `W` to it and
    carries on at ENV-REAL's Zeek command.
 
 ### Snapshots and reset
@@ -405,7 +404,6 @@ Run all of these and put the results in your report:
 9. **Real traffic:** after a `real-traffic` run, run ENV-REAL's Zeek command on its capture.
    - REAL-01's pair listing includes 10.0.5.2 → 10.0.5.1 and 10.0.5.3 → 10.0.5.1.
    - ThreatBridge, serving the capture, gives one of them the count the listing gives.
-   - `nfdump -R $W/nf` lists records, and ThreatBridge reads `$W/nf`.
    - Zeek's `dns.log` holds UDP answers for `cdn.example.com`, `dual.example.com` and
      `pool.example.com`.
 10. **Reset:** the reset playbook rolls back to `baseline`, and step 4 passes again after a new

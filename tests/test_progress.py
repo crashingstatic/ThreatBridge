@@ -93,6 +93,14 @@ def test_an_updating_line_is_cut_to_the_terminal_width(monkeypatch):
     assert out.screen() == ["Reading 8 evidence file(s): done in 4 s (file 4 of 8, 612,330 packets)", ""]
     assert Progress(NarrowTerminal()).columns() == 30
     assert Progress(io.StringIO()).columns() == 80 and Progress(object()).columns() == 80
+    # Narrowed while a line is up: clearing it for a log line blanks one row, not more.
+    sizes[0], out = 40, NarrowTerminal()
+    with Progress(out, clock=clock).stage("Reading 8 evidence file(s)", 1000) as stage:
+        clock.now += 1
+        stage(410, "file 4 of 8, 612,330 packets")                      # 39 columns drawn
+        sizes[0] = 30
+        stage.clear()
+        assert out.getvalue().endswith("\r" + " " * 29 + "\r")
 
 
 def test_log_lines_on_a_terminal_start_on_a_clean_line():

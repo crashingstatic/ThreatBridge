@@ -17,9 +17,9 @@ plan holds only what those tests can't check, and why:
   - `ui_mtls.mjs` hands the client certificate to Playwright, which presents it itself, so a
     browser's own certificate store and prompt are never used.
   - The progress tests simulate a terminal; real terminals wrap, resize and reflow.
-- **Real evidence** (REAL-01). CI reads captures and NetFlow records that the tests generate. A
-  real capture can hold what the generator doesn't, so it is compared with what Zeek, read
-  independently, makes of the same file.
+- **Real evidence** (REAL-01). CI reads captures that the tests generate. A real capture can
+  hold what the generator doesn't, so it is compared with what Zeek, read independently, makes
+  of the same file.
 - **How the browser feels on a large case** (PRF-01). CI times the server's answers (PRF-3), but
   not how fast a real browser draws hundreds of hosts, or whether panning stays smooth while
   attack paths are recomputed.
@@ -145,8 +145,6 @@ export P12_PASS=test-only                  # export password of the .p12 files
 scripts/make-certs.sh ca
 scripts/make-certs.sh server localhost 127.0.0.1
 scripts/make-certs.sh client alice         # certs/alice.p12: signed by the ThreatBridge CA
-CERT_DIR=./certs-foreign scripts/make-certs.sh ca
-CERT_DIR=./certs-foreign scripts/make-certs.sh client mallory   # certs-foreign/mallory.p12: another CA
 printf 'TB_BACKEND=demo\nTB_SOC_URL=https://so.example\n' > deploy/threatbridge.env
 sudo SO_CA="$PWD/certs/ca.crt" deploy/run.sh
 # browse to https://localhost:5443/ ; clean up afterwards: sudo docker rm -f threatbridge
@@ -156,7 +154,7 @@ sudo SO_CA="$PWD/certs/ca.crt" deploy/run.sh
 
 Use 10–15 minutes of varied traffic: a busy workstation, a server, or the lab network of the
 range in [TEST_RANGE_PROMPT.md](TEST_RANGE_PROMPT.md), whose `real-traffic` playbook makes the
-capture and the NetFlow files for you. Zeek runs from its official container
+capture for you. Zeek runs from its official container
 image, `zeek/zeek` (put `sudo` before `docker` if your user isn't in the `docker` group).
 
 ```bash
@@ -169,10 +167,6 @@ TB_LIVE_DNS=false TB_EXCLUDE_FILE=$W/exclude.json TB_COMPROMISED_FILE=$W/comprom
 python -m threatbridge --case $W/real.pcap --port 5056
 # browse to http://127.0.0.1:5056/
 ```
-
-For the optional NetFlow step, also run a NetFlow exporter and collector during the capture, for
-example `sudo softflowd -i <interface> -n 127.0.0.1:9995 -v 9 -d` and
-`mkdir $W/nf; nfcapd -w $W/nf -p 9995` (packages `softflowd` and `nfdump`).
 
 ### ENV-SO: a Security Onion 2.4 deployment
 
@@ -189,18 +183,17 @@ permissions `events/read`, `jobs/read` and `jobs/write` (README, *PCAP for a flo
 
 ## 3. Tests
 
-### VIS-01 · The map is drawn as the legend says: hosts, directions, counts, borders, menu, errors (GRA-2, GRA-4)
+### VIS-01 · The map is drawn as the legend says: hosts, directions, counts, menu, errors (GRA-2, GRA-4)
 
 **Environment:** ENV-DEMO. **Starting state:** page open, toolbar defaults.
 
 | # | Do | Expect | Proves | Result |
 |---|---|---|---|---|
-| 1 | Anchor `2024-05-01T12:00:00Z`; map `10.0.0.5` outbound. | 10.0.0.5 is drawn larger than the rest, in the red of the legend's *IOC host*, at the top. Its 12 peers are grey, in a row below it. Orange arrows, the legend's *outbound (future)*, run from 10.0.0.5 to each peer. Every edge label can be read; zoom in if they crowd. | Hosts, connections and their direction are drawn as the legend says (GRA-2), as a tree by hop. | |
+| 1 | Anchor `2024-05-01T12:00:00Z`; map `10.0.0.5` outbound. | 10.0.0.5 is drawn larger than the rest, in the red of the legend's *IOC host*. Its 12 peers are grey. Orange arrows, the legend's *outbound (future)*, run from 10.0.0.5 to each peer. Every edge label can be read; zoom in if they crowd. | Hosts, connections and their direction are drawn as the legend says (GRA-2). | |
 | 2 | Compare the arrows labelled `469 · …`, `460 · …` and `163 · …` with those labelled `1 · …` and `2 · …`. | The busier connections are drawn visibly thicker. | Line width shows the number of connections. | |
-| 3 | Set Direction *Inbound*; left-click the peer 10.1.6.3. | Blue arrows, the legend's *inbound (past)*, point into 10.1.6.3 from its new peers, which are drawn in a row below it. 10.1.6.3 now has a thin light border. | Inbound colour; an expanded host is marked. | |
+| 3 | Set Direction *Inbound*; left-click the peer 10.1.6.3. | Blue arrows, the legend's *inbound (past)*, point into 10.1.6.3 from its new peers. | Inbound colour. | |
 | 4 | Right-click 10.1.6.3. | The menu opens at the pointer. Its first line (the host and its anchor) is smaller and grey, a line separates the expand items from the rest, and every item can be read. | The menu (GRA-4). | |
-| 5 | Choose `Expand outbound: who it connected to (future)`. | 10.1.6.3's border becomes thicker and white, clearly different from the thin light border of a host expanded one way. | A host expanded both ways stands out. | |
-| 6 | Host `nope`; Map. | The status line turns red. | Errors stand out. | |
+| 5 | Host `nope`; Map. | The status line turns red. | Errors stand out. | |
 
 ### VIS-02 · Threat lines, compromised hosts and paths are drawn as the legend says (INT-1, INT-2, ATK-1, ATK-4)
 
@@ -234,29 +227,25 @@ console open (Firefox: Web Console).
 | 8 | Click **Delete** next to `xb`; choose OK. | The dialog asks `Delete the saved map "xb" for everyone?`. Then: `Deleted the saved map "xb"`. | | |
 | 9 | Look at the browser's console. | No errors, apart from step 6's refused save (HTTP 409). | The page runs under its Content Security Policy in this browser. | |
 
-### TLS-01 · Mutual TLS with a browser's own certificate store: refused without the CA's certificate, the map over HTTPS with it (authentication)
+### TLS-01 · A browser's own certificate store: the `.p12` imports, and the map opens over HTTPS without warnings (authentication)
 
-CI presents the client certificate through Playwright, not through the browser's certificate
-store, so how a real browser offers, chooses and remembers the certificate is only checked here.
+CI checks that the server refuses no certificate and one from another CA (`mtls_check.sh`,
+`ui_mtls.mjs`), and runs the map over HTTPS. It hands Playwright the certificate, though, so
+importing the `.p12`, trusting the CA, and how a browser offers and remembers the certificate
+are only checked here. Run this in each browser the analysts use.
 
-**Environment:** ENV-MTLS, or the ENV-SO deployment with its own certificates (then make
-`certs-foreign` as ENV-MTLS does, and use a client certificate of the deployment for alice's).
-**Starting state:** container running.
+**Environment:** ENV-MTLS, or the ENV-SO deployment (then use its address, and a client
+certificate made for this test in place of alice's). **Starting state:** container running.
 
-Each step needs its own, empty certificate store, as browsers also remember the certificate
-chosen for a site. Firefox keeps a store per profile: use a new profile for each step
+Use a new, empty certificate store. Firefox keeps one per profile: make a new profile
 (`firefox -P`). Chrome, Chromium and Edge use the operating system user's store (on Linux,
-`~/.pki/nssdb`), which all their profiles share: use a separate OS user for each step, or, on
-Linux, start Chromium with an empty home of its own, e.g. `HOME=$(mktemp -d) chromium`. Below,
-*profile N* means step N's store.
+`~/.pki/nssdb`), which all their profiles share: use another OS user, or, on Linux, start
+Chromium with an empty home of its own, e.g. `HOME=$(mktemp -d) chromium`.
 
 | # | Do | Expect | Proves | Result |
 |---|---|---|---|---|
-| 1 | Profile 1: import `certs/ca.crt` as a trusted authority, and no client certificate. Open `https://localhost:5443/`. | No warning about the server's certificate, but the page doesn't load. The browser reports a TLS error (e.g. `ERR_BAD_SSL_CLIENT_AUTH_CERT` in Chrome), and no ThreatBridge content appears. | No certificate, no access. The server's certificate is trusted through the CA. | |
-| 2 | Profile 2: trust `certs/ca.crt` and import `certs-foreign/mallory.p12` (password `test-only`). Open the page. | Either the browser offers no certificate (it only offers those from the CA the server names), or, if mallory's is chosen, a TLS error. Either way, no ThreatBridge content. | A certificate from another CA is refused. | |
-| 3 | Profile 3: trust `certs/ca.crt` and import `certs/alice.p12`. Open the page. | The browser asks which certificate to use, or uses alice's. With alice's, the map loads without warnings. | A certificate from the ThreatBridge CA is accepted. | |
-| 4 | Still in profile 3: map `10.0.0.5` inbound at Anchor `2024-05-01T12:00:00Z`. Right-click an arrow → `Copy SOC query` and paste it into the Host field. Click **Save to file**. Add `192.0.2.99` to the exclude list, then remove it. | All of it works: the query is pasted, the file is saved, and the entry is listed, then removed. | The map's features over HTTPS: the clipboard needs a secure context, and writes carry their header through TLS. | |
-| 5 | Quit and restart the browser; open the page again in profile 3. | The browser asks again or remembers the choice; either way the map loads with alice's certificate. | | |
+| 1 | In the new store, trust `certs/ca.crt` as an authority and import `certs/alice.p12` (ENV-MTLS's password: `test-only`). Open `https://localhost:5443/`. | The import succeeds. The browser asks which certificate to use, or uses alice's. With alice's, the map loads without warnings. | The `.p12` and the CA work in this browser's store; the server's certificate is trusted through the CA. | |
+| 2 | Quit and restart the browser; open the page again. | The browser asks again or remembers the choice; either way the map loads with alice's certificate. | | |
 
 ### PRF-01 · The browser stays responsive on a busy week: big expansions, a 600-host threat line, 500 paths, attack paths in the background (PRF-3)
 
@@ -277,24 +266,21 @@ recomputed in the background.
 | 5 | Mark these hosts compromised, one at a time, at these times: 10.0.0.80 `2024-05-05T00:00:00Z`, 10.0.0.53 `…T01:00:00Z`, 10.0.0.1 `…T02:00:00Z`, 10.1.4.24 `…T03:00:00Z`, 10.1.3.235 `…T04:00:00Z`, 10.1.3.92 `…T05:00:00Z`, 10.1.1.42 `…T06:00:00Z`, 10.1.1.237 `…T07:00:00Z`, 10.1.3.110 `…T08:00:00Z`, 10.1.5.138 `…T09:00:00Z` (all on 2024-05-05). | Each mark recomputes the attack paths, and the later ones show `Working… N s`. After the tenth, within 10 s: `78+ attack path(s) between 10 compromised host(s)`, with the paths drawn. | Attack paths among the ten busiest hosts, with IOC times. | |
 | 6 | While step 5's last recomputation runs (`Working… N s` shown), pan and zoom, right-click a host, and map `10.0.0.53` inbound. | Panning and zooming stay smooth. The details appear at once. The new map is drawn within 3 s, before the paths finish. | The map stays usable while paths are computed (PRF-3). | |
 
-### TERM-01 · Building a case shows its progress: one line per stage on a terminal, cut to its width; log lines elsewhere (PRF-S3)
+### TERM-01 · In a real terminal, narrow or resized, the progress line stays on one row (PRF-S3)
 
-`tests/test_progress.py` checks this against a simulated terminal. This test checks a real one,
-which wraps, resizes and reflows.
+`tests/test_progress.py` checks the progress against a simulated terminal: one line per stage,
+cut to the terminal's width, log lines on lines of their own, and a log line every 10 s without
+a terminal. A real terminal also wraps, resizes and reflows. Run this in each terminal emulator
+the analysts use.
 
 **Environment:** ENV-BIG, in a terminal window (not an editor's output pane). **Starting state:**
-`$W/bulk.pcap` written; no `$W/bulk.db`. *The command* below is:
-`TB_LIVE_DNS=false TB_EXCLUDE_FILE=$W/exclude.json TB_COMPROMISED_FILE=$W/compromised.json TB_SESSIONS_DIR=$W/sessions python -m threatbridge --case $W/bulk.pcap --db $W/bulk.db --port 5059`
+`$W/bulk.pcap` written.
 
 | # | Do | Expect | Proves | Result |
 |---|---|---|---|---|
-| 1 | Make the terminal at least 100 columns wide; run the command. | One line updates in place, e.g. `Reading 1 evidence file(s): 47%, file 1 of 1, 589,824 packets, about 11 s left`. When the stage ends, the line becomes `Reading 1 evidence file(s): done in N s (file 1 of 1, 1,250,000 packets)`, and the next stage updates on the line below: `Saving the flows`, `Indexing the flows`, `Building the graph`, each ending `…: done in N s`. Log lines (`INFO:…`) each start on a line of their own. Then the server's `* Running on http://127.0.0.1:5059`. | Progress on a terminal (PRF-S3). | |
-| 2 | Ctrl+C; `rm $W/bulk.db`; make the window about 40 columns wide; run the command. While the first stage runs, widen and narrow the window a few times. | At any steady width the updating line fits on one row, cut short with `…`, and leaves no trail of partial lines as it updates. Each narrowing may leave behind one row of the line that was on screen (a terminal that reflows wraps it); after that the line again stays on one row. The `done in` lines are complete, and may wrap. | Progress in narrow and resized terminals. | |
-| 3 | Ctrl+C; `cp $W/bulk.pcap $W/cut.pcap; printf '\0\0\0\0\0\0\0\0' >> $W/cut.pcap`; run the command with `--case $W/cut.pcap` and without `--db $W/bulk.db`. | `WARNING:threatbridge.sources.pcap:…/cut.pcap: capture is cut off after its last whole packet` appears on a line of its own, with no progress text in front of it, when the file has been read; `Reading 1 evidence file(s): done in N s (…)` follows below it. | Log lines don't garble the progress line. | |
-| 4 | Ctrl+C; `rm -f $W/bulk.db`; run the command with ` 2>&1 \| cat` added at the end. | No updating line. While a stage lasts, a log line every 10 s, e.g. `INFO:threatbridge:Reading 1 evidence file(s): 47%, file 1 of 1, 589,824 packets, about 11 s left`, and one `INFO:threatbridge:…: done in N s` line when each stage ends. | Progress without a terminal, as under gunicorn or Docker. | |
-| 5 | Ctrl+C; run the command again (step 4 left `bulk.db`). | A log line says `reusing …/bulk.db: the evidence files are unchanged`, and the only progress line is `Building the graph`. | The flows are reused, not read again. | |
+| 1 | Make the window about 40 columns wide. Run `TB_LIVE_DNS=false TB_EXCLUDE_FILE=$W/exclude.json TB_COMPROMISED_FILE=$W/compromised.json TB_SESSIONS_DIR=$W/sessions python -m threatbridge --case $W/bulk.pcap --port 5059`. While `Reading 1 evidence file(s)` runs, widen and narrow the window a few times. | At any steady width the updating line fits on one row, cut short with `…`, and leaves no trail of partial lines as it updates. Each narrowing may leave behind one row of the line that was on screen (a terminal that reflows wraps it); after that the line again stays on one row. Each stage (`Reading 1 evidence file(s)`, `Saving the flows`, `Indexing the flows`, `Building the graph`) ends with a complete `…: done in N s` line, which may wrap. | Progress in narrow and resized terminals. | |
 
-### REAL-01 · A real capture is read as Zeek reads it: connections, orientation, packets, bytes, DNS answers (ING-1, ING-2, ING-4, GRA-S3, D7, FIL-2)
+### REAL-01 · A real capture is read as Zeek reads it: connections, orientation, packets, bytes, DNS answers (ING-1, ING-4, GRA-S3, D7, FIL-2)
 
 CI's evidence is generated by the tests. This test compares ThreatBridge's reading of a real
 capture with Zeek's. Both end a TCP connection after 5 minutes idle (Zeek's
@@ -331,7 +317,6 @@ serving it; page open.
 | 1 | For each pair A → B the command lists: set N to `200` (the most it allows) and map B inbound. | An arrow runs from A to B, and its count is the command's. | Connections per initiator → responder pair (ING-1, D7). | |
 | 2 | For one pair, left-click the arrow. List Zeek's records in the same form: `zc ts id.orig_h id.orig_p id.resp_h id.resp_p duration orig_pkts resp_pkts orig_ip_bytes resp_ip_bytes < $W/conn.log \| awk -F'\t' -v a=A -v b=B '$2 == a && $4 == b {printf "%s tcp %s → %s · %.3f s · %d pkts · %d B\n", $1, $3, $5, $6, $7 + $8, $9 + $10}' \| sort -n \| while read ts rest; do echo "$(date -u -d @$ts +%FT%T.%3NZ) $rest"; done`. Compare the first page of flows, and the last (**Last**), with those lines. | Each flow matches a line: the same start, ports, protocol, packets and bytes (IP bytes of both sides), and the same duration give or take 0.001 s. | Per-flow fields (ING-4, GRA-S3). | |
 | 3 | List the names answered over UDP port 53, with their answers: `zc proto id.resp_p rcode_name query answers < $W/dns.log \| awk -F'\t' '$1 == "udp" && $2 == 53 && $3 == "NOERROR" {print tolower($4), $5}' \| sort -u`. Pick a name whose lines hold one to four IP addresses in all, and that is no other name's alias: `zc answers < $W/dns.log \| grep -Fiwc <name>` prints `0`. Add it to the exclude list. | The entry shows `capture: ` and exactly the IP addresses on that name's lines (not the names among the answers), IPv4 before IPv6, each in numeric order. An address on the lines but not in the entry is F, unless Wireshark shows the response gave it for an unrelated name (ThreatBridge ignores those). | Domain names from real DNS answers, through CNAMEs (FIL-2). | |
-| 4 | *(Optional, NetFlow from a real exporter.)* Stop softflowd (Ctrl+C), wait 5 s, and stop nfcapd (Ctrl+C) so it closes its file. Serve the NetFlow: `TB_LIVE_DNS=false TB_EXCLUDE_FILE=$W/ex2.json TB_COMPROMISED_FILE=$W/c2.json TB_SESSIONS_DIR=$W/s2 python -m threatbridge --case $W/nf --port 5057`. List TCP connections to ports below 1024: `TZ=UTC nfdump -R $W/nf -N -o long 'proto tcp and dst port < 1024' \| head -40`. Pick one, from client A, port P, to server B, that nfdump also lists the other way: `TZ=UTC nfdump -R $W/nf -N -o long 'proto tcp and host A and host B and port P'`. On `http://127.0.0.1:5057/`, map B inbound and left-click the arrow from A. | One flow from port P, A → B. Its packets and bytes are the sums of the second command's records; its start is their earliest *Date first seen*. | A real exporter's records of one connection, both ways, are merged into one flow (ING-2, D7). | |
 
 ### SO-01 · SOC actions open the map at the event's IP and time (EXT-1)
 
@@ -343,7 +328,7 @@ serving it; page open.
 | 2 | Choose `ThreatBridge: inbound (past)`. | A new tab opens the map with Host = that IP, Anchor time = the event's time (UTC), Direction *Inbound*, and the map drawn. The status ends `<anchor − 24h> → <anchor>`. If the Anchor is blank and the status ends at the current time, `{:soc_timestamp}` did not come through: record F (README, *Things to verify*, item 1). | | |
 | 3 | Back in SOC, choose `ThreatBridge: outbound (future)` for the same value. | Direction *Outbound*; the status starts at the event's time. | | |
 
-### SO-02 · Conn records from Elasticsearch: counts, flow fields, the 10,000-flow limit, excludes, the rarest peers and their cap (GRA-1, GRA-3, ING-4, GRA-S3, FIL-1)
+### SO-02 · Conn records from Elasticsearch: counts, flow fields, the 10,000-flow limit, excludes, the rarest peers (GRA-1, GRA-3, ING-4, GRA-S3, FIL-1)
 
 **Environment:** ENV-SO. **Starting state:** a map open on a host with traffic.
 
@@ -353,9 +338,8 @@ serving it; page open.
 | 2 | Left-click the arrow. | Flows oldest first. Each row shows protocol, source → destination port, duration, packets and bytes, none blank. They match the conn records (duration; packets and IP bytes of both sides added). | The flow list's field names hold on this install (ING-4, GRA-S3; README, *Things to verify*, item 7). | |
 | 3 | Find a connection with more than 10,000 flows in the window (e.g. a workstation to a DNS server over `7d`); left-click it; click **Last**. | Red: `Security Onion lists only the first 10000 flows of a connection; narrow the time range to see later ones`. Set Range from to a later time and click the arrow again: the later flows are listed. | The 10,000-flow limit is reported, and the time range reaches past it (GRA-3). | |
 | 4 | Add one peer's /24 to the exclude list; Map again. | Peers in that /24 no longer appear. | Excludes apply to Elasticsearch queries (FIL-1). | |
-| 5 | Add `TB_RARE_SCAN_CAP=5` to `deploy/threatbridge.env` and re-run `deploy/run.sh`. Peers *Bottom (rarest)*; map a host with more than 5 distinct peers. | Amber status ending `— WARNING: scan hit the peer cap; rarest list may be incomplete`. Remove the setting and redeploy afterwards. | Bottom N warns when the scan reaches the cap. | |
-| 6 | Remove step 4's /24 from the exclude list. Peers *Bottom (rarest)*, N `5`. Map inbound a host H with 6 to 20 distinct peers in the window (on the range of [TEST_RANGE_PROMPT.md](TEST_RANGE_PROMPT.md), 10.0.3.1). In SOC Hunt, query `event.dataset:conn AND destination.ip:"H" \| groupby source.ip` over the status line's times, and sort the groups by count, fewest first. | The map shows the five peers with the fewest connections, each arrow's count equal to Hunt's. Among peers tied on a count, those first in text order are shown (`10.0.0.10` before `10.0.0.9`). The status starts `H: showing rarest 5 of N distinct peer(s)`, N being Hunt's number of groups. On the range: 10.0.3.10, 10.0.3.9, 10.0.3.11, 10.0.3.2 and 10.0.3.3, of 11 (10.0.3.4 is tied with the last three, but after them in text order). | Bottom N is exact on a live install: every peer's connections are counted (README, *Peer selection*). | |
-| 7 | Peers *Bottom (rarest)*, N `5`. Map inbound a host with more than 1,000 distinct peers in the window (on the range, 10.0.1.3). Then choose Peers *Top* and map it again. | Bottom: the status says `of N distinct peer(s)` with N over 1000, the host's number of distinct peers. Top's status gives Elasticsearch's estimate, which is the same or very close. The five shown have the fewest connections, ties in text order. On the range: N is 1101, and the five are 10.0.10.1, 10.0.10.10, 10.0.10.100, 10.0.10.101 and 10.0.10.102. | The scan reads past its first page of 1,000 peers. | |
+| 5 | Remove step 4's /24 from the exclude list. Peers *Bottom (rarest)*, N `5`. Map inbound a host H with 6 to 20 distinct peers in the window (on the range of [TEST_RANGE_PROMPT.md](TEST_RANGE_PROMPT.md), 10.0.3.1). In SOC Hunt, query `event.dataset:conn AND destination.ip:"H" \| groupby source.ip` over the status line's times, and sort the groups by count, fewest first. | The map shows the five peers with the fewest connections, each arrow's count equal to Hunt's. Among peers tied on a count, those first in text order are shown (`10.0.0.10` before `10.0.0.9`). The status starts `H: showing rarest 5 of N distinct peer(s)`, N being Hunt's number of groups. On the range: 10.0.3.10, 10.0.3.9, 10.0.3.11, 10.0.3.2 and 10.0.3.3, of 11 (10.0.3.4 is tied with the last three, but after them in text order). | Bottom N is exact on a live install: every peer's connections are counted (README, *Peer selection*). | |
+| 6 | Peers *Bottom (rarest)*, N `5`. Map inbound a host with more than 1,000 distinct peers in the window (on the range, 10.0.1.3). Then choose Peers *Top* and map it again. | Bottom: the status says `of N distinct peer(s)` with N over 1000, the host's number of distinct peers. Top's status gives Elasticsearch's estimate, which is the same or very close. The five shown have the fewest connections, ties in text order. On the range: N is 1101, and the five are 10.0.10.1, 10.0.10.10, 10.0.10.100, 10.0.10.101 and 10.0.10.102. | The scan reads past its first page of 1,000 peers. | |
 
 ### SO-03 · Zeek DNS records resolve domain names on the exclude list (ING-S2, FIL-2)
 
@@ -421,7 +405,7 @@ and `ui_mtls.mjs` (the container). *Manual* names the tests above.
 | Requirement or decision | Automated | Manual |
 |---|---|---|
 | ING-1 PCAP ingest | `test_sources.py`, `test_case.py`; the case in `ui_case.mjs`, `ui_actions.mjs` | REAL-01 (a real capture) |
-| ING-2 NetFlow ingest | `test_sources.py` (record pairing; a real nfcapd file through nfdump), `test_integration.py` (pcap and NetFlow in one case) | REAL-01 step 4 (a real exporter; optional) |
+| ING-2 NetFlow ingest | `test_sources.py` (record pairing; a real nfcapd file through nfdump), `test_integration.py` (pcap and NetFlow in one case) | |
 | ING-3 Directories of pcaps, rotated captures | `test_sources.py` | |
 | ING-4 Addresses, ports, times, protocol | `test_sources.py`, `test_case.py`, `test_backends.py` (Elasticsearch fields, configurable); flow lines in `ui_case.mjs`, `ui_actions.mjs` | REAL-01, SO-02 (field names on a live install) |
 | ING-S2 Security Onion integration | `test_domains.py`, `test_backends.py` (Zeek DNS records); `test_soc.py` (Connect API against a stand-in); `ui_smoke.mjs` (PCAP links and download) | SO-03, SO-04, SO-05 |
@@ -431,7 +415,7 @@ and `ui_mtls.mjs` (the container). *Manual* names the tests above.
 | GRA-4 Interactive, clickable | `ui_smoke.mjs`, `ui_case.mjs`, `ui_actions.mjs` (clicks, menus, details) | VIS-01, XB-01 (other browsers) |
 | GRA-S2 Time-range filtering | `test_case.py`, `test_api.py`; `ui_smoke.mjs`, `ui_case.mjs`, `ui_actions.mjs` | |
 | GRA-S3 Connection metadata | `test_sources.py`, `test_backends.py`; `ui_case.mjs`, `ui_actions.mjs` | REAL-01, SO-02 |
-| Bottom N exact (README, *Peer selection*) | `test_backends.py` (the paged scan, the cap), `test_case.py`; `ui_smoke.mjs` (rarest and the cap warning in the status) | SO-02 steps 5 to 7 |
+| Bottom N exact (README, *Peer selection*) | `test_backends.py` (the paged scan, the cap), `test_case.py`; `ui_smoke.mjs` (rarest and the cap warning in the status) | SO-02 steps 5, 6 |
 | ATK-1 Attack paths | `test_analysis.py` (against brute force), `test_case.py`; `ui_case.mjs`, `ui_actions.mjs` | VIS-02 |
 | ATK-3 Predecessors and successors | `test_case.py`; `ui_smoke.mjs`, `ui_actions.mjs` | |
 | ATK-4 Mark hosts compromised | `test_case.py`, `test_stores.py`; `ui_smoke.mjs`, `ui_case.mjs`, `ui_actions.mjs` | VIS-02 |
@@ -452,7 +436,7 @@ and `ui_mtls.mjs` (the container). *Manual* names the tests above.
 | PRF-S3 Progress | `test_progress.py` (a simulated terminal, and the log); `ui_smoke.mjs`, `ui_actions.mjs` (busy indicator, Cancel) | TERM-01 (a real terminal) |
 | EXT-1 Security Onion workflows | `test_integration.py` (SOC actions open the map), `test_query.py` (pivots, configurable); `ui_smoke.mjs` | SO-01, SO-06 |
 | EXT-S2 API | `test_integration.py` (every endpoint documented), the API tests | |
-| Mutual TLS | `mtls_check.sh`, `ui_mtls.mjs` (CI Docker job) | TLS-01 (a browser's certificate store); ENV-SO uses it |
+| Mutual TLS | `mtls_check.sh`, `ui_mtls.mjs` (CI Docker job) | TLS-01 (a browser's own certificate store); ENV-SO uses it |
 | D3 Edge left-click / right-click | `ui_smoke.mjs`, `ui_case.mjs`, `ui_actions.mjs` | XB-01 (other browsers) |
 | D6, D7 Inputs, connection rules | `test_sources.py` | REAL-01 (against Zeek) |
 | D8 Time order, hop limit | `test_analysis.py`, `test_case.py` | |
