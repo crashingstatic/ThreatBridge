@@ -10,7 +10,7 @@ import socket
 import subprocess
 import tempfile
 
-from ..model import Flow, SourceError, idle_timeout, looks_reversed, proto_name
+from ..model import Flow, SourceError, flags_say_reversed, idle_timeout, looks_reversed, proto_name
 from .workers import in_order
 
 log = logging.getLogger(__name__)
@@ -34,7 +34,8 @@ def _address(af, words):
 
 
 def parse_pipe_line(line):
-    """One `nfdump -o pipe` line -> (start, end, proto, src, sport, dst, dport, packets, bytes)."""
+    """One `nfdump -o pipe` line -> (start, end, proto, src, sport, dst, dport, packets, bytes,
+    TCP flags)."""
     f = line.split("|")
     if len(f) != PIPE_FIELDS:
         raise SourceError(f"unexpected nfdump output ({len(f)} fields, expected {PIPE_FIELDS}); "
@@ -44,7 +45,7 @@ def parse_pipe_line(line):
         proto = proto_name(int(f[3]))
         sport, dport = (0, 0) if proto == "icmp" else (int(f[8]), int(f[13]))
         return (int(f[1]) / 1000.0, int(f[2]) / 1000.0, proto, _address(af, f[4:8]), sport,
-                _address(af, f[9:13]), dport, int(f[20]), int(f[21]))
+                _address(af, f[9:13]), dport, int(f[20]), int(f[21]), int(f[18]))
     except ValueError as e:
         raise SourceError(f"unexpected nfdump output ({e}); tested with nfdump 1.7.3")
 
@@ -78,32 +79,38 @@ def read_records(path):
 
 class _Conn:
     __slots__ = ("orig", "oport", "resp", "rport", "proto", "start", "last", "packets",
-                 "bytes", "source", "reverse_seen", "tie")
+                 "bytes", "source", "reverse_seen", "tie", "oflags", "rflags")
 
     def __init__(self, record, source):
-        start, end, proto, src, sport, dst, dport, _, _ = record
+        start, end, proto, src, sport, dst, dport = record[:7]
         self.orig, self.oport, self.resp, self.rport = src, sport, dst, dport
         self.proto, self.start, self.last, self.source = proto, start, end, source
         self.packets = self.bytes = 0
         self.reverse_seen = self.tie = False
+        self.oflags = self.rflags = 0      # each half's TCP flags, ORed together
 
     def flow(self):
         o, op, r, rp = self.orig, self.oport, self.resp, self.rport
-        # Timing decides who started the connection. When it can't (only one direction was
-        # recorded, or both started in the same millisecond), fall back to the port heuristic.
-        if (not self.reverse_seen or self.tie) and looks_reversed(op, rp):
-            o, op, r, rp = r, rp, o, op
+        # Time decides who started the connection: records are taken in start order, so this
+        # half started first (or was recorded alone). When both halves started in the same
+        # millisecond, the TCP flags, then the ports; failing both, the order nfdump listed them.
+        if self.tie:
+            flip = flags_say_reversed(self.oflags, self.rflags)
+            if flip is None:
+                flip = looks_reversed(op, rp)
+            if flip:
+                o, op, r, rp = r, rp, o, op
         return Flow(o, r, op, rp, self.proto, self.start, self.last, self.packets, self.bytes,
                     self.source)
 
 
 def pair_records(records):
-    """Merge one-way records (start, end, proto, src, sport, dst, dport, packets, bytes, source)
-    into connections. Records of the same endpoints closer together than the idle timeout
+    """Merge one-way records (start, end, proto, src, sport, dst, dport, packets, bytes, TCP
+    flags, source) into connections. Records of the same endpoints closer together than the idle timeout
     belong to one connection; that also rejoins long connections split by the exporter."""
     flows, open_ = [], {}
     for rec in sorted(records, key=lambda r: r[0]):
-        start, end, proto, src, sport, dst, dport, packets, nbytes, source = rec
+        start, end, proto, src, sport, dst, dport, packets, nbytes, flags, source = rec
         key = (proto, src, sport, dst, dport) if (src, sport) <= (dst, dport) \
             else (proto, dst, dport, src, sport)
         conn = open_.get(key)
@@ -111,11 +118,14 @@ def pair_records(records):
             flows.append(open_.pop(key).flow())
             conn = None
         if conn is None:
-            conn = open_[key] = _Conn(rec[:9], source)
-        elif (src, sport) != (conn.orig, conn.oport):
+            conn = open_[key] = _Conn(rec, source)
+        if (src, sport) == (conn.orig, conn.oport):
+            conn.oflags |= flags
+        else:
             if not conn.reverse_seen and start == conn.start:
                 conn.tie = True
             conn.reverse_seen = True
+            conn.rflags |= flags
         conn.packets += packets
         conn.bytes += nbytes
         if end > conn.last:

@@ -46,17 +46,18 @@ python -m threatbridge --case /cases/incident-42/      # files or directories, i
 - **One edge per connection,** from initiator to responder, like a Zeek conn record.
   - A TCP connection ends at a RST, at a new SYN after a FIN, or after 5 minutes idle. UDP and ICMP end after 1 minute idle.
   - Rotated captures (`tcpdump -C` / `-G`) are read in capture order, so a connection that spans files stays one flow.
-  - In a capture, the initiator is the host that sent the SYN. Without one (UDP, ICMP, or a TCP connection already open when the capture began), it is the first sender, unless the port rule (below) says otherwise.
 - **Several files are read at once,** one per CPU (`TB_READ_WORKERS`; `1` reads one at a time).
   - Worker processes decode the packets; the connections are then followed packet by packet in capture order, so the flows are exactly those of reading one file at a time. One large file is read by one process.
   - In testing on 4 CPUs, 8 rotated captures of TCP traffic (538 MB) were read in 4.2 s instead of 15.5 s. With every packet a connection of its own (1.2M), 12.5 s instead of 23.7 s: following the connections is then most of the work.
   - While a case is built, the terminal shows the stage, the file, how far it has got and the time left, e.g. `Reading 8 evidence file(s): 41%, file 4 of 8, 612,330 packets, about 3 s left`. Without a terminal (gunicorn, Docker) the same goes to the log every 10 seconds.
-- **NetFlow records are one-way, so the two halves are merged.** The half that started first is the initiator.
-  - Sometimes timing can't tell: both halves start in the same millisecond (softflowd gives them one start), or one half is missing.
-  - Then the port rule decides; failing that, the half nfdump lists first is the initiator.
-- **Port rule,** used only when neither a handshake nor timing tells who started a connection. A well-known port (below 1024) talking to a port of 1024 or above is the server's. Failing that, a port outside the default ephemeral range talking to one inside it is the server's.
-  - The range is 32768–65535: Linux gives outgoing connections ports 32768–60999 (`net.ipv4.ip_local_port_range`), Windows since Vista 49152–65535. Older Windows used 1025–5000, which isn't counted: real services live there.
-  - A host whose range was changed, or a service on an ephemeral port (Windows RPC, for one), can defeat it. It doesn't decide between two ports inside the range, or two of 1024 or above outside it.
+- **NetFlow records are one-way,** so the two halves of a connection are merged into one flow.
+- **Who started a connection** (the initiator) is decided by time, then TCP flags, then ports:
+  1. **Time.** The side whose first packet came first; in NetFlow, the half that started first. A connection seen from one side only (a lone reply, or one NetFlow half) is taken as started by that side.
+  2. **TCP flags,** when both sides' first packets, or both NetFlow halves, have the same time. NetFlow keeps milliseconds, and softflowd gives both halves one start. A SYN without ACK is the client's. In a capture, a SYN-ACK is the server's; a NetFlow half's flags are ORed over the whole connection, so there only a SYN without ACK counts.
+  3. **Ports.** A well-known port (below 1024) talking to a port of 1024 or above is the server's. Failing that, a port outside the default ephemeral range talking to one inside it is the server's.
+  4. Failing all three, the order of the capture, or the order nfdump lists the halves in.
+  - The ephemeral range is 32768–65535: Linux gives outgoing connections ports 32768–60999 (`net.ipv4.ip_local_port_range`), Windows since Vista 49152–65535. Older Windows used 1025–5000, which isn't counted: real services live there. A host whose range was changed, or a service on an ephemeral port (Windows RPC, for one), can defeat the port rule.
+  - Time comes first even when a capture missed the start of a connection: one that begins at the SYN-ACK, or mid-connection with the server talking, is taken as started by the server.
 - **Default anchor.** With no anchor time, the map looks back from the end of the data (inbound) or forward from its start (outbound). With a time range set, from the range's end or start when it lies inside the data.
 - **SOC pivots** are hidden in this mode.
 

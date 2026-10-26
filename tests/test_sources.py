@@ -62,8 +62,8 @@ def ipv6_fragment(offset, payload, more=True):
                                         data=bytes(ip6)))
 
 
-def rec(src, sport, dst, dport, start, end, packets=1, nbytes=100, proto="tcp"):
-    return (start, end, proto, src, sport, dst, dport, packets, nbytes, "nf")
+def rec(src, sport, dst, dport, start, end, packets=1, nbytes=100, proto="tcp", flags=0):
+    return (start, end, proto, src, sport, dst, dport, packets, nbytes, flags, "nf")
 
 
 def fake_nfdump(tmp_path, monkeypatch, script):
@@ -168,14 +168,30 @@ def test_tcp_connection_is_one_flow_from_initiator(tmp_path):
     assert f.source == str(tmp_path / "cap.pcap")
 
 
-def test_orientation_without_syn(tmp_path):
-    # Capture starts at the SYN-ACK: the receiver of the SYN-ACK is the initiator.
+def test_who_started_it_time_then_flags_then_ports(tmp_path):
+    # Time first: the side that sent first, even when the capture starts at the SYN-ACK, or
+    # mid-stream with the server talking.
     syn_ack = load_packets(tmp_path, handshake()[1:])
-    # Capture starts mid-stream with the server talking: port heuristic.
     midstream = load_packets(tmp_path, [(T, tcp(S, C, 443, 51000, ACK)),
                                         (T + 1, tcp(C, S, 51000, 443, ACK))])
-    assert endpoints(syn_ack) == [(C, 50000, S, 445, "tcp")]
-    assert endpoints(midstream) == [(C, 51000, S, 443, "tcp")]
+    assert endpoints(syn_ack) == [(S, 445, C, 50000, "tcp")]
+    assert endpoints(midstream) == [(S, 443, C, 51000, "tcp")]
+    # Both sides' first packets at the same time: the flags of each one ...
+    tie = lambda a, b: endpoints(load_packets(tmp_path, [(T, a), (T, b)]))  # noqa: E731
+    assert tie(tcp(S, C, 49668, 50000, SYN | ACK), tcp(C, S, 50000, 49668, ACK)) \
+        == [(C, 50000, S, 49668, "tcp")]                               # a SYN-ACK: the server
+    assert tie(tcp(S, C, 49668, 50000, ACK), tcp(C, S, 50000, 49668, SYN)) \
+        == [(C, 50000, S, 49668, "tcp")]                               # a SYN alone: the client
+    assert tie(tcp(C, S, 3000, 40000, SYN), tcp(S, C, 40000, 3000, SYN | ACK)) \
+        == [(C, 3000, S, 40000, "tcp")]                                # where the ports say otherwise
+    [f] = load_packets(tmp_path, [(T, tcp(S, C, 49668, 50000, SYN | ACK)), (T, tcp(C, S, 50000, 49668, ACK)),
+                                  (T, tcp(S, C, 49668, 50000, ACK | PSH, b"x"))])
+    assert (f.src, f.packets) == (C, 3)                  # settled once: at the other side's first packet
+    # ... then the ports ...
+    assert tie(tcp(S, C, 443, 51000, ACK), tcp(C, S, 51000, 443, ACK)) == [(C, 51000, S, 443, "tcp")]
+    assert tie(udp(S, C, 3389, 50000), udp(C, S, 50000, 3389)) == [(C, 50000, S, 3389, "udp")]
+    # ... then capture order.
+    assert tie(udp(S, C, 49668, 50000), udp(C, S, 50000, 49668)) == [(S, 49668, C, 50000, "udp")]
 
 
 def test_flow_start_and_source_with_packets_out_of_order(tmp_path):
@@ -196,22 +212,15 @@ def test_rst_and_port_reuse_start_new_flows(tmp_path):
     assert set(endpoints(flows)) == {(C, 50000, S, 80, "tcp")}
 
 
-def test_udp_idle_timeout_splits_and_lone_reply_is_flipped(tmp_path):
+def test_udp_idle_timeout_splits_and_a_lone_reply_keeps_its_sender(tmp_path):
     pkts = [
         (T, udp(C, R, 53000, 53, b"q")), (T + 0.01, udp(R, C, 53, 53000, b"a")),
         (T + 120, udp(C, R, 53000, 53, b"q")),       # > 60 s idle: a new flow
         (T + 200, udp(R, C, 53, 53001, b"a")),       # response whose query was not captured
     ]
     flows = load_packets(tmp_path, pkts)
-    assert endpoints(flows) == [(C, 53000, R, 53, "udp")] * 2 + [(C, 53001, R, 53, "udp")]
+    assert endpoints(flows) == [(C, 53000, R, 53, "udp")] * 2 + [(R, 53, C, 53001, "udp")]
     assert [f.packets for f in flows] == [2, 1, 1]
-
-
-def test_a_connection_seen_from_its_middle_is_oriented_by_the_ports(tmp_path):
-    # The capture began after the handshake, with a WinRM server's packet to the client.
-    flows = load_packets(tmp_path, [(T, tcp(S, C, 5985, 49800, ACK | PSH, b"r")),
-                                    (T + 0.01, tcp(C, S, 49800, 5985, ACK))])
-    assert endpoints(flows) == [(C, 49800, S, 5985, "tcp")]
 
 
 def test_idle_timeout_is_exclusive(tmp_path):
@@ -300,30 +309,26 @@ def test_a_transport_header_cut_by_the_snap_length(tmp_path):
 
 
 def test_snap_length_boundaries(tmp_path):
-    # Exactly 4 bytes: the ports. 14 bytes: the TCP flags too, so a lone SYN-ACK still
-    # shows who the server was.
+    # Exactly 4 bytes: the ports. 14 bytes: the TCP flags too.
     ports_only = frame(tcp(C, S, 50000, 445, SYN))[:14 + 20 + 4]
     [f] = load_packets(tmp_path, [(T, ports_only)])
     assert (f.sport, f.dport) == (50000, 445)
-    synack = frame(tcp(S, C, 445, 50000, SYN | ACK))[:14 + 20 + 14]
-    [f] = load_packets(tmp_path, [(T, synack)])
-    assert (f.src, f.sport, f.dst, f.dport) == (C, 50000, S, 445)
-    # A server on an ephemeral port (e.g. Windows RPC), where the ports can't tell: the flags
-    # decide...
-    synack = frame(tcp(S, C, 49668, 50000, SYN | ACK))
-    [f] = load_packets(tmp_path, [(T, synack[:14 + 20 + 14])])
+    # Both sides at the same time, on ports that can't tell (a server on an ephemeral port,
+    # e.g. Windows RPC): the SYN-ACK's flags decide ...
+    synack, ack = frame(tcp(S, C, 49668, 50000, SYN | ACK)), tcp(C, S, 50000, 49668, ACK)
+    [f] = load_packets(tmp_path, [(T, synack[:14 + 20 + 14]), (T, ack)])
     assert (f.src, f.dst) == (C, S)
-    # ... unless they were cut off too (13 bytes): then the sender is taken as the initiator.
-    [f] = load_packets(tmp_path, [(T, synack[:14 + 20 + 13])])
+    # ... unless they were cut off too (13 bytes): then capture order.
+    [f] = load_packets(tmp_path, [(T, synack[:14 + 20 + 13]), (T, ack)])
     assert (f.src, f.dst) == (S, C)
 
 
 def test_ipv6_fragments(tmp_path):
-    first = bytes(dpkt.tcp.TCP(sport=50000, dport=445, flags=SYN | ACK, off=5)) + b"a" * 32
+    first = bytes(dpkt.tcp.TCP(sport=50000, dport=445, flags=SYN, off=5)) + b"a" * 32
     flows = load_packets(tmp_path, [(T, ipv6_fragment(0, first)),
                                     (T + 0.001, ipv6_fragment(1000, b"\xaa" * 48, more=False))])
     # The first fragment carries the ports; a later one is payload only and adds no flow.
-    assert endpoints(flows) == [("2001:db8::9", 445, "2001:db8::5", 50000, "tcp")]
+    assert endpoints(flows) == [("2001:db8::5", 50000, "2001:db8::9", 445, "tcp")]
 
 
 def test_skipped_packets_do_not_stop_the_capture(tmp_path):
@@ -412,7 +417,8 @@ PIPE_V6 = ("10|1792437238000|1792437242000|6|536939960|2863315899|3435978205|400
 
 
 def test_parse_pipe_lines():
-    assert parse_pipe_line(PIPE_V4) == (1792437101.0, 1792437111.0, "tcp", C, 50000, S, 445, 10, 1500)
+    assert parse_pipe_line(PIPE_V4) == (1792437101.0, 1792437111.0, "tcp", C, 50000, S, 445, 10, 1500,
+                                        FIN | SYN | PSH | ACK)
     rec = parse_pipe_line(PIPE_V6)
     assert rec[3] == "2001:db8:aaaa:bbbb:cccc:dddd:eeee:1"
     assert rec[5] == "2001:db8:1111:2222:3333:4444:5555:6666"
@@ -444,17 +450,33 @@ def test_pairing_merges_halves_and_orients():
     # A strictly earlier half wins over the port heuristic.
     [f] = pair_records([rec(S, 443, C, 50000, T, T + 1), rec(C, 50000, S, 443, T + 0.5, T + 1)])
     assert (f.src, f.dst) == (S, C)
-    # Only the reply was exported: port heuristic.
+    # Only the reply was exported: it started first, so its sender is taken as the initiator.
     [f] = pair_records([rec(R, 53, C, 53000, T, T, proto="udp")])
-    assert (f.src, f.sport, f.dst, f.dport) == (C, 53000, R, 53)
-    # Same millisecond (softflowd gives both halves one start), no well-known port: the half
-    # from an ephemeral port is the client's, whichever nfdump lists first.
-    rdp = [rec(S, 3389, C, 51000, T, T + 10), rec(C, 51000, S, 3389, T, T + 10)]
+    assert (f.src, f.sport, f.dst, f.dport) == (R, 53, C, 53000)
+    # Same millisecond (softflowd gives both halves one start): the flags first. A half with a
+    # SYN but no ACK is the client's, e.g. a refused connection on ports that can't tell ...
+    refused = [rec(S, 49668, C, 50000, T, T, flags=RST | ACK), rec(C, 50000, S, 49668, T, T, flags=SYN)]
+    for records in (refused, refused[::-1]):
+        [f] = pair_records(records)
+        assert (f.src, f.sport, f.dst, f.dport) == (C, 50000, S, 49668)
+    # ... and where the ports would say otherwise (a server on an ephemeral port) ...
+    odd = [rec(C, 3000, S, 40000, T, T, flags=SYN), rec(S, 40000, C, 3000, T, T, flags=RST | ACK)]
+    for records in (odd, odd[::-1]):
+        [f] = pair_records(records)
+        assert (f.src, f.sport) == (C, 3000)
+    # ... but both halves of a completed connection carry SYN and ACK: then the ports. No
+    # well-known port: the half from an ephemeral port is the client's.
+    done = FIN | SYN | PSH | ACK
+    rdp = [rec(S, 3389, C, 51000, T, T + 10, flags=done), rec(C, 51000, S, 3389, T, T + 10, flags=done)]
     for records in (rdp, rdp[::-1]):
         [f] = pair_records(records)
         assert (f.src, f.sport, f.dst, f.dport) == (C, 51000, S, 3389)
     # Both ports ephemeral: nothing to go by, so the half listed first stays the initiator.
     [f] = pair_records([rec(S, 49668, C, 50000, T, T + 1), rec(C, 50000, S, 49668, T, T + 1)])
+    assert (f.src, f.sport) == (S, 49668)
+    # Time comes before the flags: a strictly earlier half wins whatever they say.
+    [f] = pair_records([rec(S, 49668, C, 50000, T, T + 1, flags=RST | ACK),
+                        rec(C, 50000, S, 49668, T + 0.5, T + 1, flags=SYN)])
     assert (f.src, f.sport) == (S, 49668)
 
 
@@ -738,3 +760,10 @@ def test_model_helpers():
     assert not model.looks_reversed(50000, 3389) and not model.looks_reversed(32768, 32767)
     assert not model.looks_reversed(8080, 9000)                       # neither ephemeral
     assert not model.looks_reversed(49668, 40000)                     # both: e.g. Windows RPC
+    # TCP flags: a SYN without ACK is the client's; in one packet, a SYN-ACK the server's.
+    say = model.flags_say_reversed
+    assert say(0, SYN) is True and say(SYN, 0) is False and say(SYN, SYN) is None
+    assert say(SYN | ACK, 0) is None and say(SYN | ACK, 0, packets=True) is True
+    assert say(SYN, SYN | ACK, packets=True) is False and say(SYN | ACK, SYN, packets=True) is True
+    assert say(SYN | ACK, SYN | ACK, packets=True) is None
+    assert say(FIN | SYN | ACK, FIN | SYN | ACK) is None and say(RST | ACK, SYN) is True

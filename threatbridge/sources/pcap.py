@@ -6,7 +6,7 @@ import struct
 
 import dpkt
 
-from ..model import Flow, SourceError, idle_timeout, looks_reversed, proto_name
+from ..model import Flow, SourceError, flags_say_reversed, idle_timeout, looks_reversed, proto_name
 from ..progress import counted
 from .workers import in_order
 
@@ -38,21 +38,34 @@ _DECODERS = {
 
 class _Conn:
     __slots__ = ("orig", "oport", "resp", "rport", "proto", "start", "last", "packets",
-                 "bytes", "source", "closing")
+                 "bytes", "source", "closing", "first_flags", "answered")
 
-    def __init__(self, orig, oport, resp, rport, proto, ts, source):
+    def __init__(self, orig, oport, resp, rport, proto, ts, source, flags):
         self.orig, self.oport, self.resp, self.rport = orig, oport, resp, rport
         self.proto, self.start, self.last, self.source = proto, ts, ts, source
         self.packets = self.bytes = 0
         self.closing = False
+        self.first_flags, self.answered = flags, False   # the first sender's; the other side's yet?
+
+    def orient(self, ts, flags):
+        """The other side's first packet, at `ts` with `flags`: settle who started the
+        connection. Time first: the side that sent first. On a tie, the TCP flags of each side's
+        first packet, then the ports; failing both, capture order."""
+        if ts == self.start:
+            flip = flags_say_reversed(self.first_flags, flags, packets=True)
+            if flip is None:
+                flip = looks_reversed(self.oport, self.rport)
+        else:
+            flip = ts < self.start
+        if flip:
+            self.orig, self.oport, self.resp, self.rport = self.resp, self.rport, self.orig, self.oport
 
 
 class FlowTracker:
     """Groups packets into connections, keyed by protocol and both endpoints.
 
     A connection ends after its idle timeout, on a TCP RST, or when a new SYN arrives after
-    a FIN. The initiator is the SYN sender; without a handshake, the first sender, unless it
-    looks like the server (see model.looks_reversed).
+    a FIN. The initiator is the side that sent first (see _Conn.orient).
     """
 
     def __init__(self):
@@ -75,13 +88,10 @@ class FlowTracker:
             self._close(key)
             conn = None
         if conn is None:
-            if proto == "tcp" and flags & _SYN:
-                reverse = bool(flags & _ACK)  # a SYN-ACK comes from the responder
-            else:
-                reverse = looks_reversed(sport, dport)
-            conn = _Conn(dst, dport, src, sport, proto, ts, source) if reverse \
-                else _Conn(src, sport, dst, dport, proto, ts, source)
-            self.open[key] = conn
+            conn = self.open[key] = _Conn(src, sport, dst, dport, proto, ts, source, flags)
+        elif not conn.answered and (src, sport) != (conn.orig, conn.oport):
+            conn.answered = True
+            conn.orient(ts, flags)
         conn.packets += 1
         conn.bytes += nbytes
         if ts < conn.start:

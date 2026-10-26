@@ -301,8 +301,8 @@ differ in these cases:
 - Zeek keeps a connection for 5 s after a reset or a close (`tcp_reset_delay`,
   `tcp_close_delay`). ThreatBridge ends it at the reset; after a FIN, it ends it at the next SYN.
 - UDP and ICMP have no SYN, nor has a TCP connection already open when the capture started.
-  Zeek then goes by the first sender and its own list of server ports, ThreatBridge by D7's
-  rule.
+  Zeek then goes by the first sender and its own list of server ports, ThreatBridge by the
+  first sender alone (README, *Post-mortem mode*).
 
 So the comparison is for pairs of hosts all of whose Zeek records, either way, are TCP
 connections seen from the handshake (`history` starts with `Sh`) to the close (`conn_state`
@@ -334,11 +334,13 @@ exporter's records are only checked here. This test reads a real exporter's reco
 REAL-01's traffic, and compares them with Zeek's reading of the capture.
 
 softflowd follows each connection as one two-way flow, and exports it as two one-way records
-with the same start time. Timing then can't tell ThreatBridge which side started the connection,
-so it goes by the port rule (README, *Post-mortem mode*). This test uses connections the rule
-decides: to a port below 1024, or to one below 32768 from the ephemeral range 32768–65535. It
-doesn't compare bytes with Zeek: softflowd counts each packet's length on the wire less its link
-header, which includes any Ethernet padding, where Zeek counts IP lengths.
+with the same start time. Time then can't tell ThreatBridge which side started the connection,
+so it goes by the TCP flags, then the ports (README, *Post-mortem mode*). The flags can't tell
+for a completed connection, whose two halves both carry SYN and ACK, so this test uses
+connections the ports decide: to a port below 1024, or to one below 32768 from the ephemeral
+range 32768–65535. It doesn't compare bytes with Zeek: softflowd counts each packet's length on
+the wire less its link header, which includes any Ethernet padding, where Zeek counts IP
+lengths.
 
 **Environment:** ENV-REAL. **Starting state:** REAL-01 done, and its pair listing at hand. The
 NetFlow served on another port, and `http://127.0.0.1:5057/` open:
