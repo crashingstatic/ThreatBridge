@@ -1,6 +1,7 @@
 """Progress of long jobs, such as building a case: one updating line on a terminal, otherwise a
 log line every `interval` seconds and when each stage ends."""
 import logging
+import os
 import sys
 import time
 from contextlib import contextmanager
@@ -16,6 +17,13 @@ class Progress:
         except (AttributeError, ValueError):   # no isatty, or a closed stream
             self.tty = False
         self.interval, self.clock = interval, clock
+
+    def columns(self):
+        """The terminal's width now (it may have been resized); 80 when it can't tell."""
+        try:
+            return os.get_terminal_size(self.stream.fileno()).columns or 80
+        except (AttributeError, OSError, ValueError):
+            return 80
 
     @contextmanager
     def stage(self, name, total=None):
@@ -70,20 +78,24 @@ class Stage:
         if self.progress.tty:
             for handler in logging.getLogger().handlers:
                 handler.removeFilter(self.clear_first)
-            self._write(text)
+            self._write(text, fit=False)          # kept whole: a new line follows it
             self.progress.stream.write("\n")
             self.progress.stream.flush()
         else:
             log.info("%s", text)
 
-    def _write(self, text):
-        self.progress.stream.write("\r" + text.ljust(self.width))
+    def _write(self, text, fit=True):
+        # A line that wraps can't be redrawn: "\r" goes back to the start of its last row only.
+        columns = self.progress.columns()
+        if fit and len(text) >= columns:
+            text = text[:max(0, columns - 2)] + "…"
+        self.progress.stream.write("\r" + text.ljust(min(self.width, columns - 1)))
         self.progress.stream.flush()
         self.width = len(text)
 
     def clear(self):
         if self.width:
-            self.progress.stream.write("\r" + " " * self.width + "\r")
+            self.progress.stream.write("\r" + " " * min(self.width, self.progress.columns() - 1) + "\r")
             self.progress.stream.flush()
             self.width = 0
 

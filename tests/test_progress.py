@@ -1,6 +1,7 @@
 """Progress of long jobs (building a case): on a terminal and in the log."""
 import io
 import logging
+import os
 import sys
 
 import pytest
@@ -68,6 +69,30 @@ def test_an_updating_line_on_a_terminal():
         clock.now += 66
         stage(600)
     assert out.screen() == ["Reading evidence: done in 1 min 10 s (file 2 of 4)", ""]
+
+
+class NarrowTerminal(Terminal):
+    def fileno(self):
+        return 2
+
+
+def test_an_updating_line_is_cut_to_the_terminal_width(monkeypatch):
+    sizes = [40]
+    monkeypatch.setattr(os, "get_terminal_size", lambda fd: os.terminal_size((sizes[0], 24)))
+    out, clock = NarrowTerminal(), Clock()
+    with Progress(out, clock=clock).stage("Reading 8 evidence file(s)", 1000) as stage:
+        clock.now += 3
+        stage(410, "file 4 of 8, 612,330 packets")
+        assert out.screen() == ["Reading 8 evidence file(s): 41%, file …"]      # 39 of 40 columns
+        sizes[0] = 30                                  # narrowed: the old line's tail is off-screen
+        clock.now += 1
+        stage(10)
+        assert out.screen()[0][:29] == "Reading 8 evidence file(s): …"
+        assert out.getvalue().endswith("\rReading 8 evidence file(s): …")          # no padding past 29
+    # The last line is kept whole: a new line follows it, so it may wrap.
+    assert out.screen() == ["Reading 8 evidence file(s): done in 4 s (file 4 of 8, 612,330 packets)", ""]
+    assert Progress(NarrowTerminal()).columns() == 30
+    assert Progress(io.StringIO()).columns() == 80 and Progress(object()).columns() == 80
 
 
 def test_log_lines_on_a_terminal_start_on_a_clean_line():

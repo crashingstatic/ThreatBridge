@@ -54,9 +54,6 @@
     ],
   });
 
-  // Cytoscape caches the container's position; keep it in sync when the page reflows.
-  new ResizeObserver(() => cy.resize()).observe($("cy"));
-  window.addEventListener("scroll", () => cy.resize(), { passive: true });
   window.threatbridge = { cy }; // handle for debugging / UI tests
 
   function setStatus(msg, isError, isWarn) {
@@ -480,7 +477,6 @@
   cy.on("cxttap", (evt) => { if (evt.target === cy) hideMenu(); });
   document.addEventListener("click", (e) => { if (!menu.contains(e.target)) hideMenu(); });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") hideMenu(); });
-  $("cy").addEventListener("contextmenu", (e) => e.preventDefault());
 
   $("go").addEventListener("click", start);
   $("fit").addEventListener("click", () => cy.fit(undefined, 40));
