@@ -29,7 +29,7 @@ jobs:
           cache: pip
       - name: Install nfdump (nfcapd integration test)
         run: sudo apt-get update -q && sudo apt-get install -y -q nfdump
-      - run: pip install -r requirements.txt pytest
+      - run: pip install -r requirements.txt -r requirements-test.txt
       - run: python -m pytest -q
 
   perf:
@@ -42,7 +42,7 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: pip install -r requirements.txt pytest
+      - run: pip install -r requirements.txt -r requirements-test.txt
       - run: TB_PERF=1 python -m pytest -q -s tests/test_perf.py
 
   shellcheck:
@@ -139,9 +139,15 @@ jobs:
       - run: TB_URL=http://127.0.0.1:5056 node tests/ui_actions.mjs "$RUNNER_TEMP/shots"
         env:
           JS_COVERAGE: ${{ runner.temp }}/js-coverage
+          TB_SAVED_MAPS: ${{ runner.temp }}/saved-maps
       - run: TB_URL=http://127.0.0.1:5056 node tests/ui_marks.mjs "$RUNNER_TEMP/shots"
         env:
           JS_COVERAGE: ${{ runner.temp }}/js-coverage
+          TB_SAVED_MAPS: ${{ runner.temp }}/saved-maps
+      - name: The maps the browser tests saved match the map document format (D22)
+        run: |
+          pip install -r requirements-test.txt
+          TB_SAVED_MAPS="$RUNNER_TEMP/saved-maps" python -m pytest -q tests/test_openapi.py -k browser_tests_saved
       - name: JavaScript coverage (what the browser tests ran of app.js)
         run: node tests/js_coverage.mjs "$RUNNER_TEMP/js-coverage"
       - name: Upload screenshots

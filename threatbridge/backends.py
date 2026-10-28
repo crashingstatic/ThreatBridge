@@ -40,8 +40,8 @@ from . import analysis, filters, protocols, sources
 from .compromised import flow_key, marked_hosts, reached
 from .graph import build_graph, count_between
 from .progress import Progress, counted
-from .query import (ValidationError, es_details_body, es_dns_body, es_flows_body, es_scan_body,
-                    es_top_body, fmt_time, parse_time, soc_pcap_url)
+from .query import (ValidationError, es_details_body, es_dns_body, es_flows_body, es_protocols_body,
+                    es_scan_body, es_top_body, fmt_time, parse_time, parse_window, soc_pcap_url)
 from .store import FlowStore, NotAStore
 
 log = logging.getLogger(__name__)
@@ -277,6 +277,17 @@ class ElasticBackend:
             flow.update(id=hit["_id"], soc_pcap=soc_pcap_url(cfg, hit["_id"], flow["start"]))
         return flow
 
+    def protocols(self, start, end, scope=None):
+        """(start, end, {protocol: records naming it}) in the time range; without one, the last
+        TB_MAX_WINDOW (D20). A record naming several protocols counts for each."""
+        end = end or datetime.now(timezone.utc)
+        start = start or end - parse_window(self.cfg.max_window)
+        buckets = self._search(es_protocols_body(self.cfg, start, end, es_scope(self.cfg, scope)))
+        buckets = buckets.get("protocols", {}).get("buckets", [])
+        if not self.cfg.f_service:          # TB_FIELD_SERVICE= : only the transport is known
+            buckets = [{"key": "", "transports": {"buckets": buckets}}]
+        return start, end, _es_protocol_counts(buckets)
+
     def dns_answers(self, entries):
         buckets = self._search(es_dns_body(self.cfg, entries)).get("entries", {}).get("buckets", {})
         out = {}
@@ -286,17 +297,23 @@ class ElasticBackend:
         return out
 
 
-def _es_protocols(buckets):
-    """A peer's protocols from its terms buckets on Zeek's service field. Records without one
-    (the "" bucket) are ICMP or unknown, by their transport."""
-    found = set()
+def _es_protocol_counts(buckets):
+    """{protocol: records} from terms buckets on Zeek's service field ("smb,ntlm" counts for
+    both). Records without one (the "" bucket) are ICMP or unknown, by their transport."""
+    counts = Counter()
     for b in buckets:
         if b["key"]:
-            found.update(protocols.split(b["key"]))
+            for name in protocols.split(b["key"]):
+                counts[name] += b.get("doc_count", 0)
         else:
             for t in b.get("transports", {}).get("buckets", []):
-                found.add("icmp" if t["key"] == "icmp" else protocols.UNKNOWN)
-    return sorted(found)
+                counts["icmp" if t["key"] == "icmp" else protocols.UNKNOWN] += t.get("doc_count", 0)
+    return counts
+
+
+def _es_protocols(buckets):
+    """A peer's protocols, from its terms buckets (see _es_protocol_counts)."""
+    return sorted(_es_protocol_counts(buckets))
 
 
 class DemoBackend:
@@ -363,6 +380,18 @@ class DemoBackend:
         return {"source": src, "target": dst, **_summary(self._passing(src, dst, start, end, scope))}
 
     export = ElasticBackend.export      # the same: marks only, no suspect flows
+
+    def protocols(self, start, end, scope=None):
+        """(start, end, {protocol: flows}): a made-up count for each port's protocol, of those
+        that pass the filters."""
+        rng = self._rng(f"protocols|{start}|{end}")
+        counts = {}
+        for port in self.PORTS:
+            name = protocols.name("tcp", 0, port, 0)
+            flow = {"protocols": [name], "dport": port, "proto": "tcp"}
+            if scope is None or filters.matches(scope.filter.core, flow):
+                counts[name] = counts.get(name, 0) + rng.randint(1, 500)
+        return start, end, counts
 
     def _rows(self, src, dst, start, end):
         # As many flows as neighbors() reports for the pair, the first and last at the ends
@@ -565,6 +594,11 @@ class CaseBackend:
             "start": fmt_time(_utc(f.start)), "duration": round(f.end - f.start, 6),
             "sport": f.sport, "dport": f.dport, "proto": f.proto, "packets": f.packets,
             "bytes": f.bytes, "protocols": [f.service]} for f in page]}
+
+    def protocols(self, start, end, scope=None):
+        """(start, end, {protocol: flows}) of the flows that started in the time range (the whole
+        case without one) and pass the filters."""
+        return start, end, self.store.protocols(*_epochs((start, end)), self._where(scope))
 
     def threat_line(self, a, b, first, last, window, max_hops, exclude, max_hosts,
                     bounds=(None, None), scope=None):

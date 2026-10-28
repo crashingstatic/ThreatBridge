@@ -9,7 +9,7 @@
 //   TB_URL=http://127.0.0.1:5056 node tests/ui_actions.mjs [screenshot-dir]
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { checkpoint, finish, launch } from "./ui_helpers.mjs";
+import { checkpoint, finish, keepMap, launch } from "./ui_helpers.mjs";
 
 const BASE = process.env.TB_URL || "http://127.0.0.1:5056";
 const SHOTS = process.argv[2];
@@ -547,6 +547,7 @@ try {
   const [mapFile] = await Promise.all([page.waitForEvent("download"), page.click("#session-download")]);
   assert.equal(mapFile.suggestedFilename(), "threatbridge-incident_42.json");
   const doc = JSON.parse(await readFile(await mapFile.path(), "utf8"));
+  keepMap("incident-42", doc);
   assert.equal(doc.version, 2);
   assert.deepEqual([doc.filters, doc.marks], [[], { hosts: [], flows: [] }]);
   assert.deepEqual(doc.queries.map((q) => q.op), ["root", "threatline"]);
@@ -608,6 +609,7 @@ try {
   assert.deepEqual((await (await page.request.get(`${BASE}/api/compromised`)).json()).hosts, []);
   const [withPaths] = await Promise.all([page.waitForEvent("download"), page.click("#session-download")]);
   const pathsDoc = JSON.parse(await readFile(await withPaths.path(), "utf8"));
+  keepMap("with-paths", pathsDoc);
   assert.ok(pathsDoc.edges.some((e) => e.classes.includes("attack")));
   assert.deepEqual(pathsDoc.marks.hosts.map((h) => [h.ip, h.time]),
                    [["203.0.113.66", null], ["10.0.0.20", "2024-05-01T12:20:00.000Z"]]);

@@ -27,7 +27,7 @@ Data sources: Zeek `conn` records in Security Onion's Elasticsearch (`event.data
 | PCAP | Security Onion mode: each flow links to SOC's PCAP job for it, and with a SOC API client ThreatBridge downloads the PCAP itself. See [PCAP for a flow](#pcap-for-a-flow). |
 | Saved maps | Side panel → *Saved maps*: save the map under a name for every analyst (`TB_SESSIONS_DIR`), or to a JSON file to keep or pass on. Opening one brings back the hosts where they were, the connections, the highlights, the view, the toolbar, the filters, the queries it was built from, and its marks. An opened map shows its own marks, not the shared ones: marking and unmarking change only the map's, and other analysts' don't appear, until you choose *Share* (side panel), which replaces the shared marks with the map's after asking. *Map* or reloading the page goes back to the shared marks. Saving under a name that exists asks first. Maps saved before filters (version 1) open with no marks. |
 | Progress | A request still running after a second shows its elapsed time and a *Cancel* button. Building a case shows each stage, the file being read, and the time left, on the terminal or in the log. |
-| API | The JSON API behind the map is documented as a stable interface in [docs/API.md](docs/API.md). |
+| API | The JSON API behind the map is documented as a stable interface in [docs/API.md](docs/API.md), and for programs (MCP servers, data tools) in OpenAPI 3.1 at `/api/openapi.json`. `/api/config` gives the API version, every limit and the filter vocabulary; `/api/protocols` counts the flows of each protocol in a time range. |
 | Auth | **Mutual TLS.** Connections without a client cert signed by the ThreatBridge CA fail at the TLS handshake. |
 
 ## Post-mortem mode (PCAP and NetFlow files)
@@ -256,7 +256,7 @@ The manual tests, for what CI can't check (how the map looks, other browsers and
 ## Development
 
 ```bash
-pip install -r requirements.txt pytest
+pip install -r requirements.txt -r requirements-test.txt
 python -m pytest
 TB_BACKEND=demo python -m threatbridge --port 5055   # fake data, plain HTTP, localhost only
 TB_PERF=1 python -m pytest -s tests/test_perf.py    # PRF-1/2/3: 1.25M flows, a busy week; about a minute
@@ -290,12 +290,12 @@ Run it again after changing the analysis or the readers, and look at the new sur
 
 | Job | Checks |
 |---|---|
-| Unit tests | pytest on Python 3.11 and 3.12, including reading a real nfcapd file (nfdump from apt), files read in parallel giving the same flows as one at a time, worker processes sharing files, the command line, SOC's Connect API against a stand-in, and the README, `docs/API.md`, env example and SOC actions staying in step with the code |
+| Unit tests | pytest on Python 3.11 and 3.12, including reading a real nfcapd file (nfdump from apt), files read in parallel giving the same flows as one at a time, worker processes sharing files, the command line, SOC's Connect API against a stand-in, and the README, `docs/API.md`, the OpenAPI document, env example and SOC actions staying in step with the code; every API response the tests get is checked against the OpenAPI document |
 | Performance | `TB_PERF=1 tests/test_perf.py`: 1.25M flows built within 5 minutes (PRF-1/2), and the interactive queries timed on a busy case (PRF-3) |
 | Shellcheck | `scripts/`, `deploy/`, `tests/` shell scripts |
 | Security scan | `pip-audit` (known-vulnerable dependencies), `bandit -ll` (medium+ Python security issues) |
 | Docker build + mTLS | Generates a throwaway PKI, builds and starts the container with `deploy/run.sh` (demo backend), then `tests/mtls_check.sh`. No cert and foreign-CA certs must be refused, a valid cert accepted, and writes without the CSRF header rejected. `tests/ui_mtls.mjs` then opens the map in Chromium through the container: refused without a certificate, working with one. |
-| UI tests | Headless Chromium. Every script fails on any unexpected console/CSP error, and screenshots are uploaded as an artifact. `tests/ui_smoke.mjs` (demo backend) checks the toolbar and its URL, loads the map as a SOC action would, Top and Bottom N, the SOC pivots (with the IOC time and the time range), the flows' PCAP links and download, the exclude list and what its entries resolved to, marking hosts compromised, the busy indicator, and the status line's messages. `tests/ui_case.mjs` runs post-mortem mode on a pcap made by `tests/make_case.py`: threat lines, compromised hosts and attack paths (with the Window, the time range and excludes), paths between two hosts with IOC times, and domain excludes. `tests/ui_actions.mjs` covers the rest: errors, slow writes kept in order, the details panel and layout, every menu and how menus close, time-chained hops, the compromised form, attack paths answered out of order, CIDRs, "Show all" paths, paging flows, threat lines cut short, saved maps (shared and as a file, including malformed files and markup in names), clicks after a resize or scroll, Fit and Clear. `tests/ui_marks.mjs` covers marks and filters: marking hosts and single flows, what the marks hide and how it looks, unmarking, typed filters (refused and applied), re-running the map's queries, Apply as filter, Clear, the CSV export, a second analyst seeing marks within seconds, an opened map's own marks and *Share*, and maps saved before filters. The job ends with `tests/js_coverage.mjs`, which lists what of `app.js` no browser test ran. |
+| UI tests | Headless Chromium. Every script fails on any unexpected console/CSP error, and screenshots are uploaded as an artifact. `tests/ui_smoke.mjs` (demo backend) checks the toolbar and its URL, loads the map as a SOC action would, Top and Bottom N, the SOC pivots (with the IOC time and the time range), the flows' PCAP links and download, the exclude list and what its entries resolved to, marking hosts compromised, the busy indicator, and the status line's messages. `tests/ui_case.mjs` runs post-mortem mode on a pcap made by `tests/make_case.py`: threat lines, compromised hosts and attack paths (with the Window, the time range and excludes), paths between two hosts with IOC times, and domain excludes. `tests/ui_actions.mjs` covers the rest: errors, slow writes kept in order, the details panel and layout, every menu and how menus close, time-chained hops, the compromised form, attack paths answered out of order, CIDRs, "Show all" paths, paging flows, threat lines cut short, saved maps (shared and as a file, including malformed files and markup in names), clicks after a resize or scroll, Fit and Clear. `tests/ui_marks.mjs` covers marks and filters: marking hosts and single flows, what the marks hide and how it looks, unmarking, typed filters (refused and applied), re-running the map's queries, Apply as filter, Clear, the CSV export, a second analyst seeing marks within seconds, an opened map's own marks and *Share*, and maps saved before filters. The maps the tests save are checked against the map document format, and the job ends with `tests/js_coverage.mjs`, which lists what of `app.js` no browser test ran. |
 
 CI cannot reach a real Security Onion, so the items under *Things to verify on your install* still need a manual check: tests SO-01 to SO-07 in [docs/TEST_PLAN.md](docs/TEST_PLAN.md).
 
@@ -317,7 +317,7 @@ Layout:
 | `threatbridge/domains.py` | Domain names on the exclude list, resolved from the capture and live DNS |
 | `threatbridge/backends.py` | The data backends behind the map: Elasticsearch, case (files) and demo |
 | `threatbridge/config.py` | Settings from the `TB_*` environment variables |
-| `threatbridge/app.py` | The HTTP API (documented in `docs/API.md`) and the command line |
+| `threatbridge/app.py` | The HTTP API (documented in `docs/API.md` and `threatbridge/openapi.json`) and the command line |
 | `threatbridge/static/` | The Cytoscape.js UI, vendored so it works air-gapped |
 
 ## License

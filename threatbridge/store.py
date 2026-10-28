@@ -190,6 +190,13 @@ class FlowStore:
             f"SELECT f.start_ts FROM flow AS f WHERE f.src = ? AND f.dst = ? AND f.start_ts BETWEEN ? AND ? "  # nosec B608 (_where)
             f"AND ({sql}) ORDER BY f.start_ts", (src, dst, lo, hi, *params))]
 
+    def protocols(self, lo, hi, where=None):
+        """{protocol: how many flows carry it} of the flows that started within [lo, hi]."""
+        sql, params = _where(where)
+        return dict(self._db().execute(
+            f"SELECT f.service, count(*) FROM flow AS f WHERE f.start_ts BETWEEN ? AND ? AND ({sql}) "  # nosec B608 (_where)
+            "GROUP BY f.service", (max(lo, -_FAR), min(hi, _FAR), *params)))
+
     def find(self, src, dst, start, sport, dport, proto):
         """[(row id, start)] of the flows a mark names: `start` as flow lists show it, to the
         millisecond (rounded down)."""

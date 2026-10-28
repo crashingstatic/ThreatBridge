@@ -6,7 +6,7 @@
 //   TB_URL=http://127.0.0.1:5056 node tests/ui_marks.mjs [screenshot-dir]
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { finish, launch } from "./ui_helpers.mjs";
+import { finish, keepMap, launch } from "./ui_helpers.mjs";
 
 const BASE = process.env.TB_URL || "http://127.0.0.1:5056";
 const SHOTS = process.argv[2];
@@ -308,6 +308,7 @@ try {
   await page.waitForSelector("#marked-flow-list li");
   const [v2File] = await Promise.all([page.waitForEvent("download"), page.click("#session-download")]);
   const v2 = JSON.parse(await readFile(await v2File.path(), "utf8"));
+  keepMap("marked-flow", v2);
   assert.deepEqual(v2.marks.flows, [{ src: A, dst: X, start: T1, sport: 50151, dport: 445, proto: "tcp", note: "" }]);
   assert.deepEqual(v2.queries.map((q) => q.op), ["node", "node", "node", "edge", "edge"]);
   // Expansions and removals are re-run too.

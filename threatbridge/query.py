@@ -143,14 +143,13 @@ def peer_fields(cfg, direction):
 
 
 def es_filter(cfg, ip, direction, start, end, exclude, peers=None, scope=None):
-    """The records a query counts. `scope`: a clause they must also match (the analyst's
-    filters, backends.es_scope), or None."""
+    """The records a query counts: the host's (every host's if `ip` is None). `scope`: a clause
+    they must also match (the analyst's filters, backends.es_scope), or None."""
     match_field, peer_field = peer_fields(cfg, direction)
-    filters = [
-        {"term": {match_field: ip}},
-        {"range": {cfg.f_ts: {"gte": fmt_time(start), "lte": fmt_time(end),
-                              "format": "strict_date_optional_time"}}},
-    ]
+    filters = [{"range": {cfg.f_ts: {"gte": fmt_time(start), "lte": fmt_time(end),
+                                     "format": "strict_date_optional_time"}}}]
+    if ip is not None:
+        filters.insert(0, {"term": {match_field: ip}})
     if cfg.datasets:
         filters.append({"terms": {cfg.f_dataset: cfg.datasets}})
     if peers is not None:
@@ -178,11 +177,22 @@ def _detail_aggs(cfg):
         "ports": {"terms": {"field": cfg.f_dport, "size": 5}},
     }
     if cfg.f_service:
-        # The protocols Zeek recognized; records where it named none ("") are told apart by
-        # their transport: ICMP, or unknown.
-        aggs["protocols"] = {"terms": {"field": cfg.f_service, "size": 20, "missing": ""},
-                             "aggs": {"transports": {"terms": {"field": cfg.f_proto, "size": 5}}}}
+        aggs["protocols"] = _protocol_aggs(cfg, 20)
     return aggs
+
+
+def _protocol_aggs(cfg, size):
+    """The protocols Zeek recognized; records where it named none ("") are told apart by their
+    transport: ICMP, or unknown. Without Zeek's names (TB_FIELD_SERVICE=), the transports only."""
+    transports = {"terms": {"field": cfg.f_proto, "size": 5}}
+    if not cfg.f_service:
+        return transports
+    return {"terms": {"field": cfg.f_service, "size": size, "missing": ""}, "aggs": {"transports": transports}}
+
+
+def es_protocols_body(cfg, start, end, scope=None):
+    """How many records name each protocol in [start, end], every host's (D20)."""
+    return _aggs_only(es_filter(cfg, None, "out", start, end, [], scope=scope), {"protocols": _protocol_aggs(cfg, 500)})
 
 
 def es_top_body(cfg, ip, direction, start, end, limit, exclude, scope=None):

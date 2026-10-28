@@ -57,6 +57,19 @@ def case_client(tmp_path, flows, **cfg_args):
                       ExcludeStore(str(tmp_path / "ex.json"))).test_client()
 
 
+def test_how_many_flows_carry_each_protocol(tmp_path):
+    c = case_client(tmp_path, FLOWS)
+    smb, one = {"protocol": "smb", "name": "SMB"}, lambda p, name: {"protocol": p, "name": name, "flows": 1}
+    assert c.get("/api/protocols").get_json() == {"start": None, "end": None, "protocols": [
+        dict(smb, flows=4), one("http", "HTTP"), one("icmp", "ICMP"), one("rdp", "RDP"), one("ssh", "SSH"),
+        one("ssl", "TLS")]}
+    r = c.get("/api/protocols?range_from=2024-05-01T12:00:20Z&range_to=2024-05-01T12:01:00Z").get_json()
+    assert (r["start"], r["end"]) == ("2024-05-01T12:00:20.000Z", "2024-05-01T12:01:00.000Z")
+    assert r["protocols"] == [dict(smb, flows=2), one("icmp", "ICMP"), one("rdp", "RDP"), one("ssh", "SSH")]
+    r = c.post("/api/protocols", json={"filters": ["NOT SMB", "dport < 1000"]}, headers=WRITE).get_json()
+    assert [p["protocol"] for p in r["protocols"]] == ["icmp", "ssh", "ssl"]
+
+
 # ---- the flow store -----------------------------------------------------------------------
 
 def test_store_queries(tmp_path):

@@ -27,11 +27,19 @@ MAX_LENGTH = 500      # characters in one expression
 MAX_FILTERS = 20      # expressions applied at once
 MAX_DEPTH = 50        # nested parentheses and NOTs
 
-FIELDS = ("sport", "dport", "port", "src", "dst", "host", "proto", "packets", "bytes",
-          "duration", "time")
-_NUMBERS = {"sport": 65535, "dport": 65535, "port": 65535, "packets": None, "bytes": None}
+# Each field and the kind of value it takes (D17); port and host test either end (_EITHER).
+KINDS = {"sport": "port", "dport": "port", "port": "port", "src": "address", "dst": "address",
+         "host": "address", "proto": "transport", "packets": "count", "bytes": "count",
+         "duration": "seconds", "time": "time"}
+FIELDS = tuple(KINDS)
+KIND_TEXT = {"port": "a whole number, 0 to 65535", "count": "a whole number",
+             "seconds": "a number of seconds, up to 9 decimals",
+             "address": "an IP address or CIDR: == is inside it, != outside it",
+             "transport": "tcp, udp, icmp or an IP protocol number (0 to 255)",
+             "time": "ISO-8601 (UTC unless it says), or epoch seconds or milliseconds; to the millisecond"}
 _EITHER = {"port": ("sport", "dport"), "host": ("src", "dst")}
 _COMPARISONS = ("==", "!=", "<", ">", "<=", ">=")
+_EQUALITY = ("==", "!=")
 _AND, _OR, _NOT = ("AND", "&&"), ("OR", "||"), ("NOT", "!")
 TRANSPORTS = ("tcp", "udp", "icmp")
 
@@ -46,6 +54,17 @@ _OTHER_SERVICE = re.compile(r"[A-Z0-9][A-Z0-9_-]*")
 _TOKEN = re.compile(r"\s*(?:(&&|\|\||==|!=|<=|>=|[()<>!])|([^\s()!&|=<>]+))")
 _INT = re.compile(r"\d{1,15}")
 _DECIMAL = re.compile(r"\d{1,15}(?:\.\d{1,9})?")
+
+GRAMMAR = """\
+expression  = disjunction ;
+disjunction = conjunction , { ( "OR" | "||" ) , conjunction } ;
+conjunction = negation , { ( "AND" | "&&" ) , negation } ;
+negation    = ( "NOT" | "!" ) , negation | term ;
+term        = "(" , disjunction , ")" | comparison | protocol ;
+comparison  = field , [ "==" | "!=" | "<" | ">" | "<=" | ">=" ] , value ;   (* none: == *)
+value       = number | number , "-" , number | address | transport | time ;
+protocol    = a name in "protocols", or another Zeek service in capitals ;
+"""
 
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
@@ -192,57 +211,78 @@ class _Parser:
         if _OTHER_SERVICE.fullmatch(word) and re.search("[A-Z]", word):
             return ("service", word, [low])         # another service Zeek names, in capitals
         raise FilterError(f"{where}: unknown term {word!r}: write a protocol as the map shows "
-                          "it (e.g. SMB, TLS, Kerberos), or a field (sport, dport, port, src, dst, "
-                          "host, proto, packets, bytes, duration, time)")
+                          f"it (e.g. SMB, TLS, Kerberos), or a field ({', '.join(FIELDS)})")
 
 
 def _number(text, field):
-    """An int (or, for duration, a float) for `field`, checked against its range."""
-    pattern = _DECIMAL if field == "duration" else _INT
-    if not pattern.fullmatch(text):
-        what = "a number of seconds" if field == "duration" else "a whole number"
-        raise FilterError(f"{field} takes {what}, not {text!r}")
-    value = float(text) if field == "duration" else int(text)
-    top = _NUMBERS.get(field)
-    if top is not None and value > top:
-        raise FilterError(f"{field} is at most {top}, not {text}")
+    """An int (a float for seconds) for `field`, checked against its kind's range."""
+    seconds = KINDS[field] == "seconds"
+    if not (_DECIMAL if seconds else _INT).fullmatch(text):
+        raise FilterError(f"{field} takes {'a number of seconds' if seconds else 'a whole number'}, not {text!r}")
+    value = float(text) if seconds else int(text)
+    if KINDS[field] == "port" and value > 65535:
+        raise FilterError(f"{field} is at most 65535, not {text}")
     return value
 
 
-def _value(field, op, text):
-    """The value of a comparison, checked: a number or (lo, hi) range, an IP network, a
-    transport, or a time in epoch milliseconds: a branch per kind of field."""
-    if field in ("src", "dst", "host"):
-        if op not in ("==", "!="):
-            raise FilterError(f"{field} takes == or != (inside or outside an address or CIDR)")
-        if "%" in text:
-            raise FilterError(f"{field}: no IPv6 scopes")
-        try:
-            return ipaddress.ip_network(text, strict=False)
-        except ValueError:
-            raise FilterError(f"{field} takes an IP address or CIDR, not {text!r}")
-    if field == "proto":
-        if op not in ("==", "!="):
-            raise FilterError("proto takes == or !=")
-        if text in TRANSPORTS or (_INT.fullmatch(text) and int(text) <= 255):
-            return text
-        raise FilterError(f"proto is tcp, udp, icmp or an IP protocol number, not {text!r}")
-    if field == "time":                         # ISO-8601, or epoch seconds or milliseconds
-        try:
-            if re.match(r"\d{4}-\d\d-\d\d|\d{10,13}(\.\d+)?$", text):
-                return (parse_time(text) - _EPOCH) // timedelta(milliseconds=1)
-        except (ValidationError, OverflowError):
-            pass
-        raise FilterError(f"time takes an ISO-8601 time (UTC unless it says), not {text!r}")
+def _network_value(field, op, text):
+    if op not in _EQUALITY:
+        raise FilterError(f"{field} takes == or != (inside or outside an address or CIDR)")
+    if "%" in text:
+        raise FilterError(f"{field}: no IPv6 scopes")
+    try:
+        return ipaddress.ip_network(text, strict=False)
+    except ValueError:
+        raise FilterError(f"{field} takes an IP address or CIDR, not {text!r}")
+
+
+def _transport_value(field, op, text):
+    if op not in _EQUALITY:
+        raise FilterError("proto takes == or !=")
+    if text in TRANSPORTS or (_INT.fullmatch(text) and int(text) <= 255):
+        return text
+    raise FilterError(f"proto is tcp, udp, icmp or an IP protocol number, not {text!r}")
+
+
+def _time_value(field, op, text):
+    """Epoch milliseconds, from ISO-8601 or epoch seconds or milliseconds."""
+    try:
+        if re.match(r"\d{4}-\d\d-\d\d|\d{10,13}(\.\d+)?$", text):
+            return (parse_time(text) - _EPOCH) // timedelta(milliseconds=1)
+    except (ValidationError, OverflowError):
+        pass
+    raise FilterError(f"time takes an ISO-8601 time (UTC unless it says), not {text!r}")
+
+
+def _numeric_value(field, op, text):
+    """A number, or a (lo, hi) range, which takes == or != (inside or outside)."""
     if "-" in text.strip("-"):
         lo, hi = text.split("-", 1)
-        if op not in ("==", "!="):
+        if op not in _EQUALITY:
             raise FilterError(f"a range takes == or != (inside or outside), not {op}")
         lo, hi = _number(lo, field), _number(hi, field)
         if lo > hi:
             raise FilterError(f"the range {text} is backwards")
         return (lo, hi)
     return _number(text, field)
+
+
+_VALUES = {"address": _network_value, "transport": _transport_value, "time": _time_value}
+
+
+def _value(field, op, text):
+    """The value of a comparison, checked as its field's kind takes it."""
+    return _VALUES.get(KINDS[field], _numeric_value)(field, op, text)
+
+
+def vocabulary():
+    """The filter language, for clients (D20): each field with its kind, the comparisons it
+    takes, whether it takes a range a-b and whether it tests either end; what each kind is;
+    the operators; the protocol names; and the grammar."""
+    fields = [{"name": f, "kind": k, "comparisons": list(_EQUALITY if k in ("address", "transport") else _COMPARISONS),
+               "ranges": k in ("port", "count", "seconds"), "either_end": f in _EITHER} for f, k in KINDS.items()]
+    return {"fields": fields, "kinds": KIND_TEXT, "operators": {"not": list(_NOT), "and": list(_AND), "or": list(_OR)},
+            "protocols": sorted(NAMES), "grammar": GRAMMAR}
 
 
 # ---- the tests a comparison stands for ------------------------------------------------------

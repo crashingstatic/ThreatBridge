@@ -317,7 +317,7 @@ def test_backend_failures_reach_the_client_as_502(tmp_path):
     c = create_app(cfg, be).test_client()
     r = c.get("/api/neighbors?ip=10.0.0.5&ts=2024-05-01T12:00:00Z")
     assert r.status_code == 502 and r.get_json() == {"error": "Elasticsearch returned HTTP 503"}
-    assert c.get("/healthz").get_json() == {"status": "ok", "backend": "elastic"}
+    assert c.get("/healthz").get_json() == {"status": "ok", "backend": "elastic", "api_version": "1.0"}
 
 
 # ---- demo backend, and choosing a backend -------------------------------------------------
@@ -353,3 +353,50 @@ def test_make_backend():
     assert isinstance(es, ElasticBackend) and es.cfg.es_timeout == 9
     with pytest.raises(ValueError, match="unknown backend 'nope'"):
         backends.make_backend(Config(backend="nope"))
+
+
+# ---- protocols in the data (D20) ----------------------------------------------------------
+
+def test_elastic_counts_the_flows_of_each_protocol():
+    be = ElasticBackend(Config())
+    be.session = RecordingES({"aggregations": {"protocols": {"buckets": [
+        {"key": "smb,ntlm", "doc_count": 5}, {"key": "smb", "doc_count": 2}, {"key": "krb_tcp", "doc_count": 1},
+        {"key": "", "doc_count": 4, "transports": {"buckets": [{"key": "icmp", "doc_count": 3},
+                                                               {"key": "tcp", "doc_count": 1}]}}]}}})
+    start, end, counts = be.protocols(T0, T1)
+    assert (start, end, counts) == (T0, T1, {"smb": 7, "ntlm": 5, "krb": 1, "icmp": 3, "unknown": 1})
+    body = be.session.calls[0]["json"]
+    assert body["size"] == 0 and body["aggs"]["protocols"]["terms"]["field"] == "network.protocol"
+    filters = body["query"]["bool"]["filter"]
+    assert {"range": {"@timestamp": {"gte": "2024-05-01T12:00:00.000Z", "lte": "2024-05-01T13:00:00.000Z",
+                                     "format": "strict_date_optional_time"}}} in filters
+    assert not any("term" in f for f in filters)                     # every host, not one
+    assert body["query"]["bool"]["must_not"] == [{"match": {"connection.state": "REJ"}}]
+
+
+def test_elastic_protocol_counts_default_to_the_last_max_window():
+    be = ElasticBackend(Config(max_window="7d"))
+    be.session = RecordingES({"aggregations": {}})
+    start, end, counts = be.protocols(None, None)
+    assert counts == {} and end - start == timedelta(days=7)
+    assert abs((end - datetime.now(timezone.utc)).total_seconds()) < 60
+    assert be.protocols(T0, None)[0] == T0                            # from then until now
+    assert be.protocols(None, T1)[:2] == (T1 - timedelta(days=7), T1)
+
+
+def test_elastic_protocol_counts_without_zeek_service_names():
+    be = ElasticBackend(Config(f_service=""))
+    be.session = RecordingES({"aggregations": {"protocols": {"buckets": [
+        {"key": "icmp", "doc_count": 3}, {"key": "tcp", "doc_count": 4}, {"key": "udp", "doc_count": 1}]}}})
+    assert be.protocols(T0, T1)[2] == {"icmp": 3, "unknown": 5}
+    assert be.session.calls[0]["json"]["aggs"]["protocols"]["terms"]["field"] == "network.transport"
+
+
+def test_demo_protocol_counts_follow_the_filter():
+    be = DemoBackend(Config(backend="demo"))
+    start, end, counts = be.protocols(T0, T1)
+    assert (start, end) == (T0, T1) and set(counts) == {protocols.name("tcp", 0, p, 0) for p in DemoBackend.PORTS}
+    assert all(n > 0 for n in counts.values()) and be.protocols(T0, T1)[2] == counts       # deterministic
+    from threatbridge import filters
+    from threatbridge.backends import Scope
+    assert set(be.protocols(T0, T1, Scope(filters.parse("SMB OR dport 22")))[2]) == {"smb", "ssh"}

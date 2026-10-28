@@ -1,0 +1,1709 @@
+{
+ "openapi": "3.1.0",
+ "info": {
+  "title": "ThreatBridge",
+  "version": "1.0",
+  "description": "The HTTP API of ThreatBridge's map (see docs/API.md for the conventions: times, windows, the time range, filters, POST queries and errors). Every response here lists every field it has."
+ },
+ "security": [{"mutualTLS": []}],
+ "paths": {
+  "/api/compromised": {
+   "get": {
+    "summary": "The shared marks (D15)",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MarksView"}}}
+     },
+     "500": {"$ref": "#/components/responses/E500"}
+    }
+   },
+   "post": {
+    "summary": "Mark a host compromised",
+    "parameters": [{"$ref": "#/components/parameters/write"}],
+    "requestBody": {
+     "required": true,
+     "content": {"application/json": {"schema": {"$ref": "#/components/schemas/HostMarkIn"}}}
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MarksView"}}}
+     },
+     "400": {"$ref": "#/components/responses/E400"},
+     "403": {"$ref": "#/components/responses/E403"},
+     "500": {"$ref": "#/components/responses/E500"}
+    }
+   },
+   "delete": {
+    "summary": "Unmark a host, with the marked flows it is an end of",
+    "parameters": [{"$ref": "#/components/parameters/write"}],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {"ip": {"type": "string"}},
+        "required": ["ip"],
+        "additionalProperties": false
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MarksView"}}}
+     },
+     "400": {"$ref": "#/components/responses/E400"},
+     "403": {"$ref": "#/components/responses/E403"},
+     "500": {"$ref": "#/components/responses/E500"}
+    }
+   },
+   "put": {
+    "summary": "Replace every shared mark (Share)",
+    "parameters": [{"$ref": "#/components/parameters/write"}],
+    "requestBody": {
+     "required": true,
+     "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Marks"}}}
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MarksView"}}}
+     },
+     "400": {"$ref": "#/components/responses/E400"},
+     "403": {"$ref": "#/components/responses/E403"},
+     "500": {"$ref": "#/components/responses/E500"}
+    }
+   }
+  },
+  "/api/compromised/flows": {
+   "post": {
+    "summary": "Mark a flow compromised",
+    "parameters": [{"$ref": "#/components/parameters/write"}],
+    "requestBody": {
+     "required": true,
+     "content": {"application/json": {"schema": {"$ref": "#/components/schemas/FlowMarkIn"}}}
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MarksView"}}}
+     },
+     "400": {"$ref": "#/components/responses/E400"},
+     "403": {"$ref": "#/components/responses/E403"},
+     "500": {"$ref": "#/components/responses/E500"}
+    }
+   },
+   "delete": {
+    "summary": "Unmark a flow",
+    "parameters": [{"$ref": "#/components/parameters/write"}],
+    "requestBody": {
+     "required": true,
+     "content": {"application/json": {"schema": {"$ref": "#/components/schemas/FlowMarkIn"}}}
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MarksView"}}}
+     },
+     "400": {"$ref": "#/components/responses/E400"},
+     "403": {"$ref": "#/components/responses/E403"},
+     "500": {"$ref": "#/components/responses/E500"}
+    }
+   }
+  },
+  "/api/config": {
+   "get": {
+    "summary": "What a client needs to know about this server (D20)",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Config"}}}
+     }
+    }
+   }
+  },
+  "/api/edge": {
+   "get": {
+    "summary": "One connection, as it would be drawn",
+    "parameters": [
+     {"name": "src", "in": "query", "description": "the initiator", "schema": {"type": "string"}, "required": true},
+     {"name": "dst", "in": "query", "description": "the responder", "schema": {"type": "string"}, "required": true},
+     {"$ref": "#/components/parameters/from"},
+     {"$ref": "#/components/parameters/to"},
+     {"$ref": "#/components/parameters/range_from"},
+     {"$ref": "#/components/parameters/range_to"},
+     {"$ref": "#/components/parameters/filter"}
+    ],
+    "responses": {
+     "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Edge"}}}},
+     "400": {"$ref": "#/components/responses/E400"},
+     "500": {"$ref": "#/components/responses/E500"},
+     "502": {"$ref": "#/components/responses/E502"}
+    }
+   },
+   "post": {
+    "summary": "One connection, as it would be drawn (as a POST, with filters and marks in the body)",
+    "parameters": [{"$ref": "#/components/parameters/write"}],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "src": {"type": ["string", "number"]},
+         "dst": {"type": ["string", "number"]},
+         "from": {"type": ["string", "number"]},
+         "to": {"type": ["string", "number"]},
+         "range_from": {"type": ["string", "number"]},
+         "range_to": {"type": ["string", "number"]},
+         "filters": {"$ref": "#/components/schemas/Filters"},
+         "marks": {"$ref": "#/components/schemas/Marks"}
+        },
+        "required": [],
+        "additionalProperties": false
+       }
+      }
+     },
+     "description": "The query's parameters as a JSON object, plus `filters` and `marks`."
+    },
+    "responses": {
+     "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Edge"}}}},
+     "400": {"$ref": "#/components/responses/E400"},
+     "403": {"$ref": "#/components/responses/E403"},
+     "500": {"$ref": "#/components/responses/E500"},
+     "502": {"$ref": "#/components/responses/E502"}
+    }
+   }
+  },
+  "/api/excludes": {
+   "get": {
+    "summary": "The shared exclude list",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Excludes"}}}
+     },
+     "500": {"$ref": "#/components/responses/E500"}
+    }
+   },
+   "post": {
+    "summary": "Add an IP, CIDR or domain name",
+    "parameters": [{"$ref": "#/components/parameters/write"}],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {"entry": {"type": "string"}},
+        "required": ["entry"],
+        "additionalProperties": false
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Excludes"}}}
+     },
+     "400": {"$ref": "#/components/responses/E400"},
+     "403": {"$ref": "#/components/responses/E403"},
+     "500": {"$ref": "#/components/responses/E500"}
+    }
+   },
+   "delete": {
+    "summary": "Remove one",
+    "parameters": [{"$ref": "#/components/parameters/write"}],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {"entry": {"type": "string"}},
+        "required": ["entry"],
+        "additionalProperties": false
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Excludes"}}}
+     },
+     "400": {"$ref": "#/components/responses/E400"},
+     "403": {"$ref": "#/components/responses/E403"},
+     "500": {"$ref": "#/components/responses/E500"}
+    }
+   }
+  },
+  "/api/export": {
+   "post": {
+    "summary": "The marked hosts, and the marked and suspect flows on the drawn connections",
+    "parameters": [{"$ref": "#/components/parameters/write"}],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "edges": {"type": "array", "items": {"$ref": "#/components/schemas/DrawnEdge"}},
+         "window": {"type": ["string", "number"]},
+         "hops": {"type": ["string", "number"]},
+         "range_from": {"type": ["string", "number"]},
+         "range_to": {"type": ["string", "number"]},
+         "filters": {"$ref": "#/components/schemas/Filters"},
+         "marks": {"$ref": "#/components/schemas/Marks"}
+        },
+        "required": ["edges"],
+        "additionalProperties": false
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Export"}}}
+     },
+     "400": {"$ref": "#/components/responses/E400"},
+     "403": {"$ref": "#/components/responses/E403"},
+     "500": {"$ref": "#/components/responses/E500"},
+     "502": {"$ref": "#/components/responses/E502"}
+    }
+   }
+  },
+  "/api/filter": {
+   "get": {
+    "summary": "Check one filter expression",
+    "parameters": [
+     {
+      "name": "filter",
+      "in": "query",
+      "description": "the expression",
+      "schema": {"type": "string"},
+      "required": true
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Filter"}}}
+     },
+     "400": {"$ref": "#/components/responses/E400"}
+    }
+   }
+  },
+  "/api/flows": {
+   "get": {
+    "summary": "One page of a connection's flows, oldest first",
+    "parameters": [
+     {"name": "src", "in": "query", "description": "the initiator", "schema": {"type": "string"}, "required": true},
+     {"name": "dst", "in": "query", "description": "the responder", "schema": {"type": "string"}, "required": true},
+     {"$ref": "#/components/parameters/from"},
+     {"$ref": "#/components/parameters/to"},
+     {"name": "offset", "in": "query", "description": "default 0", "schema": {"type": "integer"}},
+     {
+      "name": "limit",
+      "in": "query",
+      "description": "1 to limits.flow_page, default 50",
+      "schema": {"type": "integer"}
+     },
+     {"$ref": "#/components/parameters/range_from"},
+     {"$ref": "#/components/parameters/range_to"},
+     {"$ref": "#/components/parameters/filter"}
+    ],
+    "responses": {
+     "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Flows"}}}},
+     "400": {"$ref": "#/components/responses/E400"},
+     "500": {"$ref": "#/components/responses/E500"},
+     "502": {"$ref": "#/components/responses/E502"}
+    }
+   },
+   "post": {
+    "summary": "One page of a connection's flows, oldest first (as a POST, with filters and marks in the body)",
+    "parameters": [{"$ref": "#/components/parameters/write"}],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "src": {"type": ["string", "number"]},
+         "dst": {"type": ["string", "number"]},
+         "from": {"type": ["string", "number"]},
+         "to": {"type": ["string", "number"]},
+         "offset": {"type": ["string", "number"]},
+         "limit": {"type": ["string", "number"]},
+         "range_from": {"type": ["string", "number"]},
+         "range_to": {"type": ["string", "number"]},
+         "filters": {"$ref": "#/components/schemas/Filters"},
+         "marks": {"$ref": "#/components/schemas/Marks"},
+         "within": {
+          "type": "array",
+          "items": {"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 2}
+         }
+        },
+        "required": [],
+        "additionalProperties": false
+       }
+      }
+     },
+     "description": "The query's parameters as a JSON object, plus `filters` and `marks`."
+    },
+    "responses": {
+     "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Flows"}}}},
+     "400": {"$ref": "#/components/responses/E400"},
+     "403": {"$ref": "#/components/responses/E403"},
+     "500": {"$ref": "#/components/responses/E500"},
+     "502": {"$ref": "#/components/responses/E502"}
+    }
+   }
+  },
+  "/api/neighbors": {
+   "get": {
+    "summary": "One hop: who connected to a host before the anchor, or who it connected to after",
+    "parameters": [
+     {"name": "ip", "in": "query", "description": "the host", "schema": {"type": "string"}, "required": true},
+     {"name": "direction", "in": "query", "description": "in (default) or out", "schema": {"enum": ["in", "out"]}},
+     {
+      "name": "ts",
+      "in": "query",
+      "description": "the anchor; blank: now",
+      "schema": {"type": "string", "description": "ISO-8601 (UTC unless it says), or epoch seconds or milliseconds"}
+     },
+     {"$ref": "#/components/parameters/window"},
+     {"name": "limit", "in": "query", "description": "peers to return, 1 to max_limit", "schema": {"type": "integer"}},
+     {
+      "name": "order",
+      "in": "query",
+      "description": "top (most connections) or bottom (rarest)",
+      "schema": {"enum": ["top", "bottom"]}
+     },
+     {"$ref": "#/components/parameters/range_from"},
+     {"$ref": "#/components/parameters/range_to"},
+     {"$ref": "#/components/parameters/filter"}
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Neighbors"}}}
+     },
+     "400": {"$ref": "#/components/responses/E400"},
+     "500": {"$ref": "#/components/responses/E500"},
+     "502": {"$ref": "#/components/responses/E502"}
+    }
+   },
+   "post": {
+    "summary": "One hop: who connected to a host before the anchor, or who it connected to after (as a POST, with filters and marks in the body)",
+    "parameters": [{"$ref": "#/components/parameters/write"}],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "ip": {"type": ["string", "number"]},
+         "direction": {"type": ["string", "number"]},
+         "ts": {"type": ["string", "number"]},
+         "window": {"type": ["string", "number"]},
+         "limit": {"type": ["string", "number"]},
+         "order": {"type": ["string", "number"]},
+         "range_from": {"type": ["string", "number"]},
+         "range_to": {"type": ["string", "number"]},
+         "filters": {"$ref": "#/components/schemas/Filters"},
+         "marks": {"$ref": "#/components/schemas/Marks"}
+        },
+        "required": [],
+        "additionalProperties": false
+       }
+      }
+     },
+     "description": "The query's parameters as a JSON object, plus `filters` and `marks`."
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Neighbors"}}}
+     },
+     "400": {"$ref": "#/components/responses/E400"},
+     "403": {"$ref": "#/components/responses/E403"},
+     "500": {"$ref": "#/components/responses/E500"},
+     "502": {"$ref": "#/components/responses/E502"}
+    }
+   }
+  },
+  "/api/openapi.json": {
+   "get": {
+    "summary": "This document",
+    "responses": {"200": {"description": "OK", "content": {"application/json": {"schema": {"type": "object"}}}}}
+   }
+  },
+  "/api/paths": {
+   "get": {
+    "summary": "Every time-respecting path between two hosts, or between the marked hosts (case backend)",
+    "parameters": [
+     {
+      "name": "src",
+      "in": "query",
+      "description": "from this host; with neither src nor dst, the paths between the marked hosts",
+      "schema": {"type": "string"}
+     },
+     {"name": "dst", "in": "query", "description": "to this host", "schema": {"type": "string"}},
+     {
+      "name": "src_time",
+      "in": "query",
+      "description": "src's IOC time",
+      "schema": {"type": "string", "description": "ISO-8601 (UTC unless it says), or epoch seconds or milliseconds"}
+     },
+     {
+      "name": "dst_time",
+      "in": "query",
+      "description": "dst's IOC time",
+      "schema": {"type": "string", "description": "ISO-8601 (UTC unless it says), or epoch seconds or milliseconds"}
+     },
+     {"$ref": "#/components/parameters/window"},
+     {"$ref": "#/components/parameters/hops"},
+     {"$ref": "#/components/parameters/range_from"},
+     {"$ref": "#/components/parameters/range_to"},
+     {"$ref": "#/components/parameters/filter"}
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "oneOf": [{"$ref": "#/components/schemas/PathsBetween"}, {"$ref": "#/components/schemas/AttackPaths"}]
+        }
+       }
+      }
+     },
+     "400": {"$ref": "#/components/responses/E400"},
+     "500": {"$ref": "#/components/responses/E500"},
+     "501": {"$ref": "#/components/responses/E501"}
+    }
+   },
+   "post": {
+    "summary": "Every time-respecting path between two hosts, or between the marked hosts (case backend) (as a POST, with filters and marks in the body)",
+    "parameters": [{"$ref": "#/components/parameters/write"}],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "src": {"type": ["string", "number"]},
+         "dst": {"type": ["string", "number"]},
+         "src_time": {"type": ["string", "number"]},
+         "dst_time": {"type": ["string", "number"]},
+         "window": {"type": ["string", "number"]},
+         "hops": {"type": ["string", "number"]},
+         "range_from": {"type": ["string", "number"]},
+         "range_to": {"type": ["string", "number"]},
+         "filters": {"$ref": "#/components/schemas/Filters"},
+         "marks": {"$ref": "#/components/schemas/Marks"}
+        },
+        "required": [],
+        "additionalProperties": false
+       }
+      }
+     },
+     "description": "The query's parameters as a JSON object, plus `filters` and `marks`."
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "oneOf": [{"$ref": "#/components/schemas/PathsBetween"}, {"$ref": "#/components/schemas/AttackPaths"}]
+        }
+       }
+      }
+     },
+     "400": {"$ref": "#/components/responses/E400"},
+     "403": {"$ref": "#/components/responses/E403"},
+     "500": {"$ref": "#/components/responses/E500"},
+     "501": {"$ref": "#/components/responses/E501"}
+    }
+   }
+  },
+  "/api/pcap": {
+   "post": {
+    "summary": "A Security Onion flow's packets, from its sensor through SOC",
+    "parameters": [{"$ref": "#/components/parameters/write"}],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {"id": {"type": "string"}, "time": {"type": "string"}},
+        "required": ["id", "time"],
+        "additionalProperties": false
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "the packets",
+      "content": {
+       "application/vnd.tcpdump.pcap": {
+        "schema": {"type": "string", "contentMediaType": "application/vnd.tcpdump.pcap"}
+       }
+      }
+     },
+     "400": {"$ref": "#/components/responses/E400"},
+     "403": {"$ref": "#/components/responses/E403"},
+     "501": {"$ref": "#/components/responses/E501"},
+     "502": {"$ref": "#/components/responses/E502"}
+    }
+   }
+  },
+  "/api/pivot": {
+   "get": {
+    "summary": "A Security Onion Dashboards query and link",
+    "parameters": [
+     {"name": "a", "in": "query", "description": "a host", "schema": {"type": "string"}, "required": true},
+     {
+      "name": "b",
+      "in": "query",
+      "description": "the other host: every conversation between the two",
+      "schema": {"type": "string"}
+     },
+     {
+      "name": "until",
+      "in": "query",
+      "description": "the IOC time: the query ends there",
+      "schema": {"type": "string", "description": "ISO-8601 (UTC unless it says), or epoch seconds or milliseconds"}
+     },
+     {"$ref": "#/components/parameters/range_from"},
+     {"$ref": "#/components/parameters/range_to"}
+    ],
+    "responses": {
+     "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Pivot"}}}},
+     "400": {"$ref": "#/components/responses/E400"}
+    }
+   }
+  },
+  "/api/protocols": {
+   "get": {
+    "summary": "How many flows carry each protocol in a time range (D20)",
+    "parameters": [
+     {"$ref": "#/components/parameters/range_from"},
+     {"$ref": "#/components/parameters/range_to"},
+     {"$ref": "#/components/parameters/filter"}
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProtocolCounts"}}}
+     },
+     "400": {"$ref": "#/components/responses/E400"},
+     "500": {"$ref": "#/components/responses/E500"},
+     "502": {"$ref": "#/components/responses/E502"}
+    }
+   },
+   "post": {
+    "summary": "How many flows carry each protocol in a time range (D20) (as a POST, with filters and marks in the body)",
+    "parameters": [{"$ref": "#/components/parameters/write"}],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "range_from": {"type": ["string", "number"]},
+         "range_to": {"type": ["string", "number"]},
+         "filters": {"$ref": "#/components/schemas/Filters"},
+         "marks": {"$ref": "#/components/schemas/Marks"}
+        },
+        "required": [],
+        "additionalProperties": false
+       }
+      }
+     },
+     "description": "The query's parameters as a JSON object, plus `filters` and `marks`."
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProtocolCounts"}}}
+     },
+     "400": {"$ref": "#/components/responses/E400"},
+     "403": {"$ref": "#/components/responses/E403"},
+     "500": {"$ref": "#/components/responses/E500"},
+     "502": {"$ref": "#/components/responses/E502"}
+    }
+   }
+  },
+  "/api/resolve": {
+   "get": {
+    "summary": "Check an IP and settle the anchor time a map starts from",
+    "parameters": [
+     {"name": "ip", "in": "query", "description": "an IP address", "schema": {"type": "string"}, "required": true},
+     {
+      "name": "ts",
+      "in": "query",
+      "description": "the IOC time; blank: see direction",
+      "schema": {"type": "string", "description": "ISO-8601 (UTC unless it says), or epoch seconds or milliseconds"}
+     },
+     {
+      "name": "direction",
+      "in": "query",
+      "description": "with no ts: inbound looks back from the end of what can be shown, outbound forward from its start",
+      "schema": {"enum": ["in", "out"]}
+     },
+     {"$ref": "#/components/parameters/range_from"},
+     {"$ref": "#/components/parameters/range_to"}
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Resolved"}}}
+     },
+     "400": {"$ref": "#/components/responses/E400"}
+    }
+   }
+  },
+  "/api/sessions": {
+   "get": {
+    "summary": "The saved maps, or with name the one saved under it",
+    "parameters": [{"name": "name", "in": "query", "description": "a saved map's name", "schema": {"type": "string"}}],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {"oneOf": [{"$ref": "#/components/schemas/Sessions"}, {"$ref": "#/components/schemas/SavedMap"}]}
+       }
+      }
+     },
+     "400": {"$ref": "#/components/responses/E400"},
+     "404": {"$ref": "#/components/responses/E404"},
+     "500": {"$ref": "#/components/responses/E500"}
+    }
+   },
+   "post": {
+    "summary": "Save a map for every analyst",
+    "parameters": [{"$ref": "#/components/parameters/write"}],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "name": {"type": "string"},
+         "map": {"type": "object", "description": "a MapDocument"},
+         "overwrite": {"type": "boolean"}
+        },
+        "required": ["name", "map"],
+        "additionalProperties": false
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SaveResult"}}}
+     },
+     "400": {"$ref": "#/components/responses/E400"},
+     "403": {"$ref": "#/components/responses/E403"},
+     "409": {"$ref": "#/components/responses/E409"},
+     "500": {"$ref": "#/components/responses/E500"}
+    }
+   },
+   "delete": {
+    "summary": "Delete a saved map",
+    "parameters": [{"$ref": "#/components/parameters/write"}],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {"name": {"type": "string"}},
+        "required": ["name"],
+        "additionalProperties": false
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Sessions"}}}
+     },
+     "400": {"$ref": "#/components/responses/E400"},
+     "403": {"$ref": "#/components/responses/E403"},
+     "404": {"$ref": "#/components/responses/E404"},
+     "500": {"$ref": "#/components/responses/E500"}
+    }
+   }
+  },
+  "/api/suspect": {
+   "post": {
+    "summary": "What the marks keep of the drawn connections (D16, case backend)",
+    "parameters": [{"$ref": "#/components/parameters/write"}],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "edges": {"type": "array", "items": {"$ref": "#/components/schemas/DrawnEdge"}},
+         "window": {"type": ["string", "number"]},
+         "hops": {"type": ["string", "number"]},
+         "range_from": {"type": ["string", "number"]},
+         "range_to": {"type": ["string", "number"]},
+         "filters": {"$ref": "#/components/schemas/Filters"},
+         "marks": {"$ref": "#/components/schemas/Marks"}
+        },
+        "required": ["edges"],
+        "additionalProperties": false
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Suspects"}}}
+     },
+     "400": {"$ref": "#/components/responses/E400"},
+     "403": {"$ref": "#/components/responses/E403"},
+     "500": {"$ref": "#/components/responses/E500"},
+     "501": {"$ref": "#/components/responses/E501"}
+    }
+   }
+  },
+  "/api/threatline": {
+   "get": {
+    "summary": "Hosts and hops time-consistent with a conversation (case backend)",
+    "parameters": [
+     {
+      "name": "a",
+      "in": "query",
+      "description": "the conversation's initiator",
+      "schema": {"type": "string"},
+      "required": true
+     },
+     {"name": "b", "in": "query", "description": "its responder", "schema": {"type": "string"}, "required": true},
+     {"$ref": "#/components/parameters/from"},
+     {"$ref": "#/components/parameters/to"},
+     {"$ref": "#/components/parameters/window"},
+     {"$ref": "#/components/parameters/hops"},
+     {"$ref": "#/components/parameters/range_from"},
+     {"$ref": "#/components/parameters/range_to"},
+     {"$ref": "#/components/parameters/filter"}
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ThreatLine"}}}
+     },
+     "400": {"$ref": "#/components/responses/E400"},
+     "500": {"$ref": "#/components/responses/E500"},
+     "501": {"$ref": "#/components/responses/E501"}
+    }
+   },
+   "post": {
+    "summary": "Hosts and hops time-consistent with a conversation (case backend) (as a POST, with filters and marks in the body)",
+    "parameters": [{"$ref": "#/components/parameters/write"}],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "a": {"type": ["string", "number"]},
+         "b": {"type": ["string", "number"]},
+         "from": {"type": ["string", "number"]},
+         "to": {"type": ["string", "number"]},
+         "window": {"type": ["string", "number"]},
+         "hops": {"type": ["string", "number"]},
+         "range_from": {"type": ["string", "number"]},
+         "range_to": {"type": ["string", "number"]},
+         "filters": {"$ref": "#/components/schemas/Filters"},
+         "marks": {"$ref": "#/components/schemas/Marks"}
+        },
+        "required": [],
+        "additionalProperties": false
+       }
+      }
+     },
+     "description": "The query's parameters as a JSON object, plus `filters` and `marks`."
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ThreatLine"}}}
+     },
+     "400": {"$ref": "#/components/responses/E400"},
+     "403": {"$ref": "#/components/responses/E403"},
+     "500": {"$ref": "#/components/responses/E500"},
+     "501": {"$ref": "#/components/responses/E501"}
+    }
+   }
+  },
+  "/healthz": {
+   "get": {
+    "summary": "Is the service up",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Health"}}}
+     }
+    }
+   }
+  }
+ },
+ "components": {
+  "securitySchemes": {
+   "mutualTLS": {
+    "type": "mutualTLS",
+    "description": "a client certificate signed by the ThreatBridge CA (python -m threatbridge serves plain HTTP locally)"
+   }
+  },
+  "parameters": {
+   "write": {
+    "name": "X-ThreatBridge",
+    "in": "header",
+    "required": true,
+    "schema": {"const": "1"},
+    "description": "required on every write: browsers can't add it to a cross-site request"
+   },
+   "range_from": {
+    "name": "range_from",
+    "in": "query",
+    "description": "start of the analyst's time range: only flows that started in it count",
+    "schema": {"type": "string", "description": "ISO-8601 (UTC unless it says), or epoch seconds or milliseconds"}
+   },
+   "range_to": {
+    "name": "range_to",
+    "in": "query",
+    "description": "end of the analyst's time range",
+    "schema": {"type": "string", "description": "ISO-8601 (UTC unless it says), or epoch seconds or milliseconds"}
+   },
+   "filter": {
+    "name": "filter",
+    "in": "query",
+    "schema": {"type": "array", "items": {"type": "string"}},
+    "style": "form",
+    "explode": true,
+    "description": "a filter expression (D17); repeat for several, combined with AND"
+   },
+   "window": {
+    "name": "window",
+    "in": "query",
+    "description": "a number and a unit (s, m, h, d, w), at most max_window; default default_window",
+    "schema": {"type": "string", "pattern": "^\\s*\\d+\\s*[smhdwSMHDW]\\s*$"}
+   },
+   "hops": {
+    "name": "hops",
+    "in": "query",
+    "description": "hop limit, 1 to limits.hops; default threat_hops",
+    "schema": {"type": "integer"}
+   },
+   "from": {
+    "name": "from",
+    "in": "query",
+    "description": "the start of the first flow wanted",
+    "schema": {"type": "string", "description": "ISO-8601 (UTC unless it says), or epoch seconds or milliseconds"},
+    "required": true
+   },
+   "to": {
+    "name": "to",
+    "in": "query",
+    "description": "the start of the last; default from",
+    "schema": {"type": "string", "description": "ISO-8601 (UTC unless it says), or epoch seconds or milliseconds"}
+   }
+  },
+  "responses": {
+   "E400": {
+    "description": "a parameter or the body is invalid; the message says which",
+    "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+   },
+   "E403": {
+    "description": "a write without the X-ThreatBridge header",
+    "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+   },
+   "E404": {
+    "description": "no such saved map",
+    "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+   },
+   "E409": {
+    "description": "a map is already saved under that name",
+    "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+   },
+   "E500": {
+    "description": "a shared file (exclude list, marks, saved map) is not valid JSON; it is left for someone to fix",
+    "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+   },
+   "E501": {
+    "description": "this needs another backend (threat lines, paths and suspect connections: the case backend; PCAP downloads: Security Onion with a SOC API client)",
+    "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+   },
+   "E502": {
+    "description": "Elasticsearch or SOC failed or answered unexpectedly",
+    "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+   }
+  },
+  "schemas": {
+   "Time": {
+    "type": "string",
+    "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+    "description": "ISO-8601 UTC, to the millisecond"
+   },
+   "TimeOrNull": {"type": ["string", "null"], "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"},
+   "Protocols": {
+    "type": "array",
+    "items": {"type": "string"},
+    "description": "Zeek's service names (`ssl` for TLS, ...), plus `icmp` and `unknown`"
+   },
+   "Ports": {"type": "array", "items": {"type": "integer"}, "description": "the most used destination ports, up to 5"},
+   "Filters": {
+    "type": "array",
+    "items": {"type": "string"},
+    "description": "filter expressions (D17), combined with AND"
+   },
+   "Error": {
+    "type": "object",
+    "properties": {"error": {"type": "string"}},
+    "required": ["error"],
+    "additionalProperties": false
+   },
+   "Health": {
+    "type": "object",
+    "properties": {
+     "status": {"const": "ok"},
+     "backend": {"enum": ["elastic", "case", "demo"]},
+     "api_version": {"type": "string"}
+    },
+    "required": ["status", "backend", "api_version"],
+    "additionalProperties": false
+   },
+   "Limits": {
+    "type": "object",
+    "properties": {
+     "hops": {"type": "integer"},
+     "threat_line_hosts": {"type": "integer"},
+     "paths": {"type": "integer"},
+     "paths_per_pair": {"type": "integer"},
+     "flow_page": {"type": "integer"},
+     "connection_flows": {"type": ["integer", "null"]},
+     "filter_length": {"type": "integer"},
+     "filter_depth": {"type": "integer"},
+     "edges": {"type": "integer"},
+     "within": {"type": "integer"},
+     "export_flows": {"type": "integer"},
+     "marks": {"type": "integer"},
+     "note": {"type": "integer"},
+     "saved_maps": {"type": "integer"},
+     "map_bytes": {"type": "integer"},
+     "map_name": {"type": "integer"}
+    },
+    "required": [
+     "hops",
+     "threat_line_hosts",
+     "paths",
+     "paths_per_pair",
+     "flow_page",
+     "connection_flows",
+     "filter_length",
+     "filter_depth",
+     "edges",
+     "within",
+     "export_flows",
+     "marks",
+     "note",
+     "saved_maps",
+     "map_bytes",
+     "map_name"
+    ],
+    "additionalProperties": false
+   },
+   "FilterVocabulary": {
+    "type": "object",
+    "properties": {
+     "fields": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "name": {"type": "string"},
+        "kind": {"enum": ["port", "count", "seconds", "address", "transport", "time"]},
+        "comparisons": {"type": "array", "items": {"enum": ["==", "!=", "<", ">", "<=", ">="]}},
+        "ranges": {"type": "boolean"},
+        "either_end": {"type": "boolean"}
+       },
+       "required": ["name", "kind", "comparisons", "ranges", "either_end"],
+       "additionalProperties": false
+      }
+     },
+     "kinds": {
+      "type": "object",
+      "properties": {
+       "port": {"type": "string"},
+       "count": {"type": "string"},
+       "seconds": {"type": "string"},
+       "address": {"type": "string"},
+       "transport": {"type": "string"},
+       "time": {"type": "string"}
+      },
+      "required": ["port", "count", "seconds", "address", "transport", "time"],
+      "additionalProperties": false
+     },
+     "operators": {
+      "type": "object",
+      "properties": {
+       "not": {"type": "array", "items": {"type": "string"}},
+       "and": {"type": "array", "items": {"type": "string"}},
+       "or": {"type": "array", "items": {"type": "string"}}
+      },
+      "required": ["not", "and", "or"],
+      "additionalProperties": false
+     },
+     "protocols": {"type": "array", "items": {"type": "string"}},
+     "grammar": {"type": "string"}
+    },
+    "required": ["fields", "kinds", "operators", "protocols", "grammar"],
+    "additionalProperties": false
+   },
+   "CaseSummary": {
+    "type": "object",
+    "properties": {
+     "flows": {"type": "integer"},
+     "hosts": {"type": "integer"},
+     "start": {"$ref": "#/components/schemas/TimeOrNull"},
+     "end": {"$ref": "#/components/schemas/TimeOrNull"},
+     "dns_names": {"type": "integer"}
+    },
+    "required": ["flows", "hosts", "start", "end", "dns_names"],
+    "additionalProperties": false
+   },
+   "Config": {
+    "type": "object",
+    "properties": {
+     "api_version": {"type": "string"},
+     "limits": {"$ref": "#/components/schemas/Limits"},
+     "filter": {"$ref": "#/components/schemas/FilterVocabulary"},
+     "default_window": {"type": "string"},
+     "max_window": {"type": "string"},
+     "default_limit": {"type": "integer"},
+     "max_limit": {"type": "integer"},
+     "directions": {
+      "type": "object",
+      "properties": {"in": {"type": "string"}, "out": {"type": "string"}},
+      "required": ["in", "out"],
+      "additionalProperties": false
+     },
+     "orders": {"type": "array", "items": {"type": "string"}},
+     "backend": {"enum": ["elastic", "case", "demo"]},
+     "rare_scan_cap": {"type": "integer"},
+     "soc_pivots": {"type": "boolean"},
+     "analysis": {"type": "boolean"},
+     "threat_hops": {"type": "integer"},
+     "suspects": {"type": "boolean"},
+     "marks_poll": {"type": "integer"},
+     "protocol_names": {"type": "object", "additionalProperties": {"type": "string"}},
+     "max_filters": {"type": "integer"},
+     "live_dns": {"type": "boolean"},
+     "pcap_download": {"type": "boolean"},
+     "case": {"oneOf": [{"$ref": "#/components/schemas/CaseSummary"}, {"type": "null"}]}
+    },
+    "required": [
+     "api_version",
+     "limits",
+     "filter",
+     "default_window",
+     "max_window",
+     "default_limit",
+     "max_limit",
+     "directions",
+     "orders",
+     "backend",
+     "rare_scan_cap",
+     "soc_pivots",
+     "analysis",
+     "threat_hops",
+     "suspects",
+     "marks_poll",
+     "protocol_names",
+     "max_filters",
+     "live_dns",
+     "pcap_download",
+     "case"
+    ],
+    "additionalProperties": false
+   },
+   "ProtocolCounts": {
+    "type": "object",
+    "properties": {
+     "start": {"$ref": "#/components/schemas/TimeOrNull"},
+     "end": {"$ref": "#/components/schemas/TimeOrNull"},
+     "protocols": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {"protocol": {"type": "string"}, "name": {"type": "string"}, "flows": {"type": "integer"}},
+       "required": ["protocol", "name", "flows"],
+       "additionalProperties": false
+      }
+     }
+    },
+    "required": ["start", "end", "protocols"],
+    "additionalProperties": false
+   },
+   "Resolved": {
+    "type": "object",
+    "properties": {"ip": {"type": "string"}, "anchor": {"$ref": "#/components/schemas/Time"}},
+    "required": ["ip", "anchor"],
+    "additionalProperties": false
+   },
+   "Peer": {
+    "type": "object",
+    "properties": {
+     "peer": {"type": "string"},
+     "count": {"type": "integer"},
+     "first_seen": {"$ref": "#/components/schemas/TimeOrNull"},
+     "last_seen": {"$ref": "#/components/schemas/TimeOrNull"},
+     "ports": {"$ref": "#/components/schemas/Ports"},
+     "protocols": {"$ref": "#/components/schemas/Protocols"}
+    },
+    "required": ["peer", "count", "first_seen", "last_seen", "ports", "protocols"],
+    "additionalProperties": false
+   },
+   "Neighbors": {
+    "type": "object",
+    "properties": {
+     "ip": {"type": "string"},
+     "direction": {"enum": ["in", "out"]},
+     "order": {"enum": ["top", "bottom"]},
+     "anchor": {"$ref": "#/components/schemas/Time"},
+     "start": {"$ref": "#/components/schemas/Time"},
+     "end": {"$ref": "#/components/schemas/Time"},
+     "peers": {"type": "array", "items": {"$ref": "#/components/schemas/Peer"}},
+     "distinct_peers": {"type": ["integer", "null"]},
+     "truncated": {"type": "boolean"}
+    },
+    "required": ["ip", "direction", "order", "anchor", "start", "end", "peers", "distinct_peers", "truncated"],
+    "additionalProperties": false
+   },
+   "Flow": {
+    "type": "object",
+    "properties": {
+     "start": {"$ref": "#/components/schemas/Time"},
+     "duration": {"type": ["number", "null"]},
+     "sport": {"type": ["integer", "null"]},
+     "dport": {"type": ["integer", "null"]},
+     "proto": {"type": ["string", "null"]},
+     "packets": {"type": ["integer", "null"]},
+     "bytes": {"type": ["integer", "null"]},
+     "protocols": {"$ref": "#/components/schemas/Protocols"},
+     "id": {"type": "string"},
+     "soc_pcap": {"type": "string"}
+    },
+    "required": ["start", "duration", "sport", "dport", "proto", "packets", "bytes", "protocols"],
+    "additionalProperties": false
+   },
+   "Flows": {
+    "type": "object",
+    "properties": {
+     "src": {"type": "string"},
+     "dst": {"type": "string"},
+     "start": {"$ref": "#/components/schemas/Time"},
+     "end": {"$ref": "#/components/schemas/Time"},
+     "offset": {"type": "integer"},
+     "total": {"type": "integer"},
+     "flows": {"type": "array", "items": {"$ref": "#/components/schemas/Flow"}}
+    },
+    "required": ["src", "dst", "start", "end", "offset", "total", "flows"],
+    "additionalProperties": false
+   },
+   "EdgeFields": {
+    "type": "object",
+    "properties": {
+     "source": {"type": "string"},
+     "target": {"type": "string"},
+     "count": {"type": "integer"},
+     "first_seen": {"$ref": "#/components/schemas/TimeOrNull"},
+     "last_seen": {"$ref": "#/components/schemas/TimeOrNull"},
+     "ports": {"$ref": "#/components/schemas/Ports"},
+     "protocols": {"$ref": "#/components/schemas/Protocols"}
+    },
+    "required": ["source", "target", "count", "first_seen", "last_seen", "ports", "protocols"]
+   },
+   "Edge": {"allOf": [{"$ref": "#/components/schemas/EdgeFields"}], "unevaluatedProperties": false},
+   "Filter": {
+    "type": "object",
+    "properties": {"filter": {"type": "string"}},
+    "required": ["filter"],
+    "additionalProperties": false
+   },
+   "Pivot": {
+    "type": "object",
+    "properties": {"query": {"type": "string"}, "url": {"type": "string"}},
+    "required": ["query", "url"],
+    "additionalProperties": false
+   },
+   "LineNode": {
+    "type": "object",
+    "properties": {
+     "id": {"type": "string"},
+     "role": {"enum": ["selected", "up", "down", "both"]},
+     "time": {"$ref": "#/components/schemas/Time"},
+     "hops": {"type": "integer"}
+    },
+    "required": ["id", "role", "time", "hops"],
+    "additionalProperties": false
+   },
+   "LineEdge": {
+    "allOf": [
+     {"$ref": "#/components/schemas/EdgeFields"},
+     {"type": "object", "required": ["role"], "properties": {"role": {"enum": ["selected", "up", "down"]}}}
+    ],
+    "unevaluatedProperties": false
+   },
+   "ThreatLine": {
+    "type": "object",
+    "properties": {
+     "a": {"type": "string"},
+     "b": {"type": "string"},
+     "nodes": {"type": "array", "items": {"$ref": "#/components/schemas/LineNode"}},
+     "edges": {"type": "array", "items": {"$ref": "#/components/schemas/LineEdge"}},
+     "truncated": {"type": "boolean"}
+    },
+    "required": ["a", "b", "nodes", "edges", "truncated"],
+    "additionalProperties": false
+   },
+   "Hop": {
+    "type": "object",
+    "properties": {
+     "source": {"type": "string"},
+     "target": {"type": "string"},
+     "start": {"$ref": "#/components/schemas/Time"},
+     "sport": {"type": ["integer", "null"]},
+     "dport": {"type": ["integer", "null"]},
+     "proto": {"type": "string"},
+     "packets": {"type": ["integer", "null"]},
+     "bytes": {"type": ["integer", "null"]},
+     "protocols": {"$ref": "#/components/schemas/Protocols"}
+    },
+    "required": ["source", "target", "start", "sport", "dport", "proto", "packets", "bytes", "protocols"],
+    "additionalProperties": false
+   },
+   "Path": {
+    "type": "object",
+    "properties": {"hops": {"type": "array", "items": {"$ref": "#/components/schemas/Hop"}}},
+    "required": ["hops"],
+    "additionalProperties": false
+   },
+   "PathsBetween": {
+    "type": "object",
+    "properties": {
+     "src": {"type": "string"},
+     "dst": {"type": "string"},
+     "paths": {"type": "array", "items": {"$ref": "#/components/schemas/Path"}},
+     "truncated": {"type": "boolean"}
+    },
+    "required": ["src", "dst", "paths", "truncated"],
+    "additionalProperties": false
+   },
+   "AttackPaths": {
+    "type": "object",
+    "properties": {
+     "pairs": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "from": {"type": "string"},
+        "to": {"type": "string"},
+        "paths": {"type": "array", "items": {"$ref": "#/components/schemas/Path"}},
+        "truncated": {"type": "boolean"}
+       },
+       "required": ["from", "to", "paths", "truncated"],
+       "additionalProperties": false
+      }
+     }
+    },
+    "required": ["pairs"],
+    "additionalProperties": false
+   },
+   "DrawnEdge": {
+    "type": "object",
+    "properties": {
+     "source": {"type": "string"},
+     "target": {"type": "string"},
+     "from": {"type": "string"},
+     "to": {"type": "string"}
+    },
+    "required": ["source", "target", "from"],
+    "additionalProperties": false
+   },
+   "SuspectEdge": {
+    "oneOf": [
+     {
+      "type": "object",
+      "properties": {
+       "source": {"type": "string"},
+       "target": {"type": "string"},
+       "status": {"enum": ["unaffected", "hidden"]}
+      },
+      "required": ["source", "target", "status"],
+      "additionalProperties": false
+     },
+     {
+      "allOf": [
+       {"$ref": "#/components/schemas/EdgeFields"},
+       {
+        "type": "object",
+        "required": ["status", "marked", "suspect", "within"],
+        "properties": {
+         "status": {"const": "kept"},
+         "marked": {"type": "integer"},
+         "suspect": {"type": "integer"},
+         "within": {
+          "type": "array",
+          "items": {"type": "array", "items": {"$ref": "#/components/schemas/Time"}, "minItems": 2, "maxItems": 2}
+         }
+        }
+       }
+      ],
+      "unevaluatedProperties": false
+     }
+    ]
+   },
+   "Suspects": {
+    "type": "object",
+    "properties": {"edges": {"type": "array", "items": {"$ref": "#/components/schemas/SuspectEdge"}}},
+    "required": ["edges"],
+    "additionalProperties": false
+   },
+   "ExportHost": {
+    "type": "object",
+    "properties": {
+     "ip": {"type": "string"},
+     "time": {"$ref": "#/components/schemas/TimeOrNull"},
+     "note": {"type": "string"},
+     "count": {"type": "integer"},
+     "marked": {"enum": ["direct", "flows", "both"]}
+    },
+    "required": ["ip", "time", "note", "count", "marked"],
+    "additionalProperties": false
+   },
+   "ExportFlow": {
+    "type": "object",
+    "properties": {
+     "start": {"$ref": "#/components/schemas/Time"},
+     "end": {"$ref": "#/components/schemas/TimeOrNull"},
+     "src": {"type": "string"},
+     "sport": {"type": ["integer", "null"]},
+     "dst": {"type": "string"},
+     "dport": {"type": ["integer", "null"]},
+     "proto": {"type": ["string", "null"]},
+     "protocols": {"$ref": "#/components/schemas/Protocols"},
+     "packets": {"type": ["integer", "null"]},
+     "bytes": {"type": ["integer", "null"]},
+     "status": {"enum": ["marked", "suspect"]}
+    },
+    "required": ["start", "end", "src", "sport", "dst", "dport", "proto", "protocols", "packets", "bytes", "status"],
+    "additionalProperties": false
+   },
+   "Export": {
+    "type": "object",
+    "properties": {
+     "hosts": {"type": "array", "items": {"$ref": "#/components/schemas/ExportHost"}},
+     "flows": {"type": "array", "items": {"$ref": "#/components/schemas/ExportFlow"}},
+     "truncated": {"type": "boolean"}
+    },
+    "required": ["hosts", "flows", "truncated"],
+    "additionalProperties": false
+   },
+   "Resolution": {
+    "type": "object",
+    "properties": {
+     "capture": {"type": "array", "items": {"type": "string"}},
+     "dns": {"type": "array", "items": {"type": "string"}},
+     "error": {"type": ["string", "null"]}
+    },
+    "required": ["capture", "dns", "error"],
+    "additionalProperties": false
+   },
+   "Excludes": {
+    "type": "object",
+    "properties": {
+     "entries": {"type": "array", "items": {"type": "string"}},
+     "resolved": {"type": "object", "additionalProperties": {"$ref": "#/components/schemas/Resolution"}},
+     "entry": {"type": "string"}
+    },
+    "required": ["entries", "resolved"],
+    "additionalProperties": false
+   },
+   "HostMark": {
+    "type": "object",
+    "properties": {
+     "ip": {"type": "string"},
+     "time": {"$ref": "#/components/schemas/TimeOrNull"},
+     "note": {"type": "string"}
+    },
+    "required": ["ip", "time", "note"],
+    "additionalProperties": false
+   },
+   "FlowMark": {
+    "type": "object",
+    "properties": {
+     "src": {"type": "string"},
+     "dst": {"type": "string"},
+     "start": {"$ref": "#/components/schemas/Time"},
+     "sport": {"type": "integer"},
+     "dport": {"type": "integer"},
+     "proto": {"type": "string"},
+     "note": {"type": "string"}
+    },
+    "required": ["src", "dst", "start", "sport", "dport", "proto", "note"],
+    "additionalProperties": false
+   },
+   "HostMarkIn": {
+    "type": "object",
+    "properties": {
+     "ip": {"type": "string"},
+     "time": {"type": ["string", "number", "null"]},
+     "note": {"type": ["string", "null"]}
+    },
+    "required": ["ip"],
+    "additionalProperties": false,
+    "description": "time: ISO-8601 or epoch; null or blank: unknown"
+   },
+   "FlowMarkIn": {
+    "type": "object",
+    "properties": {
+     "src": {"type": "string"},
+     "dst": {"type": "string"},
+     "start": {"type": ["string", "number"]},
+     "sport": {"type": "integer"},
+     "dport": {"type": "integer"},
+     "proto": {"type": "string"},
+     "note": {"type": ["string", "null"]}
+    },
+    "required": ["src", "dst", "start", "sport", "dport", "proto"],
+    "additionalProperties": false,
+    "description": "start as the flow list shows it, to the millisecond"
+   },
+   "Marks": {
+    "type": "object",
+    "properties": {
+     "hosts": {"type": "array", "items": {"$ref": "#/components/schemas/HostMarkIn"}},
+     "flows": {"type": "array", "items": {"$ref": "#/components/schemas/FlowMarkIn"}}
+    },
+    "required": [],
+    "additionalProperties": false,
+    "description": "marks to use instead of the shared ones (an opened map's own, D19)"
+   },
+   "MarkedHost": {
+    "type": "object",
+    "properties": {
+     "ip": {"type": "string"},
+     "time": {"$ref": "#/components/schemas/TimeOrNull"},
+     "note": {"type": "string"},
+     "direct": {"type": "boolean"},
+     "count": {"type": "integer"}
+    },
+    "required": ["ip", "time", "note", "direct", "count"],
+    "additionalProperties": false
+   },
+   "MarksView": {
+    "type": "object",
+    "properties": {
+     "hosts": {"type": "array", "items": {"$ref": "#/components/schemas/MarkedHost"}},
+     "marked": {"type": "array", "items": {"$ref": "#/components/schemas/HostMark"}},
+     "flows": {"type": "array", "items": {"$ref": "#/components/schemas/FlowMark"}},
+     "version": {"type": "string"}
+    },
+    "required": ["hosts", "marked", "flows", "version"],
+    "additionalProperties": false
+   },
+   "Session": {
+    "type": "object",
+    "properties": {"name": {"type": "string"}, "saved": {"$ref": "#/components/schemas/Time"}},
+    "required": ["name", "saved"],
+    "additionalProperties": false
+   },
+   "Sessions": {
+    "type": "object",
+    "properties": {"sessions": {"type": "array", "items": {"$ref": "#/components/schemas/Session"}}},
+    "required": ["sessions"],
+    "additionalProperties": false
+   },
+   "SavedMap": {
+    "type": "object",
+    "properties": {
+     "name": {"type": "string"},
+     "saved": {"$ref": "#/components/schemas/Time"},
+     "map": {"type": "object", "description": "as it was saved; the map saves a MapDocument"}
+    },
+    "required": ["name", "saved", "map"],
+    "additionalProperties": false
+   },
+   "SaveResult": {
+    "type": "object",
+    "properties": {
+     "name": {"type": "string"},
+     "saved": {"$ref": "#/components/schemas/Time"},
+     "sessions": {"type": "array", "items": {"$ref": "#/components/schemas/Session"}}
+    },
+    "required": ["name", "saved", "sessions"],
+    "additionalProperties": false
+   },
+   "MapDocument": {
+    "type": "object",
+    "properties": {
+     "version": {"enum": [1, 2]},
+     "iocTime": {"type": ["string", "null"]},
+     "settings": {
+      "type": "object",
+      "propertyNames": {
+       "enum": [
+        "ip",
+        "ts",
+        "direction",
+        "window",
+        "range-from",
+        "range-to",
+        "order",
+        "limit",
+        "route-src",
+        "route-src-time",
+        "route-dst",
+        "route-dst-time"
+       ]
+      },
+      "additionalProperties": {"type": "string"},
+      "description": "the toolbar and the paths form: each field's text, by its element id"
+     },
+     "nodes": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "position": {
+         "type": "object",
+         "properties": {"x": {"type": "number"}, "y": {"type": "number"}},
+         "required": ["x", "y"],
+         "additionalProperties": false
+        },
+        "classes": {"type": "array", "items": {"type": "string"}},
+        "anchor": {"type": "string"},
+        "root": {"type": "boolean"},
+        "depth": {"type": "number"},
+        "expandedIn": {"type": "boolean"},
+        "expandedOut": {"type": "boolean"}
+       },
+       "required": ["id"],
+       "additionalProperties": false
+      }
+     },
+     "edges": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "source": {"type": "string"},
+        "target": {"type": "string"},
+        "direction": {"enum": ["in", "out"]},
+        "count": {"type": "number"},
+        "ports": {"type": "array", "items": {"type": "integer"}},
+        "protocols": {"type": "array", "items": {"type": "string"}},
+        "classes": {"type": "array", "items": {"type": "string"}},
+        "first_seen": {"type": "string"},
+        "last_seen": {"type": "string"}
+       },
+       "required": ["source", "target"],
+       "additionalProperties": false
+      }
+     },
+     "view": {
+      "type": "object",
+      "properties": {
+       "zoom": {"type": "number"},
+       "pan": {
+        "type": "object",
+        "properties": {"x": {"type": "number"}, "y": {"type": "number"}},
+        "required": ["x", "y"],
+        "additionalProperties": false
+       }
+      },
+      "required": ["zoom", "pan"],
+      "additionalProperties": false
+     },
+     "filters": {"type": "array", "items": {"type": "string"}},
+     "marks": {"$ref": "#/components/schemas/Marks"},
+     "queries": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "op": {"enum": ["root", "expand", "threatline", "routes", "remove", "node", "edge"]},
+        "ip": {"type": "string"},
+        "ts": {"type": "string"},
+        "direction": {"type": "string"},
+        "window": {"type": "string"},
+        "limit": {"type": "string"},
+        "order": {"type": "string"},
+        "a": {"type": "string"},
+        "b": {"type": "string"},
+        "from": {"type": "string"},
+        "to": {"type": "string"},
+        "src": {"type": "string"},
+        "dst": {"type": "string"},
+        "src_time": {"type": "string"},
+        "dst_time": {"type": "string"},
+        "id": {"type": "string"},
+        "source": {"type": "string"},
+        "target": {"type": "string"},
+        "anchor": {"type": ["string", "null"]},
+        "data": {
+         "type": "object",
+         "properties": {
+          "anchor": {"type": "string"},
+          "root": {"type": "boolean"},
+          "depth": {"type": "number"},
+          "expandedIn": {"type": "boolean"},
+          "expandedOut": {"type": "boolean"}
+         },
+         "required": [],
+         "additionalProperties": false
+        }
+       },
+       "required": ["op"],
+       "additionalProperties": false
+      }
+     }
+    },
+    "required": ["version", "nodes", "edges"],
+    "additionalProperties": false,
+    "description": "A saved map (D19, D22): its hosts where they were, its connections with their counts as drawn, the highlights (classes), the view, the toolbar, the filters, its own marks and the queries it was built from, in order. Version 1 (before filters and marks) has no filters, marks or queries. The map reads only what it understands and leaves out what is malformed."
+   }
+  }
+ }
+}

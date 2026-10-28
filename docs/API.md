@@ -1,12 +1,20 @@
 # ThreatBridge HTTP API
 
-The map uses this API, and scripts can too. Every endpoint below is a stable interface (EXT-S2):
-its paths, parameters and the fields listed stay as described. New endpoints, parameters and
-response fields can be added; anything removed or changed in meaning is listed here first, with
-the release that changes it.
+The map uses this API, and scripts, MCP servers and data tools can too. API version **1.0**.
+Every endpoint below is a stable interface (EXT-S2): its paths, parameters and the fields listed
+stay as described. New endpoints, parameters and response fields can be added, and raise the
+minor version; anything removed or changed in meaning raises the major version and is listed here
+first. `api_version` in `GET /healthz` and `GET /api/config` says which version a server speaks.
+
+The same API is described for programs in OpenAPI 3.1 (D21): [`threatbridge/openapi.json`](../threatbridge/openapi.json),
+also served at `GET /api/openapi.json`, with a schema for every response that lists every field.
+Tests check every response the API tests get against it.
 
 ## Changes
 
+- **1.0: self-description (D20-D22).** `api_version` in `GET /healthz` and `GET /api/config`;
+  `limits` and `filter` (the filter vocabulary) in `GET /api/config`; `GET`/`POST /api/protocols`;
+  `GET /api/openapi.json`; the saved-map format documented below (*The map document*).
 - **Marks on flows (D15).** `GET /api/compromised` (and every answer about marks) lists in `hosts`
   every marked host, those marked through a marked flow too, each with `direct` and `count`, and
   `time` is when the host was reached: the earliest of its own mark's time and its marked flows'
@@ -55,14 +63,17 @@ the release that changes it.
 
 ### `GET /healthz`
 
-`{"status": "ok", "backend": "elastic" | "case" | "demo"}`.
+`{"status": "ok", "backend": "elastic" | "case" | "demo", "api_version": "1.0"}`.
 
 ### `GET /api/config`
 
-What the map needs to know about this server:
+What a client needs to know about this server:
 
 | Field | |
 |---|---|
+| `api_version` | the API version this server speaks, "MAJOR.MINOR" |
+| `limits` | every other bound a request is held to (below) |
+| `filter` | the filter vocabulary (below) |
 | `backend` | `elastic`, `case` or `demo` |
 | `default_window`, `max_window` | `TB_WINDOW`, `TB_MAX_WINDOW` |
 | `default_limit`, `max_limit` | peers per expansion: `TB_LIMIT`, `TB_MAX_LIMIT` |
@@ -79,6 +90,35 @@ What the map needs to know about this server:
 | `live_dns` | `TB_LIVE_DNS` |
 | `pcap_download` | whether `POST /api/pcap` is available |
 | `case` | case backend: `{"flows", "hosts", "start", "end", "dns_names"}` (`start`/`end` null for an empty case); otherwise null |
+
+`limits`, besides `max_window`, `max_limit` and `max_filters`: `hops` (20), `threat_line_hosts`
+(`TB_THREAT_MAX_HOSTS`), `paths` (`TB_MAX_PATHS`), `paths_per_pair` (10, attack paths without
+`src`/`dst`), `flow_page` (500), `connection_flows` (Security Onion: 10,000 flows of a connection
+can be listed; null otherwise), `filter_length` (500 characters), `filter_depth` (50 nested
+parentheses or NOTs), `edges` (20,000 drawn connections sent), `within` (100,000 intervals),
+`export_flows` (200,000), `marks` (10,000 per list), `note` (500 characters), `saved_maps` (500),
+`map_bytes` (2 MB) and `map_name` (100 characters).
+
+`filter`, taken from the parser itself: `fields`, each `{"name", "kind", "comparisons", "ranges",
+"either_end"}` (`ranges`: takes `a-b`; `either_end`: `port` and `host` test both ends); `kinds`,
+what each kind of value is; `operators` (`{"not": ["NOT", "!"], "and": [...], "or": [...]}`);
+`protocols`, the names as the map shows them (any other Zeek service in capitals works too); and
+`grammar`:
+
+```
+expression  = disjunction ;
+disjunction = conjunction , { ( "OR" | "||" ) , conjunction } ;
+conjunction = negation , { ( "AND" | "&&" ) , negation } ;
+negation    = ( "NOT" | "!" ) , negation | term ;
+term        = "(" , disjunction , ")" | comparison | protocol ;
+comparison  = field , [ "==" | "!=" | "<" | ">" | "<=" | ">=" ] , value ;   (* none: == *)
+value       = number | number , "-" , number | address | transport | time ;
+protocol    = a name in "protocols", or another Zeek service in capitals ;
+```
+
+### `GET /api/openapi.json`
+
+This API in OpenAPI 3.1 (see the top of this page).
 
 ## Mapping connections
 
@@ -168,8 +208,15 @@ connection's marked and suspect flows (case backend).
 ### `GET /api/edge`
 
 One connection, as it would be drawn: `{"source", "target", "count", "first_seen", "last_seen",
-"ports", "protocols"}` of the flows `src` → `dst` that started in [`from`, `to`] (parameters as for
-`/api/flows`, and filters). With none, `count` is 0 and the times null.
+"ports", "protocols"}` of the flows `src` → `dst` that started in [`from`, `to`], and pass the
+filters. With none, `count` is 0 and the times null.
+
+| Parameter | |
+|---|---|
+| `src`, `dst` | required: initiator and responder |
+| `from` | required: the start of the first flow |
+| `to` | the start of the last one; default `from` |
+| `range_from`, `range_to` | the time range |
 
 ### `POST /api/edge`
 
@@ -177,9 +224,36 @@ One connection, as it would be drawn: `{"source", "target", "count", "first_seen
 
 ### `GET /api/filter`
 
-Checks one filter expression (`filter`): `{"filter": "(SMB OR TLS) AND sport == 42000"}`, its
-canonical form, or a 400 saying what is wrong and where, e.g. `"at character 1: protocol names
-are case-sensitive: write SMB"`. The grammar is D17 in the requirements and in the README.
+Checks one filter expression: `{"filter": "(SMB OR TLS) AND sport == 42000"}`, its canonical
+form, or a 400 saying what is wrong and where, e.g. `"at character 1: protocol names are
+case-sensitive: write SMB"`. The language is D17 in the requirements; `filter` in
+`GET /api/config` gives its vocabulary and grammar.
+
+| Parameter | |
+|---|---|
+| `filter` | required: the expression |
+
+### `GET /api/protocols`
+
+How many flows carry each protocol, of those that started in the time range and pass the filters
+(D20), most first. Without a time range: a case's whole span; Security Onion's last
+`TB_MAX_WINDOW`. A Security Onion record naming several protocols counts for each.
+
+| Parameter | |
+|---|---|
+| `range_from`, `range_to` | the time range |
+
+```json
+{"start": null, "end": null,
+ "protocols": [{"protocol": "smb", "name": "SMB", "flows": 4}, {"protocol": "ssl", "name": "TLS", "flows": 1}]}
+```
+
+`start` and `end` are the range counted (null: open). `protocol` is Zeek's name, as in other
+answers; `name` is what a filter writes.
+
+### `POST /api/protocols`
+
+`GET /api/protocols` with its parameters in a JSON object, plus `filters` and `marks`.
 
 ### `GET /api/pivot`
 
@@ -347,15 +421,40 @@ Body `{"src", "dst", "start", "sport", "dport", "proto"}`: unmarks that flow. An
 ### `GET /api/sessions`
 
 `{"sessions": [{"name": "incident 42", "saved": "2024-05-02T09:00:00.000Z"}]}`, the most recently
-saved first. With `?name=`: that map, `{"name", "saved", "map"}`, or 404.
+saved first. With `name`: that map, `{"name", "saved", "map"}`, or 404.
+
+| Parameter | |
+|---|---|
+| `name` | a saved map's name |
 
 ### `POST /api/sessions`
 
 Body `{"name", "map", "overwrite" (optional)}`. `name`: 1 to 100 printable characters. `map`: a
-JSON object of at most 2 MB, kept as it is (the map's own format, `version` 2; 1 before filters
-and marks were saved with it). An existing name
-is a 409 unless `overwrite` is `true`. Answers `{"name", "saved", "sessions"}`.
+JSON object of at most 2 MB, kept as it is: the server doesn't check it against the map document
+format below. An existing name is a 409 unless `overwrite` is `true`. Answers
+`{"name", "saved", "sessions"}`.
 
 ### `DELETE /api/sessions`
 
 Body `{"name"}`. Answers `{"sessions"}`, or 404.
+
+### The map document
+
+What the map saves (D19, D22), here and in a file: a stable format, `MapDocument` in the OpenAPI
+document. Version 2:
+
+| Field | |
+|---|---|
+| `version` | `2` (`1`: saved before filters and marks; it has no `filters`, `marks` or `queries`) |
+| `iocTime` | the IOC host's anchor, or null |
+| `settings` | the toolbar's and the paths form's fields, each as text, by element id: `ip`, `ts`, `direction`, `window`, `range-from`, `range-to`, `order`, `limit`, `route-src`, `route-src-time`, `route-dst`, `route-dst-time` |
+| `nodes` | hosts: `{"id", "position": {"x", "y"}, "classes", "anchor", "root", "depth", "expandedIn", "expandedOut"}`; only `id` is required |
+| `edges` | connections as drawn: `{"source", "target", "direction" ("in"/"out"), "count", "ports", "protocols", "classes", "first_seen", "last_seen"}`; `source` and `target` are required |
+| `view` | `{"zoom", "pan": {"x", "y"}}` |
+| `filters` | the filter expressions applied |
+| `marks` | the map's own marks, as `PUT /api/compromised` takes them |
+| `queries` | the queries the map was built from, in order, to run again with other filters: `{"op", ...}`, `op` one of `root`, `expand`, `threatline`, `routes`, `remove` (and, converted from version 1, `node` and `edge`), with the fields that query took |
+
+`classes` are the highlights (`up`, `down`, `line-selected`, `faded`, `attack`, `route`) and other
+classes, which opening a map ignores. Opening a map reads only what it understands and leaves out
+what is malformed, so another tool may write less than this.

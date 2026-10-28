@@ -5,8 +5,9 @@ import os
 
 from flask import Flask, Response, g, jsonify, request, send_from_directory
 
-from . import filters, protocols
-from .backends import BackendError, Scope, make_backend
+from . import compromised as compromised_mod
+from . import filters, protocols, sessions as sessions_mod
+from .backends import ES_MAX_RESULTS, BackendError, Scope, make_backend
 from .compromised import CompromisedStore, parse_marks, reached
 from .config import Config
 from .domains import DomainResolver
@@ -20,7 +21,9 @@ from .sessions import Conflict, NotFound, SessionStore
 from .soc import SocClient
 
 log = logging.getLogger("threatbridge")
+API_VERSION = "1.0"   # D20: the minor number goes up for additions, the major for breaking changes
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+OPENAPI = os.path.join(os.path.dirname(__file__), "openapi.json")   # D21
 MAX_HOPS = 20
 MAX_FLOW_PAGE = 500
 PATHS_PER_PAIR = 10  # attack paths between compromised hosts: a preview per pair
@@ -223,12 +226,22 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
 
     @app.get("/healthz")
     def healthz():
-        return jsonify(status="ok", backend=cfg.backend)
+        return jsonify(status="ok", backend=cfg.backend, api_version=API_VERSION)
+
+    # Every bound a request is held to, besides max_window, max_limit and max_filters (D20).
+    limits = {"hops": MAX_HOPS, "threat_line_hosts": cfg.threat_max_hosts, "paths": cfg.max_paths,
+              "paths_per_pair": PATHS_PER_PAIR, "flow_page": MAX_FLOW_PAGE,
+              "connection_flows": ES_MAX_RESULTS if cfg.backend == "elastic" else None,
+              "filter_length": filters.MAX_LENGTH, "filter_depth": filters.MAX_DEPTH, "edges": MAX_EDGES,
+              "within": MAX_WITHIN, "export_flows": MAX_EXPORT, "marks": compromised_mod.MAX_MARKS,
+              "note": compromised_mod.MAX_NOTE, "saved_maps": sessions_mod.MAX_SESSIONS,
+              "map_bytes": sessions_mod.MAX_BYTES, "map_name": sessions_mod.MAX_NAME}
 
     @app.get("/api/config")
     def api_config():
         summary = getattr(backend, "summary", None)
-        return jsonify(default_window=cfg.default_window, max_window=cfg.max_window,
+        return jsonify(api_version=API_VERSION, limits=limits, filter=filters.vocabulary(),
+                       default_window=cfg.default_window, max_window=cfg.max_window,
                        default_limit=cfg.default_limit, max_limit=cfg.max_limit,
                        directions=DIRECTIONS, orders=ORDERS, backend=cfg.backend,
                        rare_scan_cap=cfg.rare_scan_cap,
@@ -238,6 +251,19 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
                        protocol_names=protocols.DISPLAY, max_filters=filters.MAX_FILTERS,
                        live_dns=cfg.live_dns, pcap_download=soc is not None,
                        case=summary() if summary else None)
+
+    @app.get("/api/openapi.json")
+    def api_openapi():
+        return send_from_directory(os.path.dirname(OPENAPI), os.path.basename(OPENAPI), mimetype="application/json")
+
+    @app.route("/api/protocols", methods=["GET", "POST"])
+    def api_protocols():
+        """How many flows carry each protocol in the time range, of those that pass the filters
+        (D20); most first."""
+        start, end, counts = backend.protocols(*range_arg(), scope_arg())
+        return jsonify(start=start and fmt_time(start), end=end and fmt_time(end), protocols=[
+            {"protocol": p, "name": protocols.display_name(p), "flows": n}
+            for p, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))])
 
     @app.get("/api/resolve")
     def api_resolve():

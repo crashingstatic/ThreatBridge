@@ -52,6 +52,14 @@ export async function checkpoint(page, name) {
   await page.coverage.startJSCoverage({ resetOnNavigation: false });
 }
 
+// With TB_SAVED_MAPS set, keep a map document the map saved: test_openapi.py checks each one
+// against the map document format (D22).
+export function keepMap(name, doc) {
+  if (!process.env.TB_SAVED_MAPS) return;
+  mkdirSync(process.env.TB_SAVED_MAPS, { recursive: true });
+  writeFileSync(`${process.env.TB_SAVED_MAPS}/${name}.json`, JSON.stringify(doc));
+}
+
 // Save what the page ran of app.js (when JS_COVERAGE is set) and close the browser.
 export async function finish(browser, page, name) {
   if (COVERAGE_DIR) await saveCoverage(page, name);

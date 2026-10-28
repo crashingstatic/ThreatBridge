@@ -3,6 +3,7 @@ Elasticsearch's query match exactly the same flows as the Python test."""
 import fnmatch
 import ipaddress
 import json
+import os
 import random
 from datetime import datetime, timezone
 
@@ -177,6 +178,45 @@ def test_the_sql_a_filter_stands_for():
         "NOT ((coalesce(f.service IN (?), 0)) OR (f.sport IS NOT NULL AND f.sport >= ? AND f.sport <= ?))",
         ["smb", 5, 5])
     assert F.to_sql(F.parse("sport 5").core) == ("sport IS NOT NULL AND sport >= ? AND sport <= ?", [5, 5])
+
+
+# ---- the vocabulary clients are given (D20) -------------------------------------------------
+
+EXAMPLES = {"port": ("445", "40000-42000"), "count": ("10", "1-5"), "seconds": ("1.5", "0.5-2"),
+            "address": ("10.0.0.0/8", None), "transport": ("tcp", None), "time": ("2024-05-01T12:00:00Z", None)}
+
+
+def parses(text):
+    try:
+        F.parse(text)
+        return True
+    except F.FilterError:
+        return False
+
+
+def test_the_vocabulary_says_what_the_parser_takes():
+    v = F.vocabulary()
+    assert [f["name"] for f in v["fields"]] == list(F.FIELDS)
+    assert set(v["kinds"]) == {f["kind"] for f in v["fields"]} == set(EXAMPLES)
+    for field in v["fields"]:
+        one, span = EXAMPLES[field["kind"]]
+        for op in ("==", "!=", "<", ">", "<=", ">="):
+            assert parses(f"{field['name']} {op} {one}") == (op in field["comparisons"]), (field, op)
+        assert parses(f"{field['name']} {span or '1-2'}") == field["ranges"], field
+        assert field["either_end"] == (field["name"] in ("port", "host"))
+    for name in v["protocols"]:
+        assert parses(name), name
+    assert set(v["protocols"]) == set(F.NAMES)
+    assert v["operators"] == {"not": ["NOT", "!"], "and": ["AND", "&&"], "or": ["OR", "||"]}
+    for spelling in sum(v["operators"].values(), []):
+        assert parses(f"SMB {spelling} DNS" if spelling not in ("NOT", "!") else f"{spelling} SMB")
+
+
+def test_the_grammar_is_the_one_in_the_api_reference():
+    with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "docs", "API.md"),
+              encoding="utf-8") as fh:
+        assert F.GRAMMAR in fh.read()
+    assert F.vocabulary()["grammar"] == F.GRAMMAR
 
 
 # ---- what they match ----------------------------------------------------------------------

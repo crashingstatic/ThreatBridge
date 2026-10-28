@@ -15,8 +15,7 @@ import pytest
 
 from evidence import ACK, SYN, have_nfdump, load, make_nfcapd, tcp, write_pcap
 from threatbridge import sources
-from threatbridge.app import create_app
-from threatbridge.backends import CaseBackend, DemoBackend
+from threatbridge.backends import CaseBackend
 from threatbridge.config import Config, env_name
 from threatbridge.excludes import ExcludeStore
 
@@ -196,14 +195,3 @@ def test_soc_actions_open_the_map_with_what_it_reads():
         [link] = a["links"]
         direction = "in" if "inbound" in a["name"] else "out"
         assert link == f"https://THREATBRIDGE_HOST:5443/?ip={{value}}&ts={{:soc_timestamp}}&dir={direction}"
-
-
-def test_every_endpoint_is_documented_and_every_documented_endpoint_exists(tmp_path):
-    cfg = Config(backend="demo", live_dns=False, exclude_file=str(tmp_path / "ex.json"),
-                 compromised_file=str(tmp_path / "c.json"))
-    app = create_app(cfg, DemoBackend(cfg))
-    served = {(m, r.rule) for r in app.url_map.iter_rules() for m in r.methods - {"HEAD", "OPTIONS"}
-              if not r.rule.startswith("/static/") and r.rule != "/"}   # the UI itself
-    documented = set(re.findall(r"^### `(GET|POST|PUT|DELETE) (/\S*)`$", read("docs", "API.md"), re.M))
-    assert served - documented == set(), "served but not in docs/API.md"
-    assert documented - served == set(), "in docs/API.md but not served"
