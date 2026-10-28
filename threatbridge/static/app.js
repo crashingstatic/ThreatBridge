@@ -91,6 +91,29 @@
 
   function fail(err) { setStatus(err.message, !err.cancelled); }
 
+  // An element with properties (textContent, className, ...) and children.
+  function el(tag, props, ...children) {
+    const node = Object.assign(document.createElement(tag), props);
+    node.append(...children);
+    return node;
+  }
+
+  // A button doing `action`; what goes wrong is shown in the status bar.
+  function button(label, action, props) {
+    const b = el("button", Object.assign({ type: "button", textContent: label }, props));
+    b.addEventListener("click", () => Promise.resolve(action()).catch(fail));
+    return b;
+  }
+
+  // A list entry: its text, a note in small type under it (if any), and a button.
+  function listEntry(text, note, label, action) {
+    const span = el("span", { textContent: text });
+    if (note) span.append(el("small", { className: "resolved", textContent: note }));
+    return el("li", {}, span, button(label, action));
+  }
+
+  const hintItem = (text) => el("li", { className: "hint", textContent: text });
+
   // The analyst's time range (toolbar): sent with every query, which it limits. Blank = open.
   function withRange(params) {
     const lo = $("range-from").value.trim(), hi = $("range-to").value.trim();
@@ -134,7 +157,6 @@
   }
 
   const getJSON = (url, opts) => request(url, opts, "json");
-  const post = (url, body) => getJSON(url, { method: "POST", headers: WRITE_HEADERS, body: JSON.stringify(body) });
 
   // A query about the map's data, with the analyst's filters (D17). An opened map's own marks
   // (D19), and `extra` fields, go in a POST; otherwise a GET says it all.
@@ -142,7 +164,7 @@
     if (localMap || extra) {
       const body = Object.assign(Object.fromEntries(params.entries()), extra || {}, { filters });
       if (localMap) body.marks = marks;
-      return post(path, body);
+      return getJSON(path, { method: "POST", headers: WRITE_HEADERS, body: JSON.stringify(body) });
     }
     for (const f of filters) params.append("filter", f);
     return getJSON(`${path}?${params}`);
@@ -169,9 +191,7 @@
 
   // Offer `blob` to the analyst as a file called `name`.
   function saveFile(blob, name) {
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = name;
+    const a = el("a", { href: URL.createObjectURL(blob), download: name });
     document.body.append(a);
     a.click();
     a.remove();
@@ -279,6 +299,8 @@
     return expandWith(q, true);
   }
 
+  // One expansion: the host's peers as hosts and connections (one already drawn takes the new
+  // counts). With `say`, the map is laid out again and the status bar tells what was found.
   async function expandWith(q, say) {
     const params = withRange(new URLSearchParams({ ip: q.ip, direction: q.direction, window: q.window,
                                                    limit: q.limit, order: q.order }));
@@ -389,6 +411,7 @@
               (skipped ? `; ${skipped} found nothing that passes them` : ""));
   }
 
+  // One logged query, run again (requery).
   function run(q) {
     switch (q.op) {
       case "root": return rootWith(q, false);
@@ -409,15 +432,9 @@
   function showDetails(rows) {
     flowsFor = null;
     lastFlows = null;
-    const body = $("detail-body");
-    body.replaceChildren();
-    const dl = document.createElement("dl");
-    for (const [k, v] of rows) {
-      const dt = document.createElement("dt"); dt.textContent = k;
-      const dd = document.createElement("dd"); dd.textContent = v == null ? "—" : String(v);
-      dl.append(dt, dd);
-    }
-    body.append(dl);
+    const dl = el("dl");
+    for (const [k, v] of rows) dl.append(el("dt", { textContent: k }), el("dd", { textContent: v == null ? "—" : String(v) }));
+    $("detail-body").replaceChildren(dl);
   }
 
   function refreshDetails(ip) {
@@ -483,70 +500,39 @@
   function renderFlows(conn, r) {
     lastFlows = r;
     let section = $("flows");
-    if (!section) {
-      section = document.createElement("section");
-      section.id = "flows";
-      $("detail-body").append(section);
-    }
-    const title = document.createElement("h3");
-    title.textContent = "Flows, oldest first";
-    const pager = document.createElement("div");
-    pager.className = "pager";
-    const button = (label, offset, enabled) => {
-      const b = document.createElement("button");
-      b.type = "button"; b.textContent = label; b.disabled = !enabled;
-      b.addEventListener("click", () => loadFlows(conn, offset).catch((e) => fail(e)));
-      return b;
-    };
+    if (!section) $("detail-body").append(section = el("section", { id: "flows" }));
+    const page = (label, offset, enabled) => button(label, () => loadFlows(conn, offset), { disabled: !enabled });
     const last = Math.max(0, Math.floor((r.total - 1) / FLOW_PAGE) * FLOW_PAGE);
-    const info = document.createElement("span");
-    info.textContent = r.flows.length
+    const info = el("span", { textContent: r.flows.length
       ? `${r.offset + 1}–${r.offset + r.flows.length} of ${r.total.toLocaleString("en-US")}`
-      : "none in the time range";
-    pager.append(button("First", 0, r.offset > 0),
-                 button("Older", Math.max(0, r.offset - FLOW_PAGE), r.offset > 0), info,
-                 button("Newer", r.offset + FLOW_PAGE, r.offset + FLOW_PAGE < r.total),
-                 button("Last", last, r.offset < last));
-    const list = document.createElement("ol");
-    list.className = "flows";
-    list.start = r.offset + 1;
-    for (const f of r.flows) {
-      const li = document.createElement("li");
-      const small = document.createElement("small");
-      li.textContent = f.start;
-      small.textContent = flowMeta(f);
-      li.append(small);
+      : "none in the time range" });
+    const pager = el("div", { className: "pager" }, page("First", 0, r.offset > 0),
+                     page("Older", Math.max(0, r.offset - FLOW_PAGE), r.offset > 0), info,
+                     page("Newer", r.offset + FLOW_PAGE, r.offset + FLOW_PAGE < r.total),
+                     page("Last", last, r.offset < last));
+    const list = el("ol", { className: "flows", start: r.offset + 1 }, ...r.flows.map((f) => {
+      const li = el("li", { textContent: f.start }, el("small", { textContent: flowMeta(f) }));
       const actions = flowActions(conn, f);
       if (actions) li.append(actions);
-      list.append(li);
-    }
-    section.replaceChildren(title, pager, list);
+      return li;
+    }));
+    section.replaceChildren(el("h3", { textContent: "Flows, oldest first" }), pager, list);
   }
 
   // A flow's own actions: mark it compromised (D15), and in Security Onion mode its packets.
   function flowActions(conn, f) {
-    const span = document.createElement("span");
-    span.className = "actions";
+    const span = el("span", { className: "actions" });
     const key = flowOf(conn, f);
     if (key) {
       const marked = markedFlows.has(flowKey(key));
-      const b = document.createElement("button");
-      b.type = "button"; b.className = "mark"; b.textContent = marked ? "Unmark" : "Mark compromised";
-      b.addEventListener("click", () => (marked ? unmarkFlow(key) : markFlow(key)).catch(fail));
-      span.append(b);
+      span.append(button(marked ? "Unmark" : "Mark compromised", () => (marked ? unmarkFlow(key) : markFlow(key)),
+                         { className: "mark" }));
     }
     if (f.id && cfg.soc_pivots !== false) {
       if (f.soc_pcap) {
-        const a = document.createElement("a");
-        a.href = f.soc_pcap; a.target = "_blank"; a.rel = "noopener noreferrer"; a.textContent = "PCAP in SOC";
-        span.append(a);
+        span.append(el("a", { href: f.soc_pcap, target: "_blank", rel: "noopener noreferrer", textContent: "PCAP in SOC" }));
       }
-      if (cfg.pcap_download) {
-        const b = document.createElement("button");
-        b.type = "button"; b.textContent = "Download PCAP";
-        b.addEventListener("click", () => downloadPcap(conn, f).catch(fail));
-        span.append(b);
-      }
+      if (cfg.pcap_download) span.append(button("Download PCAP", () => downloadPcap(conn, f)));
     }
     return span.childElementCount ? span : null;
   }
@@ -563,17 +549,13 @@
   function hideMenu() { menu.hidden = true; menu.replaceChildren(); }
 
   function showMenu(x, y, items) {
-    menu.replaceChildren();
-    for (const it of items) {
-      const li = document.createElement("li");
-      if (it === "-") { li.className = "sep"; }
-      else if (it.title) { li.className = "title"; li.textContent = it.title; }
-      else {
-        li.textContent = it.label;
-        li.addEventListener("click", () => { hideMenu(); Promise.resolve(it.action()).catch((e) => fail(e)); });
-      }
-      menu.append(li);
-    }
+    menu.replaceChildren(...items.map((it) => {
+      if (it === "-") return el("li", { className: "sep" });
+      if (it.title) return el("li", { className: "title", textContent: it.title });
+      const li = el("li", { textContent: it.label });
+      li.addEventListener("click", () => { hideMenu(); Promise.resolve(it.action()).catch(fail); });
+      return li;
+    }));
     menu.hidden = false;
     const r = menu.getBoundingClientRect();
     menu.style.left = `${Math.min(x, window.innerWidth - r.width - 4)}px`;
@@ -692,17 +674,8 @@
   const filterInput = $("filter");
 
   function renderFilters() {
-    const ul = $("filter-list");
-    ul.replaceChildren(...filters.map((f, i) => {
-      const li = document.createElement("li");
-      const span = document.createElement("span");
-      span.textContent = f;
-      const x = document.createElement("button");
-      x.type = "button"; x.textContent = "×"; x.title = `Remove the filter ${f}`;
-      x.addEventListener("click", () => removeFilter(i).catch(fail));
-      li.append(span, x);
-      return li;
-    }));
+    $("filter-list").replaceChildren(...filters.map((f, i) => el("li", {}, el("span", { textContent: f }),
+      button("×", () => removeFilter(i), { title: `Remove the filter ${f}` }))));
   }
 
   async function addFilter(text) {
@@ -756,25 +729,13 @@
   }
 
   function renderExcludes(r) {
-    const ul = $("exclude-list");
-    ul.replaceChildren();
-    for (const entry of r.entries) {
-      const li = document.createElement("li");
-      const span = document.createElement("span"); span.textContent = entry;
+    $("exclude-list").replaceChildren(...r.entries.map((entry) => {
       const resolved = (r.resolved || {})[entry];
-      if (resolved) {
-        const small = document.createElement("small");
-        small.className = "resolved";
-        small.textContent = resolutionText(resolved);
-        span.append(small);
-      }
-      const btn = document.createElement("button"); btn.type = "button"; btn.textContent = "Remove";
-      btn.addEventListener("click", () => removeExclude(entry).catch((e) => fail(e)));
-      li.append(span, btn);
-      ul.append(li);
-    }
+      return listEntry(entry, resolved && resolutionText(resolved), "Remove", () => removeExclude(entry));
+    }));
   }
 
+  // Excluded for everyone: the hosts it stands for leave the map, and the paths are found again.
   async function addExclude(entry) {
     const r = await write("/api/excludes", "POST", { entry });
     renderExcludes(r);
@@ -824,19 +785,16 @@
     cy.batch(() => {
       for (const n of r.nodes) line = line.union(addNode(n.id, n.time, {}));
       for (const ed of r.edges) {
-        const el = mergeEdge(ed.source, ed.target, ed.role === "up" ? "in" : "out",
-                             ed.count, ed.ports, ed.first_seen, ed.last_seen, ed.protocols);
-        line = line.union(el);
+        line = line.union(mergeEdge(ed.source, ed.target, ed.role === "up" ? "in" : "out",
+                                    ed.count, ed.ports, ed.first_seen, ed.last_seen, ed.protocols));
       }
     });
     if (!say) return;
     relayout();
     focus(line);
+    const ROLES = { up: "up", down: "down", both: "up down" };
     cy.batch(() => {
-      for (const n of r.nodes) {
-        if (n.role === "up" || n.role === "both") cy.getElementById(n.id).addClass("up");
-        if (n.role === "down" || n.role === "both") cy.getElementById(n.id).addClass("down");
-      }
+      for (const n of r.nodes) if (ROLES[n.role]) cy.getElementById(n.id).addClass(ROLES[n.role]);
       for (const ed of r.edges) {
         cy.getElementById(`${ed.source}->${ed.target}`)
           .addClass(ed.role === "selected" ? "line-selected" : ed.role);
@@ -871,8 +829,8 @@
         if (row.time == null || f.start < row.time) row.time = f.start;
       }
     }
-    return [...out.values()].sort((a, b) => ((a.time || "") < (b.time || "") ? -1 : (a.time || "") > (b.time || "") ? 1
-      : a.ip < b.ip ? -1 : a.ip > b.ip ? 1 : 0));
+    const cmp = (x, y) => (x < y ? -1 : x > y ? 1 : 0);
+    return [...out.values()].sort((a, b) => cmp(a.time || "", b.time || "") || cmp(a.ip, b.ip));
   }
 
   function markEdges() {
@@ -912,38 +870,14 @@
   }
 
   function renderCompromised(rows) {
-    const ul = $("compromised-list");
-    ul.replaceChildren();
-    for (const h of rows) {
-      const li = document.createElement("li");
-      const span = document.createElement("span");
-      span.textContent = `${h.ip} @ ${h.time || "time unknown"}`;
+    $("compromised-list").replaceChildren(...rows.map((h) => {
       const through = h.count - (h.direct ? 1 : 0);
-      if (through) {
-        const small = document.createElement("small");
-        small.className = "resolved";
-        small.textContent = `${h.direct ? "marked, and " : ""}through ${through} marked flow(s)`;
-        span.append(small);
-      }
-      const btn = document.createElement("button"); btn.type = "button"; btn.textContent = "Remove";
-      btn.addEventListener("click", () => unmarkCompromised(h.ip).catch((e) => fail(e)));
-      li.append(span, btn);
-      ul.append(li);
-    }
-    const flowList = $("marked-flow-list");
-    flowList.replaceChildren(...marks.flows.map((f) => {
-      const li = document.createElement("li");
-      const span = document.createElement("span");
-      span.textContent = `${f.src} → ${f.dst} @ ${f.start}`;
-      const small = document.createElement("small");
-      small.className = "resolved";
-      small.textContent = `${f.proto} ${f.sport} → ${f.dport}`;
-      span.append(small);
-      const btn = document.createElement("button"); btn.type = "button"; btn.textContent = "Remove";
-      btn.addEventListener("click", () => unmarkFlow(f).catch(fail));
-      li.append(span, btn);
-      return li;
+      return listEntry(`${h.ip} @ ${h.time || "time unknown"}`,
+                       through && `${h.direct ? "marked, and " : ""}through ${through} marked flow(s)`,
+                       "Remove", () => unmarkCompromised(h.ip));
     }));
+    $("marked-flow-list").replaceChildren(...marks.flows.map((f) => listEntry(
+      `${f.src} → ${f.dst} @ ${f.start}`, `${f.proto} ${f.sport} → ${f.dport}`, "Remove", () => unmarkFlow(f))));
   }
 
   // A change to the marks: written to the shared list, or, with an opened map, to its own.
@@ -1057,21 +991,28 @@
     const asked = ++hidingAsked;
     const edges = cy.edges();
     if (edges.empty() || !cy.nodes().some((n) => compromised.has(n.id()))) { applyHiding(null); return; }
-    const params = withRange(new URLSearchParams({ window: $("window").value.trim() }));
-    const body = Object.assign(Object.fromEntries(params.entries()), { filters, edges: edges.map((e) => ({
-      source: e.data("source"), target: e.data("target"), from: e.data("full").first_seen, to: e.data("full").last_seen })) });
-    if (localMap) body.marks = marks;
     hidingBusy += 1;
     try {
-      const r = await post("/api/suspect", body);
+      const r = await ask("/api/suspect", windowParams(), { edges: drawn(edges) });
       if (asked === hidingAsked) applyHiding(r.edges);
     } finally {
       hidingBusy -= 1;
     }
   }
 
+  // The toolbar's Window and time range, as a query sends them.
+  const windowParams = () => withRange(new URLSearchParams({ window: $("window").value.trim() }));
+
+  // Connections as first drawn, before the marks narrowed them.
+  const drawn = (edges) => edges.map((e) => ({ source: e.data("source"), target: e.data("target"),
+                                               from: e.data("full").first_seen, to: e.data("full").last_seen }));
+
+  // Show what /api/suspect said of each connection (null: nothing hidden): a hidden one goes, a
+  // kept one shows only its marked and suspect flows (dashed if none is marked), and a host
+  // left with no connection in a part of the map the marks affect goes too, unless marked.
   function applyHiding(entries) {
-    const before = cy.elements(".mark-hidden").map((el) => el.id()).sort().join(" ");
+    const hiddenNow = () => cy.elements(".mark-hidden").map((x) => x.id()).sort().join(" ");
+    const before = hiddenNow();
     cy.batch(() => {
       cy.elements().removeClass("mark-hidden suspect");
       for (const e of cy.edges()) if (e.data("kept")) { e.removeData("kept"); e.data(shown(e.data("full"))); }
@@ -1092,7 +1033,7 @@
     });
     const hidden = cy.edges(".mark-hidden").length;
     $("hidden-note").textContent = hidden ? `${hidden} connection(s) hidden by marks` : "";
-    if (cy.elements(".mark-hidden").map((el) => el.id()).sort().join(" ") !== before) relayout();
+    if (hiddenNow() !== before) relayout();
     refreshProtocols();
   }
 
@@ -1126,29 +1067,14 @@
   // "a → b → c", and below it the first and last hop's times; click to focus on the path.
   function pathItem(p, what) {
     const hosts = [p.hops[0].source, ...p.hops.map((h) => h.target)];
-    const li = document.createElement("li");
-    const times = document.createElement("small");
-    li.className = "path";
-    li.textContent = hosts.join(" → ");
-    const [first, last] = [p.hops[0], p.hops[p.hops.length - 1]].map((h) => {
-      const span = document.createElement("span");   // a timestamp wraps as a whole
-      span.textContent = h.start;
-      return span;
-    });
-    times.append(first, " → ", last);
-    li.append(times);
+    // In spans: a timestamp wraps as a whole.
+    const [first, last] = [p.hops[0], p.hops[p.hops.length - 1]].map((h) => el("span", { textContent: h.start }));
+    const li = el("li", { className: "path", textContent: hosts.join(" → ") }, el("small", {}, first, " → ", last));
     li.addEventListener("click", () => {
       focus(pathElements(p));
       setStatus(`${what} ${hosts[0]} → ${hosts[hosts.length - 1]}, ${p.hops.length} hop(s). ` +
                 "Click the background to clear.");
     });
-    return li;
-  }
-
-  function hintItem(text) {
-    const li = document.createElement("li");
-    li.className = "hint";
-    li.textContent = text;
     return li;
   }
 
@@ -1158,28 +1084,17 @@
   async function refreshPaths(quiet) {
     if (!cfg.analysis) return;
     const asked = ++pathsAsked;
-    const r = await ask("/api/paths", withRange(new URLSearchParams({ window: $("window").value.trim() })));
+    const r = await ask("/api/paths", windowParams());
     if (asked !== pathsAsked) return;
     const paths = r.pairs.flatMap((pair) => pair.paths);
     drawPaths(paths, "attack");
     const ul = $("path-list");
-    ul.replaceChildren();
-    for (const pair of r.pairs) {
-      const head = document.createElement("li");
-      head.className = "pair";
-      const span = document.createElement("span");
-      span.textContent = `${pair.from} → ${pair.to}: ` +
-        (pair.truncated ? `first ${pair.paths.length} paths` : `${pair.paths.length} path(s)`);
-      head.append(span);
-      if (pair.truncated) {
-        const btn = document.createElement("button");
-        btn.type = "button"; btn.textContent = "Show all";
-        btn.addEventListener("click", () => findRoutesBetween(pair.from, pair.to)
-          .catch((e) => fail(e)));
-        head.append(btn);
-      }
-      ul.append(head, ...pair.paths.map((p) => pathItem(p, "Attack path")));
-    }
+    ul.replaceChildren(...r.pairs.flatMap((pair) => {
+      const head = el("li", { className: "pair" }, el("span", { textContent: `${pair.from} → ${pair.to}: ` +
+        (pair.truncated ? `first ${pair.paths.length} paths` : `${pair.paths.length} path(s)`) }));
+      if (pair.truncated) head.append(button("Show all", () => findRoutesBetween(pair.from, pair.to)));
+      return [head, ...pair.paths.map((p) => pathItem(p, "Attack path"))];
+    }));
     if (!r.pairs.length) {
       ul.append(hintItem(compromised.size < 2 ? "Mark at least two hosts as compromised."
                                               : "No time-consistent path between the marked hosts."));
@@ -1223,6 +1138,8 @@
     await routesWith(q, true);
   }
 
+  // Every path between two hosts, drawn and listed. With `say`, the paths are focused on and
+  // the status bar tells how many.
   async function routesWith(q, say) {
     const { src, dst } = q;
     const params = withRange(new URLSearchParams({ src, dst, window: q.window }));
@@ -1266,11 +1183,7 @@
   }
 
   async function exportCsv() {
-    const params = withRange(new URLSearchParams({ window: $("window").value.trim() }));
-    const body = Object.assign(Object.fromEntries(params.entries()), { filters, edges: cy.edges().map((e) => ({
-      source: e.data("source"), target: e.data("target"), from: e.data("full").first_seen, to: e.data("full").last_seen })) });
-    if (localMap) body.marks = marks;
-    const r = await post("/api/export", body);
+    const r = await ask("/api/export", windowParams(), { edges: drawn(cy.edges()) });
     const name = ($("session-name").value.trim() || cy.nodes("[?root]").map((n) => n.id())[0] || "map")
       .replace(/[^\w.-]+/g, "_");
     saveFile(new Blob([csv(["ip", "time", "note", "marked", "count"], r.hosts)], { type: "text/csv" }),
@@ -1323,12 +1236,14 @@
     };
   }
 
-  function highlight(el, classes) {
-    if (Array.isArray(classes)) el.addClass(classes.filter((c) => HIGHLIGHTS.includes(c)).join(" "));
+  function highlight(element, classes) {
+    if (Array.isArray(classes)) element.addClass(classes.filter((c) => HIGHLIGHTS.includes(c)).join(" "));
   }
 
   const isText = (v) => typeof v === "string";
 
+  // Open a map document: draw it as saved, with its toolbar, filters and queries, and its own
+  // marks, shown until shared (D19).
   async function openMap(doc, what) {
     if (!doc || (doc.version !== 1 && doc.version !== MAP_VERSION) || !Array.isArray(doc.nodes) ||
         !Array.isArray(doc.edges)) {
@@ -1336,56 +1251,16 @@
     }
     cy.elements().remove();
     const settings = doc.settings || {};
-    for (const id of SETTINGS) if (typeof settings[id] === "string") $(id).value = settings[id];
-    iocTime = typeof doc.iocTime === "string" ? doc.iocTime : null;
-    cy.batch(() => {
-      for (const n of doc.nodes) {
-        if (typeof n.id !== "string" || !n.id || cy.getElementById(n.id).nonempty()) continue;
-        const data = pick(n, NODE_FIELDS);
-        const p = n.position || {};
-        const node = addNode(n.id, data.anchor || null, data);
-        node.position(Number.isFinite(p.x) && Number.isFinite(p.y) ? { x: p.x, y: p.y } : { x: 0, y: 0 });
-        highlight(node, n.classes);
-      }
-      for (const e of doc.edges) {
-        if (typeof e.source !== "string" || typeof e.target !== "string") continue;
-        if (cy.getElementById(e.source).empty() || cy.getElementById(e.target).empty()) continue;
-        const ports = Array.isArray(e.ports) ? e.ports.filter(Number.isInteger) : [];
-        const protocols = Array.isArray(e.protocols)
-          ? [...new Set(e.protocols.filter((p) => typeof p === "string" && p.length > 0 && p.length <= 40)
-            .map((p) => PROTOCOL_ALIASES[p] || p))] : [];
-        const t = pick(e, EDGE_FIELDS);
-        const edge = mergeEdge(e.source, e.target, e.direction === "in" ? "in" : "out",
-                               Number.isFinite(e.count) ? e.count : 0, ports, t.first_seen, t.last_seen,
-                               protocols);
-        highlight(edge, e.classes);
-      }
-    });
-    // Its filters, its queries (or, saved before them, its hosts and connections), and its
-    // own marks, shown until shared (D19).
-    filters = doc.version === 1 || !Array.isArray(doc.filters) ? [] : doc.filters.filter(isText).slice(0, cfg.max_filters || 20);
+    for (const id of SETTINGS) if (isText(settings[id])) $(id).value = settings[id];
+    iocTime = isText(doc.iocTime) ? doc.iocTime : null;
+    drawSaved(doc);
+    filters = doc.version !== 1 && Array.isArray(doc.filters) ? doc.filters.filter(isText).slice(0, cfg.max_filters || 20) : [];
     renderFilters();
-    queries = doc.version !== 1 && Array.isArray(doc.queries)
-      ? doc.queries.filter((q) => q && typeof q === "object" && isText(q.op) && (q.op !== "node" || isText(q.id)))
-        .map((q) => Object.assign(pick(q, QUERY_FIELDS), q.op === "node" ? { data: pick(q.data || {}, NODE_FIELDS) } : {}))
-      : [...cy.nodes().map((n) => ({ op: "node", id: n.id(), data: pick(n.data(), NODE_FIELDS) })),
-         ...cy.edges().map((e) => ({ op: "edge", source: e.data("source"), target: e.data("target"),
-                                     direction: e.data("direction"), from: e.data("first_seen"), to: e.data("last_seen") }))
-          .filter((q) => q.from)];
-    const saved = (doc.version !== 1 && doc.marks) || {};
+    queries = savedQueries(doc);
     localMap = what;
     showLocal();
-    setMarks((Array.isArray(saved.hosts) ? saved.hosts : []).filter((h) => h && isText(h.ip))
-               .map((h) => ({ ip: h.ip, time: isText(h.time) ? h.time : null, note: isText(h.note) ? h.note : "" })),
-             (Array.isArray(saved.flows) ? saved.flows : []).filter((f) => f && isText(f.src) && isText(f.dst) &&
-               isText(f.start) && Number.isInteger(f.sport) && Number.isInteger(f.dport) && isText(f.proto))
-               .map((f) => pick(f, ["src", "dst", "start", "sport", "dport", "proto", "note"])));
-    const view = doc.view || {};
-    if (Number.isFinite(view.zoom) && view.pan && Number.isFinite(view.pan.x) && Number.isFinite(view.pan.y)) {
-      cy.viewport({ zoom: view.zoom, pan: { x: view.pan.x, y: view.pan.y } });
-    } else {
-      cy.fit(undefined, 40);
-    }
+    setMarks(...savedMarks(doc));
+    restoreView(doc.view || {});
     const root = cy.nodes("[?root]");
     if (root.nonempty()) rememberInUrl(root.id());
     await refreshPaths(true);
@@ -1393,28 +1268,80 @@
     setStatus(`Opened ${what}: ${cy.nodes().length} host(s), ${cy.edges().length} connection(s)`);
   }
 
+  // A saved map's hosts, where they were, and its connections, with their highlights; what
+  // isn't well formed is left out.
+  function drawSaved(doc) {
+    cy.batch(() => {
+      for (const n of doc.nodes) {
+        if (!isText(n.id) || !n.id || cy.getElementById(n.id).nonempty()) continue;
+        const data = pick(n, NODE_FIELDS);
+        const p = n.position || {};
+        const node = addNode(n.id, data.anchor || null, data);
+        node.position(Number.isFinite(p.x) && Number.isFinite(p.y) ? { x: p.x, y: p.y } : { x: 0, y: 0 });
+        highlight(node, n.classes);
+      }
+      for (const e of doc.edges) {
+        if (isText(e.source) && isText(e.target) && cy.getElementById(e.source).nonempty() &&
+            cy.getElementById(e.target).nonempty()) highlight(savedEdge(e), e.classes);
+      }
+    });
+  }
+
+  function savedEdge(e) {
+    const ports = Array.isArray(e.ports) ? e.ports.filter(Number.isInteger) : [];
+    const protocols = Array.isArray(e.protocols)
+      ? [...new Set(e.protocols.filter((p) => isText(p) && p.length > 0 && p.length <= 40)
+        .map((p) => PROTOCOL_ALIASES[p] || p))] : [];
+    const t = pick(e, EDGE_FIELDS);
+    return mergeEdge(e.source, e.target, e.direction === "in" ? "in" : "out", Number.isFinite(e.count) ? e.count : 0,
+                     ports, t.first_seen, t.last_seen, protocols);
+  }
+
+  // A saved view, if well formed; else the whole map.
+  function restoreView(view) {
+    if (Number.isFinite(view.zoom) && view.pan && Number.isFinite(view.pan.x) && Number.isFinite(view.pan.y)) {
+      cy.viewport({ zoom: view.zoom, pan: { x: view.pan.x, y: view.pan.y } });
+    } else {
+      cy.fit(undefined, 40);
+    }
+  }
+
+  // The queries a map was built from; for a map saved before them (version 1), its hosts and
+  // connections as drawn.
+  function savedQueries(doc) {
+    if (doc.version !== 1 && Array.isArray(doc.queries)) {
+      return doc.queries.filter((q) => q && typeof q === "object" && isText(q.op) && (q.op !== "node" || isText(q.id)))
+        .map((q) => Object.assign(pick(q, QUERY_FIELDS), q.op === "node" ? { data: pick(q.data || {}, NODE_FIELDS) } : {}));
+    }
+    return [...cy.nodes().map((n) => ({ op: "node", id: n.id(), data: pick(n.data(), NODE_FIELDS) })),
+            ...cy.edges().map((e) => ({ op: "edge", source: e.data("source"), target: e.data("target"),
+                                        direction: e.data("direction"), from: e.data("first_seen"), to: e.data("last_seen") }))
+              .filter((q) => q.from)];
+  }
+
+  // A map's own marks, [hosts, flows], those well formed.
+  function savedMarks(doc) {
+    const saved = (doc.version !== 1 && doc.marks) || {};
+    const list = (v) => (Array.isArray(v) ? v : []);
+    const isFlow = (f) => f && isText(f.src) && isText(f.dst) && isText(f.start) && Number.isInteger(f.sport) &&
+      Number.isInteger(f.dport) && isText(f.proto);
+    return [list(saved.hosts).filter((h) => h && isText(h.ip))
+              .map((h) => ({ ip: h.ip, time: isText(h.time) ? h.time : null, note: isText(h.note) ? h.note : "" })),
+            list(saved.flows).filter(isFlow).map((f) => pick(f, ["src", "dst", "start", "sport", "dport", "proto", "note"]))];
+  }
+
   function renderSessions(list) {
     const ul = $("session-list");
-    ul.replaceChildren();
-    for (const saved of list) {
-      const li = document.createElement("li");
-      const span = document.createElement("span");
-      span.className = "session";
-      span.textContent = saved.name;
-      const small = document.createElement("small");
-      small.className = "resolved";
-      small.textContent = `saved ${saved.saved}`;
-      span.append(small);
-      span.addEventListener("click", () => openSession(saved.name).catch(fail));
-      const del = document.createElement("button");
-      del.type = "button"; del.textContent = "Delete";
-      del.addEventListener("click", () => deleteSession(saved.name).catch(fail));
-      li.append(span, del);
-      ul.append(li);
-    }
+    ul.replaceChildren(...list.map((saved) => {
+      const li = listEntry(saved.name, `saved ${saved.saved}`, "Delete", () => deleteSession(saved.name));
+      li.firstChild.className = "session";     // click the name to open it
+      li.firstChild.addEventListener("click", () => openSession(saved.name).catch(fail));
+      return li;
+    }));
     if (!list.length) ul.append(hintItem("No saved maps yet."));
   }
 
+  // Saved for everyone; a name already taken is replaced only once the analyst agrees.
   async function saveSession(name, overwrite) {
     try {
       const r = await write("/api/sessions", "POST", { name, map: mapDocument(), overwrite: !!overwrite });
@@ -1485,16 +1412,12 @@
     try { showShared(await getJSON("/api/compromised"), true); } catch (_) { /* none */ }
     setInterval(pollMarks, (cfg.marks_poll || 5) * 1000);
     getJSON("/api/sessions").then((r) => renderSessions(r.sessions)).catch(() => {});
+    // The map a link names (rememberInUrl): its fields, and a choice only if it is one.
     const q = new URLSearchParams(location.search);
-    if (q.get("ip")) $("ip").value = q.get("ip");
-    if (q.get("ts")) $("ts").value = q.get("ts");
-    if (q.get("window")) $("window").value = q.get("window");
-    if (q.get("range_from")) $("range-from").value = q.get("range_from");
-    if (q.get("range_to")) $("range-to").value = q.get("range_to");
-    const dir = q.get("dir");
-    if (dir === "in" || dir === "out") $("direction").value = dir;
-    const order = q.get("order");
-    if (order === "top" || order === "bottom") $("order").value = order;
+    const fields = { ip: "ip", ts: "ts", window: "window", range_from: "range-from", range_to: "range-to" };
+    for (const [param, id] of Object.entries(fields)) if (q.get(param)) $(id).value = q.get(param);
+    if (["in", "out"].includes(q.get("dir"))) $("direction").value = q.get("dir");
+    if (["top", "bottom"].includes(q.get("order"))) $("order").value = q.get("order");
     if (q.get("ip")) start();
     else refreshPaths(true).catch((e) => fail(e));
   })();

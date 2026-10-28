@@ -46,14 +46,14 @@ def parse_flow(body):
     canonical form: the start to the millisecond, as flow lists show it."""
     if not isinstance(body, dict):
         raise ValidationError("a flow is an object with src, dst, start, sport, dport and proto")
-    start = body.get("start")
-    if not isinstance(start, (str, int, float)) or isinstance(start, bool) or not str(start).strip():
+    start = _time(body.get("start"))
+    if start is None:
         raise ValidationError("start (the flow's start time) is required")
     proto = body.get("proto")
     if not isinstance(proto, str) or not proto.strip() or len(proto) > 16:
         raise ValidationError("proto must be tcp, udp, icmp or an IP protocol number")
     return {"src": parse_ip(body.get("src")), "dst": parse_ip(body.get("dst")),
-            "start": fmt_time(parse_time(start)), "sport": _port(body.get("sport"), "sport"),
+            "start": start, "sport": _port(body.get("sport"), "sport"),
             "dport": _port(body.get("dport"), "dport"), "proto": proto.strip().lower(),
             "note": _note(body.get("note"))}
 
@@ -135,14 +135,19 @@ class CompromisedStore:
         with self.store.locked_all() as lists:
             return self._view(lists)
 
+    def _put(self, kind, entry, same):
+        """Add `entry` to the list `kind` ("hosts" or "flows"), in place of the one it is the
+        `same` as."""
+        with self.store.locked_all() as lists:
+            kept = [e for e in lists[kind] if not same(e)]
+            if len(kept) >= MAX_MARKS:
+                raise ValidationError(f"at most {MAX_MARKS} marked {kind}")
+            lists[kind][:] = kept + [entry]
+            return self._view(lists)
+
     def mark(self, ip, time=None, note=""):
         entry = parse_host({"ip": ip, "time": time, "note": note})
-        with self.store.locked_all() as lists:
-            hosts = [h for h in lists["hosts"] if not self._is(h, entry["ip"])]
-            if len(hosts) >= MAX_MARKS:
-                raise ValidationError(f"at most {MAX_MARKS} marked hosts")
-            lists["hosts"][:] = hosts + [entry]
-            return self._view(lists)
+        return self._put("hosts", entry, lambda h: self._is(h, entry["ip"]))
 
     def unmark(self, ip):
         """Remove the host's own mark and every marked flow it is an end of (D15)."""
@@ -154,12 +159,7 @@ class CompromisedStore:
 
     def mark_flow(self, body):
         entry = parse_flow(body)
-        with self.store.locked_all() as lists:
-            flows = [f for f in lists["flows"] if self._key(f) != flow_key(entry)]
-            if len(flows) >= MAX_MARKS:
-                raise ValidationError(f"at most {MAX_MARKS} marked flows")
-            lists["flows"][:] = flows + [entry]
-            return self._view(lists)
+        return self._put("flows", entry, lambda f: self._key(f) == flow_key(entry))
 
     def unmark_flow(self, body):
         key = flow_key(parse_flow(body))
@@ -179,10 +179,6 @@ class CompromisedStore:
         """(hosts marked themselves, marked flows), as parse_marks gives them."""
         view = self.list()
         return view["marked"], view["flows"]
-
-    def times(self):
-        """{ip: when each marked host was reached, epoch seconds, or None if unknown}."""
-        return reached(*self.marks())
 
     @staticmethod
     def _is(entry, ip):

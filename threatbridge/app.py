@@ -184,7 +184,6 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
                                "load PCAP/NetFlow files with --case")
 
     app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/static")
-    app.config["TB"] = cfg
 
     @app.before_request
     def _csrf():
@@ -205,21 +204,8 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
         resp.headers["Referrer-Policy"] = "no-referrer"
         return resp
 
-    @app.errorhandler(ValidationError)
-    def _bad_request(e):
-        return jsonify(error=str(e)), 400
-
-    @app.errorhandler(NotSupported)
-    def _not_supported(e):
-        return jsonify(error=str(e)), 501
-
-    @app.errorhandler(NotFound)
-    def _not_found(e):
-        return jsonify(error=str(e)), 404
-
-    @app.errorhandler(Conflict)
-    def _conflict(e):
-        return jsonify(error=str(e)), 409
+    for error, status in ((ValidationError, 400), (NotFound, 404), (Conflict, 409), (NotSupported, 501)):
+        app.register_error_handler(error, lambda e, status=status: (jsonify(error=str(e)), status))
 
     @app.errorhandler(StoreError)
     def _store_error(e):
@@ -283,9 +269,7 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
         order = parse_order(a.get("order"))
 
         start, end = clip(*time_range(anchor, direction, window), range_arg())
-        scope = scope_arg()
-        res = (backend.neighbors(ip, direction, start, end, limit, order, exclusions(),
-                                 **({"scope": scope} if scope else {}))
+        res = (backend.neighbors(ip, direction, start, end, limit, order, exclusions(), scope_arg())
                if start <= end else {"peers": [], "distinct_peers": 0, "truncated": False})
         return jsonify(ip=ip, direction=direction, order=order, anchor=fmt_time(anchor),
                        start=fmt_time(start), end=fmt_time(end), **res)
@@ -298,9 +282,7 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
         start, end = clip(*from_to_args("start of the first flow"), range_arg())
         offset = max(0, int_arg("offset", 0))
         limit = max(1, min(int_arg("limit", 50), MAX_FLOW_PAGE))
-        scope, within = scope_arg(), within_arg()
-        extra = {k: v for k, v in (("scope", scope), ("within", within)) if v is not None}
-        res = (backend.flows(src, dst, start, end, offset, limit, **extra)
+        res = (backend.flows(src, dst, start, end, offset, limit, scope_arg(), within_arg())
                if start <= end else {"total": 0, "flows": []})
         return jsonify(src=src, dst=dst, start=fmt_time(start), end=fmt_time(end), offset=offset,
                        **res)
@@ -315,8 +297,7 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
         if start > end:
             return jsonify(source=src, target=dst, count=0, first_seen=None, last_seen=None,
                            ports=[], protocols=[])
-        scope = scope_arg()
-        return jsonify(**backend.edge(src, dst, start, end, **({"scope": scope} if scope else {})))
+        return jsonify(**backend.edge(src, dst, start, end, scope_arg()))
 
     @app.get("/api/filter")
     def api_filter():

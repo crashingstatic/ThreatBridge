@@ -20,7 +20,6 @@ const edge = (a, b) => `edge[id = "${a}->${b}"]`;
 const node = (ip) => `node[id = "${ip}"]`;
 const classes = (id) => cyEval((i) => window.threatbridge.cy.getElementById(i).classes(), id);
 const style = (id, prop) => cyEval(([i, p]) => window.threatbridge.cy.getElementById(i).style(p), [id, prop]);
-const status = () => page.textContent("#status");
 const waitStatus = (re) => page.waitForFunction(
   (src) => new RegExp(src).test(document.getElementById("status").textContent), re.source);
 const settled = () => page.waitForFunction(() => !window.threatbridge.settling());

@@ -42,7 +42,7 @@ class Stage:
         self.width = 0
         if progress.tty:
             # A log line written while the progress line is up starts on a clean line.
-            self.clear_first = _ClearFirst(self)
+            self.clear_first = lambda record: self.clear() or True
             for handler in logging.getLogger().handlers:
                 handler.addFilter(self.clear_first)
             self._write(f"{name}…")
@@ -98,16 +98,6 @@ class Stage:
             self.progress.stream.write("\r" + " " * min(self.width, self.progress.columns() - 1) + "\r")
             self.progress.stream.flush()
             self.width = 0
-
-
-class _ClearFirst(logging.Filter):
-    def __init__(self, stage):
-        super().__init__()
-        self.stage = stage
-
-    def filter(self, record):
-        self.stage.clear()
-        return True
 
 
 class _Quiet:

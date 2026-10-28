@@ -50,14 +50,12 @@ def parse_window(value):
 
 def parse_time(value):
     """Parse an ISO-8601 timestamp or epoch (s/ms). Empty means now. Returns aware UTC."""
-    if value is None or str(value).strip() == "":
+    value = "" if value is None else str(value).strip()
+    if not value:
         return datetime.now(timezone.utc)
-    value = str(value).strip()
-    if re.fullmatch(r"\d{10,13}(\.\d+)?", value):
+    if re.fullmatch(r"\d{10,13}(\.\d+)?", value):      # epoch: 13 digits are milliseconds
         num = float(value)
-        if num > 1e11:
-            num /= 1000.0
-        return datetime.fromtimestamp(num, timezone.utc)
+        return datetime.fromtimestamp(num / 1000.0 if num > 1e11 else num, timezone.utc)
     iso = value.replace("Z", "+00:00").replace("z", "+00:00")
     # Trim sub-microsecond precision (Zeek/ES can emit nanoseconds).
     iso = re.sub(r"(\.\d{6})\d+", r"\1", iso)
@@ -122,6 +120,7 @@ def parse_exclude(value):
         pass
     raw = value.strip()
     name = raw.lower().rstrip(".")
+    # A name whose last label is a number is a mistyped address, not a domain.
     if len(name) > 253 or not _DOMAIN_RE.match(name) or name.rsplit(".", 1)[-1].isdigit():
         raise ValidationError(f"invalid IP, CIDR or domain name: {raw!r}")
     if name.startswith("*.") and "." not in name[2:]:
@@ -167,6 +166,11 @@ def es_filter(cfg, ip, direction, start, end, exclude, peers=None, scope=None):
     return {"bool": {"filter": filters, "must_not": must_not}}
 
 
+def _aggs_only(query, aggs):
+    """A search that returns only aggregations."""
+    return {"size": 0, "track_total_hits": False, "query": query, "aggs": aggs}
+
+
 def _detail_aggs(cfg):
     aggs = {
         "first_seen": {"min": {"field": cfg.f_ts}},
@@ -184,18 +188,10 @@ def _detail_aggs(cfg):
 def es_top_body(cfg, ip, direction, start, end, limit, exclude, scope=None):
     """Most frequent peers, with details, plus approximate distinct-peer count."""
     _, peer_field = peer_fields(cfg, direction)
-    return {
-        "size": 0,
-        "track_total_hits": False,
-        "query": es_filter(cfg, ip, direction, start, end, exclude, scope=scope),
-        "aggs": {
-            "peers": {
-                "terms": {"field": peer_field, "size": limit, "order": {"_count": "desc"}},
-                "aggs": _detail_aggs(cfg),
-            },
-            "distinct": {"cardinality": {"field": peer_field}},
-        },
-    }
+    return _aggs_only(es_filter(cfg, ip, direction, start, end, exclude, scope=scope), {
+        "peers": {"terms": {"field": peer_field, "size": limit, "order": {"_count": "desc"}},
+                  "aggs": _detail_aggs(cfg)},
+        "distinct": {"cardinality": {"field": peer_field}}})
 
 
 def es_scan_body(cfg, ip, direction, start, end, exclude, page_size, after=None, scope=None):
@@ -204,24 +200,14 @@ def es_scan_body(cfg, ip, direction, start, end, exclude, page_size, after=None,
     comp = {"size": page_size, "sources": [{"peer": {"terms": {"field": peer_field}}}]}
     if after:
         comp["after"] = after
-    return {
-        "size": 0,
-        "track_total_hits": False,
-        "query": es_filter(cfg, ip, direction, start, end, exclude, scope=scope),
-        "aggs": {"scan": {"composite": comp}},
-    }
+    return _aggs_only(es_filter(cfg, ip, direction, start, end, exclude, scope=scope), {"scan": {"composite": comp}})
 
 
 def es_details_body(cfg, ip, direction, start, end, peers, exclude, scope=None):
     """Details (first/last seen, ports) for an explicit list of peers."""
     _, peer_field = peer_fields(cfg, direction)
-    return {
-        "size": 0,
-        "track_total_hits": False,
-        "query": es_filter(cfg, ip, direction, start, end, exclude, peers=peers, scope=scope),
-        "aggs": {"peers": {"terms": {"field": peer_field, "size": max(len(peers), 1)},
-                           "aggs": _detail_aggs(cfg)}},
-    }
+    return _aggs_only(es_filter(cfg, ip, direction, start, end, exclude, peers=peers, scope=scope), {
+        "peers": {"terms": {"field": peer_field, "size": max(len(peers), 1)}, "aggs": _detail_aggs(cfg)}})
 
 
 def es_flows_body(cfg, src, dst, start, end, offset, size, scope=None):
@@ -251,16 +237,10 @@ def es_dns_body(cfg, entries):
     filters = [{"exists": {"field": cfg.f_dns_ip}}]
     if cfg.dns_datasets:
         filters.append({"terms": {cfg.f_dataset: cfg.dns_datasets}})
-    return {
-        "size": 0,
-        "track_total_hits": False,
-        "query": {"bool": {"filter": filters}},
-        "aggs": {"entries": {
-            "filters": {"filters": {e: match(e) for e in entries}},
-            "aggs": {"ips": {"terms": {"field": cfg.f_dns_ip, "size": DNS_ADDRESSES},
-                             "aggs": {"first": {"min": {"field": cfg.f_ts}},
-                                      "last": {"max": {"field": cfg.f_ts}}}}}}},
-    }
+    return _aggs_only({"bool": {"filter": filters}}, {"entries": {
+        "filters": {"filters": {e: match(e) for e in entries}},
+        "aggs": {"ips": {"terms": {"field": cfg.f_dns_ip, "size": DNS_ADDRESSES},
+                         "aggs": {"first": {"min": {"field": cfg.f_ts}}, "last": {"max": {"field": cfg.f_ts}}}}}}})
 
 
 def _oql_value(ip):

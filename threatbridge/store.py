@@ -28,16 +28,11 @@ _TABLES = {"flow", "dns", "evidence", "meta"}
 _FAR = 1e18  # seconds
 _DROP = "".join(f"DROP TABLE IF EXISTS {t};" for t in sorted(_TABLES))
 _COLUMNS = "f.src, f.dst, f.sport, f.dport, f.proto, f.start_ts, f.end_ts, f.packets, f.bytes, f.source, f.service"
-# Destination ports and protocols per peer, for flows into ("in") or out of ("out") a host.
-# The peers are one JSON array parameter.
-_DETAILS = {
-    "in": "SELECT f.src, f.dport, f.proto, f.service, count(*) FROM flow AS f WHERE f.dst = ? "
-          "AND f.src IN (SELECT value FROM json_each(?)) AND f.start_ts BETWEEN ? AND ? AND ({}) "
-          "GROUP BY f.src, f.dport, f.proto, f.service",
-    "out": "SELECT f.dst, f.dport, f.proto, f.service, count(*) FROM flow AS f WHERE f.src = ? "
-           "AND f.dst IN (SELECT value FROM json_each(?)) AND f.start_ts BETWEEN ? AND ? AND ({}) "
-           "GROUP BY f.dst, f.dport, f.proto, f.service",
-}
+# Destination ports and protocols per peer, for flows between a host and its peers (one JSON
+# array parameter).
+_DETAILS = ("SELECT f.{peer}, f.dport, f.proto, f.service, count(*) FROM flow AS f WHERE f.{host} = ? "
+            "AND f.{peer} IN (SELECT value FROM json_each(?)) AND f.start_ts BETWEEN ? AND ? AND ({where}) "
+            "GROUP BY f.{peer}, f.dport, f.proto, f.service")
 
 # Count, first/last start, destination ports and protocols of the flows src -> dst within a
 # JSON array of [lo, hi] intervals. CROSS JOIN keeps the intervals as the outer loop, so each
@@ -48,7 +43,7 @@ _IN_INTERVALS = ("FROM json_each(?) AS j CROSS JOIN flow AS f WHERE f.src = ? AN
 _EDGE = "SELECT count(*), min(f.start_ts), max(f.start_ts) " + _IN_INTERVALS
 _EDGE_DETAILS = "SELECT f.dport, f.proto, f.service, count(*) " + _IN_INTERVALS + \
     " GROUP BY f.dport, f.proto, f.service"
-_EDGE_ROWS = f"SELECT {_COLUMNS} " + _IN_INTERVALS + " ORDER BY f.start_ts, f.rowid LIMIT ?"
+_EDGE_ROWS = f"SELECT {_COLUMNS} " + _IN_INTERVALS + " ORDER BY f.start_ts, f.rowid LIMIT ? OFFSET ?"
 
 
 def _where(where):
@@ -99,9 +94,9 @@ class FlowStore:
         db = self._db()
         try:
             tables = {name for (name,) in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        except sqlite3.OperationalError:
+        except sqlite3.OperationalError:   # e.g. locked: a database, but not one to touch now
             raise
-        except sqlite3.DatabaseError:   # some other kind of file
+        except sqlite3.DatabaseError:      # some other kind of file
             tables = {"?"}
         if tables - _TABLES:
             raise NotAStore(f"{self.path} is not a ThreatBridge case database; not overwriting it")
@@ -155,8 +150,9 @@ class FlowStore:
         rows = {peer: [] for peer in peers}
         if peers:
             sql, params = _where(where)
-            for peer, *row in self._db().execute(_DETAILS[direction].format(sql),
-                                                 (host, json.dumps(list(peers)), lo, hi, *params)):
+            host_col, peer_col = ("dst", "src") if direction == "in" else ("src", "dst")
+            query = _DETAILS.format(host=host_col, peer=peer_col, where=sql)
+            for peer, *row in self._db().execute(query, (host, json.dumps(list(peers)), lo, hi, *params)):
                 rows[peer].append(row)
         return {peer: _ports_and_protocols(r) for peer, r in rows.items()}
 
@@ -169,13 +165,14 @@ class FlowStore:
         n, first, last = db.execute(_EDGE.format(sql), args).fetchone()
         return (n, first, last, *_ports_and_protocols(db.execute(_EDGE_DETAILS.format(sql), args)))
 
-    def edge_flows(self, src, dst, intervals, where=None, limit=-1):
+    def edge_flows(self, src, dst, intervals, where=None, limit=-1, offset=0):
         """The flows src -> dst that started within the intervals, oldest first."""
         sql, params = _where(where)
-        rows = self._db().execute(_EDGE_ROWS.format(sql), (_intervals(intervals), src, dst, *params, limit))
+        rows = self._db().execute(_EDGE_ROWS.format(sql), (_intervals(intervals), src, dst, *params, limit, offset))
         return [Flow(*row) for row in rows]
 
     def count(self, src, dst, intervals, where=None):
+        """How many flows src -> dst started within the intervals."""
         sql, params = _where(where)
         return self._db().execute(_EDGE.format(sql), (_intervals(intervals), src, dst, *params)).fetchone()[0]
 
@@ -184,10 +181,7 @@ class FlowStore:
         within the intervals `within`), oldest first."""
         intervals = [(lo, hi)] if within is None else [
             (max(a, lo), min(b, hi)) for a, b in within if max(a, lo) <= min(b, hi)]
-        sql, params = _where(where)
-        rows = self._db().execute(_EDGE_ROWS.format(sql) + " OFFSET ?",
-                                  (_intervals(intervals), src, dst, *params, limit, offset))
-        return [Flow(*row) for row in rows]
+        return self.edge_flows(src, dst, intervals, where, limit, offset)
 
     def times(self, src, dst, lo, hi, where=None):
         """The start times of the flows src -> dst within [lo, hi], sorted."""

@@ -2,7 +2,7 @@
 :root {
   --bg: #11151c; --panel: #1a202b; --line: #2c3544; --text: #d8dee9; --muted: #8a94a6;
   --hover: #2b3a55;
-  --root: #e5484d; --in: #3e9bff; --out: #f5a524; --node: #9aa7bd;
+  --root: #e5484d; --in: #3e9bff; --out: #f5a524;
   --up: #a78bfa; --down: #2dd4bf; --attack: #ff4d5e; --compromised: #b4232a; --route: #f472b6;
 }
 * { box-sizing: border-box; }
@@ -22,7 +22,6 @@ label.button input { display: none; }
 #go { background: #2f6fde; border-color: #2f6fde; }
 .brand { font-size: 15px; margin-right: 6px; align-self: center; }
 #status-line { flex-basis: 100%; min-height: 1.4em; color: var(--muted); }
-#status { color: var(--muted); }
 #hidden-note { color: var(--out); }
 #filter { width: 34ch; }
 /* An expression that can't be applied (D17). */

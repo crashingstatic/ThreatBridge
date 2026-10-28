@@ -145,10 +145,6 @@ def test_values_keep_their_type_and_times_their_millisecond():
     assert F.parse("time 2024-05-01T12:00:00.1239Z").core == F.parse("time 2024-05-01T12:00:00.123Z").core
 
 
-def test_filters_are_the_same_when_their_text_is():
-    assert F.parse("SMB || DNS") == F.parse("SMB OR DNS") and F.parse("SMB") != F.parse("DNS")
-    assert F.parse("SMB") != "SMB"
-    assert hash(F.parse("SMB || DNS")) == hash("SMB OR DNS")
 
 
 def test_several_filters_combine_with_and():
@@ -248,6 +244,13 @@ PORTS = [0, 22, 53, 80, 443, 445, 3389, 42000, 50000, 65535]
 SERVICES = ["smb", "ssl", "dns", "http", "krb", "dce_rpc", "ftp", "icmp", "unknown", "quic"]
 
 
+def flow_values(f):
+    """A case flow (model.Flow) as matches() reads it."""
+    return {"src": f.src, "dst": f.dst, "sport": f.sport, "dport": f.dport, "proto": f.proto,
+            "start": f.start, "duration": f.end - f.start, "packets": f.packets,
+            "bytes": f.bytes, "protocols": [f.service]}
+
+
 def random_flow(rng):
     start = T + rng.choice([0, 0.123, 0.1239, 0.124, 1, 60, 3600]) + rng.choice([0, 0.0005])
     return Flow(rng.choice(PEERS), rng.choice(PEERS), rng.choice(PORTS), rng.choice(PORTS),
@@ -305,7 +308,7 @@ def test_the_store_matches_the_same_flows(stored, seed):
     f = F.combine([random_expression(rng) for _ in range(rng.randint(1, 2))])
     sql, params = F.to_sql(f.core, "f.")
     got = sorted(r for (r,) in store._db().execute(f"SELECT rowid FROM flow AS f WHERE {sql}", params))
-    want = [i for i, fl in enumerate(flows, 1) if F.matches(f.core, F.flow_values(fl))]
+    want = [i for i, fl in enumerate(flows, 1) if F.matches(f.core, flow_values(fl))]
     assert got == want, f.text
 
 
@@ -317,56 +320,66 @@ def es_values(doc, field):
     return [] if v is None else (v if isinstance(v, list) else [v])
 
 
-def es_eval(q, doc):
-    """Like Elasticsearch, it refuses a clause with a key it doesn't know."""
-    (kind, body), = q.items()
-    if kind == "bool":
-        assert set(body) <= {"filter", "should", "must_not", "minimum_should_match"}, body
-        ok = all(es_eval(c, doc) for c in body.get("filter", []))
-        if "should" in body:
-            need = body.get("minimum_should_match", 0 if "filter" in body else 1)
-            ok = ok and sum(es_eval(c, doc) for c in body["should"]) >= need
-        return ok and not any(es_eval(c, doc) for c in body.get("must_not", []))
-    if kind == "match_none":
+def es_bool(body, doc):
+    assert set(body) <= {"filter", "should", "must_not", "minimum_should_match"}, body
+    ok = all(es_eval(c, doc) for c in body.get("filter", []))
+    if "should" in body:
+        need = body.get("minimum_should_match", 0 if "filter" in body else 1)
+        ok = ok and sum(es_eval(c, doc) for c in body["should"]) >= need
+    return ok and not any(es_eval(c, doc) for c in body.get("must_not", []))
+
+
+def es_script(body, doc):
+    """The packets/bytes sum script, as its painless source says."""
+    script, = body.values()
+    assert set(body) == {"script"} and set(script) == {"source", "lang", "params"}, body
+    assert script["lang"] == "painless" and script["source"] == F._SUM_SCRIPT
+    p = script["params"]
+    found = [v for f in p["fields"] for v in es_values(doc, f)]
+    if not found:
         return False
-    if kind == "exists":
-        return bool(es_values(doc, body["field"]))
-    if kind == "script":
-        script, = body.values()
-        assert set(body) == {"script"} and set(script) == {"source", "lang", "params"}, body
-        assert script["lang"] == "painless" and script["source"] == F._SUM_SCRIPT
-        p = script["params"]
-        found = [v for f in p["fields"] for v in es_values(doc, f)]
-        if not found:
-            return False
-        t = float(sum(found))
-        if p["lo"] is not None and (t <= p["lo"] if p["lo_open"] else t < p["lo"]):
-            return False
-        return not (p["hi"] is not None and (t >= p["hi"] if p["hi_open"] else t > p["hi"]))
+    t = float(sum(found))
+    above = p["lo"] is None or (t > p["lo"] if p["lo_open"] else t >= p["lo"])
+    return above and (p["hi"] is None or (t < p["hi"] if p["hi_open"] else t <= p["hi"]))
+
+
+def es_term(field, test, values):
+    want, nocase = (test["value"], test.get("case_insensitive")) if isinstance(test, dict) else (test, False)
+    if field in ("source.ip", "destination.ip"):         # an ip field: an address or a network
+        net = ipaddress.ip_network(want)
+        return any(ipaddress.ip_address(v) in net for v in values)
+    return any((str(v).lower() == str(want).lower()) if nocase else v == want for v in values)
+
+
+def es_wildcard(field, test, values):
+    fold = str.lower if test.get("case_insensitive") else str
+    return any(fnmatch.fnmatchcase(fold(str(v)), fold(test["value"])) for v in values)
+
+
+def es_range(field, test, values):
+    if test.get("format") == "epoch_millis":
+        values = [datetime.fromisoformat(v.replace("Z", "+00:00")).timestamp() * 1000 for v in values]
+    return any(all({"gt": v > b, "gte": v >= b, "lt": v < b, "lte": v <= b}[k] for k, b in test.items() if k != "format")
+               for v in values)
+
+
+ES_CLAUSES = {"bool": es_bool, "match_none": lambda body, doc: False, "script": es_script,
+              "exists": lambda body, doc: bool(es_values(doc, body["field"]))}
+ES_FIELD_CLAUSES = {"terms": lambda field, test, values: any(v in test for v in values),
+                    "term": es_term, "wildcard": es_wildcard, "range": es_range}
+
+
+def es_eval(q, doc):
+    """Whether `doc` matches the clause `q`. Like Elasticsearch, it refuses a clause with a key
+    it doesn't know."""
+    (kind, body), = q.items()
+    if kind in ES_CLAUSES:
+        return ES_CLAUSES[kind](body, doc)
+    assert kind in ES_FIELD_CLAUSES, f"unexpected clause {kind}"
     (field, test), = body.items()
-    values = es_values(doc, field)
-    if kind == "terms":
-        return any(v in test for v in values)
     if kind in ("term", "wildcard") and isinstance(test, dict):
         assert set(test) <= {"value", "case_insensitive"}, test
-    if kind == "term":
-        want, nocase = (test["value"], test.get("case_insensitive")) if isinstance(test, dict) else (test, False)
-        if field in ("source.ip", "destination.ip"):
-            net = ipaddress.ip_network(want)
-            return any(ipaddress.ip_address(v) in net for v in values)
-        return any((str(v).lower() == str(want).lower()) if nocase else v == want for v in values)
-    if kind == "wildcard":
-        fold = str.lower if test.get("case_insensitive") else str
-        return any(fnmatch.fnmatchcase(fold(str(v)), fold(test["value"])) for v in values)
-    if kind == "range":
-        if test.get("format") == "epoch_millis":
-            values = [datetime.fromisoformat(v.replace("Z", "+00:00")).timestamp() * 1000 for v in values]
-        for v in values:
-            if all({"gt": v > b, "gte": v >= b, "lt": v < b, "lte": v <= b}[k]
-                   for k, b in test.items() if k != "format"):
-                return True
-        return False
-    raise AssertionError(f"unexpected clause {kind}")
+    return ES_FIELD_CLAUSES[kind](field, test, es_values(doc, field))
 
 
 def random_record(rng):

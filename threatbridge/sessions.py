@@ -91,8 +91,8 @@ class SessionStore:
         if len(text.encode()) > MAX_BYTES:
             raise ValidationError(f"the map is larger than {MAX_BYTES // 2**20} MB")
         path = os.path.join(self.directory, self._file(name))
-        if os.path.exists(path):
-            if not overwrite:
+        if os.path.exists(path):                # replacing a map needs leave to; a new one
+            if not overwrite:                   # counts against MAX_SESSIONS
                 raise Conflict(f"a map called {name!r} is already saved")
         elif len(self.list()) >= MAX_SESSIONS:
             raise ValidationError(f"{MAX_SESSIONS} maps are saved already; delete some first")

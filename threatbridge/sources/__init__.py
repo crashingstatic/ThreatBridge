@@ -33,7 +33,8 @@ def _being_written(path):
 
 
 def _files(paths):
-    """(path, named_explicitly) for each file, walking directories recursively."""
+    """(path, named_explicitly) for each file, walking directories recursively (hidden files
+    and directories left out)."""
     for path in paths:
         if os.path.isdir(path):
             for root, dirs, names in os.walk(path):
@@ -49,7 +50,8 @@ def _files(paths):
 
 def find(paths):
     """{"pcap": [...], "nfcapd": [...]}: the evidence files under `paths`, each once however
-    many times it is named (directly, through its directory, or through a symlink)."""
+    many times it is named (directly, through its directory, or through a symlink). A file
+    named itself that can't be read is an error; one found in a directory is skipped."""
     found, seen = {"pcap": [], "nfcapd": []}, set()
     for path, explicit in _files(paths):
         real = os.path.realpath(path)

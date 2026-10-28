@@ -48,8 +48,6 @@ DISPLAY = {
 }
 
 
-
-
 def display_name(service):
     return DISPLAY.get(service) or service.upper()
 
@@ -62,7 +60,7 @@ _DHCP_COOKIE = b"\x63\x82\x53\x63"
 
 def from_payload(tcp, sport, dport, data):
     """The protocol a TCP (`tcp` true) or UDP payload's first bytes show, as a code (an index
-    into NAMES), or 0."""
+    into NAMES), or 0. Each test is one protocol's signature; the first that matches wins."""
     n = len(data)
     if n < 4:
         return 0
@@ -122,8 +120,11 @@ _FTP_229 = re.compile(rb" *229[ -][^\r\n]*?\(([!-~])\1\1(\d{1,5})\1\)")
 def ftp_signal(data):
     """What a TCP payload says if it is an FTP control message: (code, host, port), with a
     code from FTP_GREETING to FTP_PASV and, for a data connection announced (FTP_PORT,
-    FTP_PASV), its address (None: the control connection's server) and port; or None."""
-    if not data or data[0] not in _FTP_FIRST:
+    FTP_PASV), its address (None: the control connection's server) and port; or None.
+
+    Tried in turn: PORT and 227 (an address and port as six numbers), EPRT, 229 (a port
+    only), then the greeting, the answer to a login, and USER."""
+    if not data or data[0] not in _FTP_FIRST:       # a quick no for most payloads
         return None
     m = _FTP_PORT.match(data) or _FTP_227.match(data)
     if m:
@@ -145,12 +146,9 @@ def ftp_signal(data):
     if m:
         port = int(m.group(2))
         return (FTP_PASV, None, port) if 0 < port < 65536 else None
-    if _FTP_GREETING.match(data):
-        return FTP_GREETING, None, None
-    if _FTP_LOGIN.match(data):
-        return FTP_LOGIN, None, None
-    if _FTP_USER.match(data):
-        return FTP_USER, None, None
+    for code, pattern in ((FTP_GREETING, _FTP_GREETING), (FTP_LOGIN, _FTP_LOGIN), (FTP_USER, _FTP_USER)):
+        if pattern.match(data):
+            return code, None, None
     return None
 
 

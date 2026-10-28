@@ -1,33 +1,6 @@
 """Runtime configuration, read from TB_* environment variables."""
 import os
-from dataclasses import dataclass, field
-
-
-def _env(name, default=None):
-    value = os.environ.get(name)
-    return default if value is None or value == "" else value
-
-
-def _env_bool(name, default):
-    value = _env(name)
-    if value is None:
-        return default
-    return value.strip().lower() in ("1", "true", "yes", "on")
-
-
-def _env_list(name, default):
-    """Comma-separated list. Unset: `default`. Set but empty: no items (e.g. TB_DATASETS=
-    turns the dataset filter off)."""
-    value = os.environ.get(name)
-    if value is None:
-        return list(default)
-    return [v.strip() for v in value.split(",") if v.strip()]
-
-
-DATASETS = ("conn", "zeek.conn")
-DNS_DATASETS = ("dns", "zeek.dns")
-PACKETS_FIELDS = ("client.packets", "server.packets")
-BYTES_FIELDS = ("client.ip_bytes", "server.ip_bytes")
+from dataclasses import dataclass, field, fields
 
 
 @dataclass
@@ -50,7 +23,7 @@ class Config:
     es_index: str = "logs-*"
     es_timeout: int = 30
     # Only count connection records. Empty list disables the filter.
-    datasets: list = field(default_factory=lambda: list(DATASETS))
+    datasets: list = field(default_factory=lambda: ["conn", "zeek.conn"])
 
     # ECS field names
     f_src: str = "source.ip"
@@ -67,11 +40,11 @@ class Config:
     f_sport: str = "source.port"
     f_proto: str = "network.transport"
     f_duration: str = "event.duration"
-    f_packets: list = field(default_factory=lambda: list(PACKETS_FIELDS))
-    f_bytes: list = field(default_factory=lambda: list(BYTES_FIELDS))
+    f_packets: list = field(default_factory=lambda: ["client.packets", "server.packets"])
+    f_bytes: list = field(default_factory=lambda: ["client.ip_bytes", "server.ip_bytes"])
     # Zeek DNS records: what domain names on the exclude list resolved to, as the sensors saw it.
     # Empty dataset list disables the filter.
-    dns_datasets: list = field(default_factory=lambda: list(DNS_DATASETS))
+    dns_datasets: list = field(default_factory=lambda: ["dns", "zeek.dns"])
     f_dns_query: str = "dns.query.name"
     f_dns_ip: str = "dns.resolved_ip"
 
@@ -117,53 +90,32 @@ class Config:
 
     @classmethod
     def from_env(cls):
-        return cls(
-            backend=_env("TB_BACKEND", cls.backend),
-            case_paths=[p for p in (_env("TB_CASE_PATHS") or "").split(os.pathsep) if p],
-            case_db=_env("TB_CASE_DB"),
-            read_workers=int(_env("TB_READ_WORKERS", cls.read_workers)),
-            es_url=_env("TB_ES_URL", cls.es_url),
-            es_user=_env("TB_ES_USER"),
-            es_pass=_env("TB_ES_PASS"),
-            es_verify=_env_bool("TB_ES_VERIFY", cls.es_verify),
-            es_ca=_env("TB_ES_CA"),
-            es_index=_env("TB_ES_INDEX", cls.es_index),
-            es_timeout=int(_env("TB_ES_TIMEOUT", cls.es_timeout)),
-            datasets=_env_list("TB_DATASETS", DATASETS),
-            f_src=_env("TB_FIELD_SRC", cls.f_src),
-            f_dst=_env("TB_FIELD_DST", cls.f_dst),
-            f_ts=_env("TB_FIELD_TS", cls.f_ts),
-            f_dport=_env("TB_FIELD_DPORT", cls.f_dport),
-            f_dataset=_env("TB_FIELD_DATASET", cls.f_dataset),
-            f_conn_state=os.environ.get("TB_FIELD_CONN_STATE", cls.f_conn_state),
-            f_service=os.environ.get("TB_FIELD_SERVICE", cls.f_service),
-            f_sport=_env("TB_FIELD_SPORT", cls.f_sport),
-            f_proto=_env("TB_FIELD_PROTO", cls.f_proto),
-            f_duration=_env("TB_FIELD_DURATION", cls.f_duration),
-            f_packets=_env_list("TB_FIELD_PACKETS", PACKETS_FIELDS),
-            f_bytes=_env_list("TB_FIELD_BYTES", BYTES_FIELDS),
-            dns_datasets=_env_list("TB_DNS_DATASETS", DNS_DATASETS),
-            f_dns_query=_env("TB_FIELD_DNS_QUERY", cls.f_dns_query),
-            f_dns_ip=_env("TB_FIELD_DNS_IP", cls.f_dns_ip),
-            soc_url=_env("TB_SOC_URL", cls.soc_url).rstrip("/"),
-            soc_path=_env("TB_SOC_PATH", cls.soc_path),
-            pivot_time_clause=_env_bool("TB_PIVOT_TIME_CLAUSE", cls.pivot_time_clause),
-            soc_client_id=_env("TB_SOC_CLIENT_ID"),
-            soc_client_secret=_env("TB_SOC_CLIENT_SECRET"),
-            soc_ca=_env("TB_SOC_CA"),
-            pcap_timeout=int(_env("TB_PCAP_TIMEOUT", cls.pcap_timeout)),
-            default_window=_env("TB_WINDOW", cls.default_window),
-            max_window=_env("TB_MAX_WINDOW", cls.max_window),
-            default_limit=int(_env("TB_LIMIT", cls.default_limit)),
-            max_limit=int(_env("TB_MAX_LIMIT", cls.max_limit)),
-            rare_scan_cap=int(_env("TB_RARE_SCAN_CAP", cls.rare_scan_cap)),
-            exclude_file=_env("TB_EXCLUDE_FILE", cls.exclude_file),
-            compromised_file=_env("TB_COMPROMISED_FILE", cls.compromised_file),
-            sessions_dir=_env("TB_SESSIONS_DIR", cls.sessions_dir),
-            live_dns=_env_bool("TB_LIVE_DNS", cls.live_dns),
-            dns_ttl=int(_env("TB_DNS_TTL", cls.dns_ttl)),
-            dns_timeout=float(_env("TB_DNS_TIMEOUT", cls.dns_timeout)),
-            threat_hops=int(_env("TB_THREAT_HOPS", cls.threat_hops)),
-            threat_max_hosts=int(_env("TB_THREAT_MAX_HOSTS", cls.threat_max_hosts)),
-            max_paths=int(_env("TB_MAX_PATHS", cls.max_paths)),
-        )
+        """The settings from their variables (env_name), each unset one at its default. An empty
+        variable counts as unset, except for a list (no items) and the settings it turns off."""
+        values = {}
+        for f in fields(cls):
+            raw = os.environ.get(env_name(f.name))
+            if raw is not None and (raw or f.type is list or f.name in _MAY_BE_EMPTY):
+                values[f.name] = _parse(f, raw)
+        return cls(**values)
+
+
+# Settings an empty variable turns off: refused connections kept, protocols unknown.
+_MAY_BE_EMPTY = {"f_conn_state", "f_service"}
+
+
+def env_name(setting):
+    """A setting's variable: TB_ and its name in capitals, with FIELD_ for f_ (f_src:
+    TB_FIELD_SRC); TB_WINDOW and TB_LIMIT for the defaults."""
+    name = {"default_window": "window", "default_limit": "limit"}.get(setting, setting)
+    return "TB_" + (f"field_{name[2:]}" if name.startswith("f_") else name).upper()
+
+
+def _parse(f, raw):
+    if f.name == "case_paths":                     # paths, as in PATH
+        return [p for p in raw.split(os.pathsep) if p]
+    if f.type is list:                             # comma-separated
+        return [v.strip() for v in raw.split(",") if v.strip()]
+    if f.type is bool:
+        return raw.strip().lower() in ("1", "true", "yes", "on")
+    return raw.rstrip("/") if f.name == "soc_url" else f.type(raw)

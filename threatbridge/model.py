@@ -69,6 +69,8 @@ def flags_say_reversed(first, other, packets=False):
     never answered can't be told from a scan.
     """
     def role(f, answer):
+        """What a side's flags `f` say it is, given the other side's `answer`: "client",
+        "server", or None (they don't say)."""
         if f is None or not f & TCP_SYN:
             return None
         if not f & TCP_ACK:

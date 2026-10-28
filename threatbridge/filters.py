@@ -18,6 +18,7 @@ import ipaddress
 import re
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
+from typing import NamedTuple
 
 from . import protocols
 from .query import ValidationError, parse_time
@@ -54,21 +55,10 @@ class FilterError(ValidationError):
     pass
 
 
-class Filter:
+class Filter(NamedTuple):
     """One expression: `text`, canonical, and `core`, the tree of tests (see the module doc)."""
-    __slots__ = ("text", "core")
-
-    def __init__(self, text, core):
-        self.text, self.core = text, core
-
-    def __eq__(self, other):
-        return isinstance(other, Filter) and other.text == self.text
-
-    def __hash__(self):
-        return hash(self.text)
-
-    def __repr__(self):
-        return f"Filter({self.text!r})"
+    text: str
+    core: tuple
 
 
 # ---- reading an expression ----------------------------------------------------------------
@@ -150,6 +140,7 @@ class _Parser:
         return node
 
     def term(self):
+        """A term: an expression in parentheses, a comparison, or a protocol."""
         token = self.peek()
         if token is None:
             self.fail("expected a protocol, a field or '('")
@@ -167,6 +158,7 @@ class _Parser:
         return self.protocol()
 
     def comparison(self):
+        """field [op] value, op == if left out."""
         field = self.take()
         op = "=="
         if self.peek() in _COMPARISONS:
@@ -182,6 +174,8 @@ class _Parser:
             raise FilterError(f"{where}: {e}")
 
     def protocol(self):
+        """A protocol as the map names it. A near miss (another case, another name for it, a
+        field or operator in capitals) is refused with what to write instead."""
         where, word = self.where(), self.take()
         if word in NAMES:
             return ("service", word, NAMES[word])
@@ -217,7 +211,7 @@ def _number(text, field):
 
 def _value(field, op, text):
     """The value of a comparison, checked: a number or (lo, hi) range, an IP network, a
-    transport, or a time in epoch milliseconds."""
+    transport, or a time in epoch milliseconds: a branch per kind of field."""
     if field in ("src", "dst", "host"):
         if op not in ("==", "!="):
             raise FilterError(f"{field} takes == or != (inside or outside an address or CIDR)")
@@ -233,13 +227,13 @@ def _value(field, op, text):
         if text in TRANSPORTS or (_INT.fullmatch(text) and int(text) <= 255):
             return text
         raise FilterError(f"proto is tcp, udp, icmp or an IP protocol number, not {text!r}")
-    if field == "time":
-        if not re.match(r"\d{4}-\d\d-\d\d", text) and not re.fullmatch(r"\d{10,13}(\.\d+)?", text):
-            raise FilterError(f"time takes an ISO-8601 time (UTC unless it says), not {text!r}")
-        try:                                                         # to the millisecond
-            return (parse_time(text) - _EPOCH) // timedelta(milliseconds=1)
+    if field == "time":                         # ISO-8601, or epoch seconds or milliseconds
+        try:
+            if re.match(r"\d{4}-\d\d-\d\d|\d{10,13}(\.\d+)?$", text):
+                return (parse_time(text) - _EPOCH) // timedelta(milliseconds=1)
         except (ValidationError, OverflowError):
-            raise FilterError(f"time takes an ISO-8601 time (UTC unless it says), not {text!r}")
+            pass
+        raise FilterError(f"time takes an ISO-8601 time (UTC unless it says), not {text!r}")
     if "-" in text.strip("-"):
         lo, hi = text.split("-", 1)
         if op not in ("==", "!="):
@@ -254,6 +248,8 @@ def _value(field, op, text):
 # ---- the tests a comparison stands for ------------------------------------------------------
 
 def _core(node):
+    """The tests a parsed node stands for: a comparison becomes a range, net or proto test,
+    != a NOT, and port or host a test of either end."""
     kind = node[0]
     if kind == "group":
         return _core(node[1])
@@ -288,6 +284,8 @@ def _core(node):
 
 
 def _text(node):
+    """The parsed node written back canonically: operators in capitals, == spelled out, a
+    network as its network address."""
     kind = node[0]
     if kind == "group":
         return f"({_text(node[1])})"
@@ -345,6 +343,7 @@ def _address(ip):
 
 
 def _in(value, lo, lo_open, hi, hi_open):
+    """Whether value is within the bounds (None: no bound; open: the bound itself is out)."""
     if value is None:
         return False
     if lo is not None and (value <= lo if lo_open else value < lo):
@@ -355,7 +354,8 @@ def _in(value, lo, lo_open, hi, hi_open):
 
 
 def matches(core, flow):
-    """Whether `flow` passes the tests `core` (a Filter's core)."""
+    """Whether `flow` passes the tests `core` (a Filter's core): a branch per kind of node, as
+    in to_sql and to_es."""
     kind = core[0]
     if kind == "and":
         return all(matches(c, flow) for c in core[1])
@@ -380,13 +380,6 @@ def _seconds(ms):
     return None if ms is None else ms / 1000.0
 
 
-def flow_values(f):
-    """A case flow (model.Flow) as matches() reads it."""
-    return {"src": f.src, "dst": f.dst, "sport": f.sport, "dport": f.dport, "proto": f.proto,
-            "start": f.start, "duration": f.end - f.start, "packets": f.packets,
-            "bytes": f.bytes, "protocols": [f.service]}
-
-
 # ---- the case store (SQLite) ------------------------------------------------------------------
 
 def in_network(ip, network):
@@ -402,7 +395,8 @@ def _network(text):
 
 def to_sql(core, prefix=""):
     """(SQL condition, parameters) on the flow table's columns, each prefixed with `prefix`
-    (e.g. "f."). It needs ip_in_net (in_network) registered on the connection."""
+    (e.g. "f."): a branch per kind of node, as in matches(). It needs ip_in_net (in_network)
+    registered on the connection."""
     kind = core[0]
     if kind in ("and", "or"):
         parts = [to_sql(c, prefix) for c in core[1]]
@@ -483,7 +477,8 @@ def _service(cfg, keys):
 
 
 def to_es(core, cfg):
-    """An Elasticsearch query clause for `core`, on the configured fields."""
+    """An Elasticsearch query clause for `core`, on the configured fields: a branch per kind of
+    node, as in matches()."""
     kind = core[0]
     if kind == "and":
         return _all([to_es(c, cfg) for c in core[1]])

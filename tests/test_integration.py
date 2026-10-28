@@ -8,6 +8,7 @@ import socket
 import subprocess
 import sys
 import time
+from dataclasses import fields
 import urllib.request
 
 import pytest
@@ -16,7 +17,7 @@ from evidence import ACK, SYN, have_nfdump, load, make_nfcapd, tcp, write_pcap
 from threatbridge import sources
 from threatbridge.app import create_app
 from threatbridge.backends import CaseBackend, DemoBackend
-from threatbridge.config import Config
+from threatbridge.config import Config, env_name
 from threatbridge.excludes import ExcludeStore
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -156,7 +157,7 @@ def code_vars():
              for f in fs if f.endswith(".py")]
     files += [os.path.join(ROOT, p) for p in ("gunicorn.conf.py", "Dockerfile")]
     files += [os.path.join(ROOT, "deploy", f) for f in os.listdir(os.path.join(ROOT, "deploy")) if f.endswith(".sh")]
-    found = set()
+    found = {env_name(f.name) for f in fields(Config)}
     for path in files:
         with open(path, encoding="utf-8") as fh:
             found |= set(re.findall(r"\b(TB_[A-Z_]+)\b", fh.read()))
@@ -188,10 +189,8 @@ def test_the_env_example_only_sets_real_settings():
 
 
 def test_soc_actions_open_the_map_with_what_it_reads():
+    # The links carry ip, ts and dir, as the map reads them: ui_smoke.mjs opens it from one.
     actions = json.loads(read("securityonion", "soc-actions.json"))
-    app_js = read("threatbridge", "static", "app.js")
-    for name in ("ip", "ts", "dir"):
-        assert f'q.get("{name}")' in app_js
     assert {a["name"] for a in actions} == {"ThreatBridge: inbound (past)", "ThreatBridge: outbound (future)"}
     for a in actions:
         [link] = a["links"]

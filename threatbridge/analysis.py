@@ -54,7 +54,10 @@ def intersect(a, b):
 
 
 def subtract(a, b):
-    """The parts of `a` not in `b`. A shared end point may stay in; that only repeats work."""
+    """The parts of `a` not in `b`. A shared end point may stay in; that only repeats work.
+
+    Both are sorted, so one pass: each interval of `a` is cut at the intervals of `b` that
+    overlap it, and `j` skips those of `b` that end before it."""
     out, j = [], 0
     for lo, hi in a:
         while j < len(b) and b[j][1] < lo:
@@ -104,34 +107,13 @@ def spread(g, sources, window, max_hops, forward=True, blocked=frozenset(), max_
     r.hops = {h: 0 for h in sources}
     delta = dict(r.allowed)
     for k in range(1, max_hops + 1):
-        found, best = {}, {}
-        for x, intervals in delta.items():
-            if x not in g:
-                continue
-            for y, edge in (g._succ[x] if forward else g._pred[x]).items():
-                if y == x or y in blocked:
-                    continue
-                found_runs = _found(edge, intervals, window)
-                if not found_runs:
-                    continue
-                if record is not None:
-                    record.setdefault((x, y) if forward else (y, x), []).extend(found_runs)
-                if forward:   # arriving at y at time a allows leaving y within [a, a + window]
-                    found.setdefault(y, []).extend((a, b + window) for a, b in found_runs)
-                    hop = Hop(x, y, found_runs[0][0])                 # earliest arrival
-                    if y not in best or hop.start < best[y].start:
-                        best[y] = hop
-                else:         # leaving y at time b needs being on y within [b - window, b]
-                    found.setdefault(y, []).extend((a - window, b) for a, b in found_runs)
-                    hop = Hop(y, x, found_runs[-1][1])                # latest departure
-                    if y not in best or hop.start > best[y].start:
-                        best[y] = hop
+        found, best = _layer(g, delta, window, forward, blocked, record)
         delta = {}
         for y, intervals in sorted(found.items()):
             new = subtract(_clip(merge(intervals), bounds), r.allowed.get(y, []))
             if not new:
                 continue
-            if y not in r.allowed:
+            if y not in r.allowed:                    # reached for the first time
                 if max_hosts and len(r.allowed) >= max_hosts:
                     r.truncated = True
                     continue
@@ -141,6 +123,35 @@ def spread(g, sources, window, max_hops, forward=True, blocked=frozenset(), max_
         if not delta:
             break
     return r
+
+
+def _layer(g, delta, window, forward, blocked, record):
+    """One hop on from each host in `delta` ({host: the intervals newly allowed there}):
+    ({next host: the intervals those hops allow there, unmerged}, {next host: the Hop shown
+    for it}). With `record`, the runs of every hop found go into it (see spread)."""
+    found, best = {}, {}
+    for x, intervals in delta.items():
+        if x not in g:
+            continue
+        for y, edge in (g._succ[x] if forward else g._pred[x]).items():
+            if y == x or y in blocked:
+                continue
+            found_runs = _found(edge, intervals, window)
+            if not found_runs:
+                continue
+            if record is not None:
+                record.setdefault((x, y) if forward else (y, x), []).extend(found_runs)
+            if forward:   # arriving at y at time a allows leaving y within [a, a + window]
+                found.setdefault(y, []).extend((a, b + window) for a, b in found_runs)
+                hop = Hop(x, y, found_runs[0][0])                 # earliest arrival
+                if y not in best or hop.start < best[y].start:
+                    best[y] = hop
+            else:         # leaving y at time b needs being on y within [b - window, b]
+                found.setdefault(y, []).extend((a - window, b) for a, b in found_runs)
+                hop = Hop(y, x, found_runs[-1][1])                # latest departure
+                if y not in best or hop.start > best[y].start:
+                    best[y] = hop
+    return found, best
 
 
 def tree_edges(r):
@@ -195,15 +206,7 @@ def spread_into(g, b, tb, max_hops, blocked=frozenset(), slack=0.0, bounds=(-INF
     Both are optimistic (hops ignore time, times ignore the Window), so pruning on them never
     loses a path; paths_between() checks every hop exactly."""
     deadline = min(INF if tb is None else tb + slack, bounds[1])
-    hops, frontier = {b: 0}, [b]
-    for k in range(1, max_hops):                 # fewest hops to b, time ignored
-        nxt = []
-        for y in frontier:
-            for x in g._pred[y]:
-                if x not in hops and x not in blocked:
-                    hops[x] = k
-                    nxt.append(x)
-        frontier = nxt
+    hops = _hops_to(g, b, max_hops, blocked)
     if deadline == INF:                          # no deadline: time can't rule anything out
         return Reach(False, {h: [(-INF, INF)] for h in hops}, hops=hops)
     latest, heap = {b: deadline}, [(-deadline, b)]
@@ -222,6 +225,21 @@ def spread_into(g, b, tb, max_hops, blocked=frozenset(), slack=0.0, bounds=(-INF
                  hops={h: hops[h] for h in latest})
 
 
+def _hops_to(g, b, max_hops, blocked):
+    """{host: the fewest hops from it to b}, time ignored, for the hosts fewer than max_hops
+    away."""
+    hops, frontier = {b: 0}, [b]
+    for k in range(1, max_hops):
+        nxt = []
+        for y in frontier:
+            for x in g._pred[y]:
+                if x not in hops and x not in blocked:
+                    hops[x] = k
+                    nxt.append(x)
+        frontier = nxt
+    return hops
+
+
 def paths_between(g, a, b, ta, tb, window, max_hops, blocked=frozenset(), data_start=None,
                   slack=0.0, bounds=(-INF, INF), max_paths=None, into_b=None):
     """Every path a -> ... -> b, no host twice, whose hops chain under the time rule: the
@@ -235,9 +253,7 @@ def paths_between(g, a, b, ta, tb, window, max_hops, blocked=frozenset(), data_s
     Each is shown by one chain of flows: the earliest arrival at b, and before each hop the
     latest flow that leads to it. truncated: stopped at max_paths or MAX_STEPS.
     """
-    if a == b or a not in g or b not in g or a in blocked or b in blocked:
-        return [], False
-    if ta is None and data_start is None:
+    if a == b or a not in g or b not in g or a in blocked or b in blocked or (ta is None and data_start is None):
         return [], False
     if into_b is None:
         into_b = spread_into(g, b, tb, max_hops, blocked, slack, bounds)

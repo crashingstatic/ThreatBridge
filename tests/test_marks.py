@@ -69,7 +69,7 @@ def test_hosts_marked_through_flows_count_and_take_the_earliest_time(tmp_path):
     assert view["flows"] == [key(STORY[0], "phish")]
     view = store.mark_flow(key(STORY[1]))
     assert {h["ip"]: h["count"] for h in view["hosts"]} == {E: 1, A: 3, X: 1}
-    assert store.times() == {E: T, A: T, X: T + 5 * M}
+    assert comp.reached(*store.marks()) == {E: T, A: T, X: T + 5 * M}
     # Unmarking a flow drops only it; unmarking a host drops its own mark and its flows.
     view = store.unmark_flow(key(STORY[1]))
     assert {h["ip"]: h["count"] for h in view["hosts"]} == {E: 1, A: 2}
@@ -78,9 +78,9 @@ def test_hosts_marked_through_flows_count_and_take_the_earliest_time(tmp_path):
     # A host marked with its time unknown, and through a flow, was reached at the flow's start.
     store.mark(B, "")
     store.mark_flow(key(STORY[2]))
-    assert store.times() == {X: T + 10 * M, B: T + 10 * M}
+    assert comp.reached(*store.marks()) == {X: T + 10 * M, B: T + 10 * M}
     store.unmark_flow(key(STORY[2]))
-    assert store.times() == {B: None}
+    assert comp.reached(*store.marks()) == {B: None}
 
 
 def test_marked_flows_are_told_apart_by_all_but_the_note(tmp_path):
@@ -503,7 +503,8 @@ def test_how_each_host_was_marked():
 
 
 def test_a_marked_flow_passes_any_filter():
-    fl = filters.flow_values(STORY[1])                                                   # A -> X, SMB
+    f = STORY[1]                                                                         # A -> X, SMB
+    fl = {"start": f.start, "sport": f.sport, "dport": f.dport, "proto": f.proto, "protocols": [f.service]}
     scope = Scope(filters.parse("DNS"), [comp.parse_flow(key(STORY[0])), comp.parse_flow(key(STORY[1]))])
     assert scope.passes(fl, A, X) and not Scope(filters.parse("DNS")).passes(fl, A, X)
     assert not scope.passes(fl, X, A)

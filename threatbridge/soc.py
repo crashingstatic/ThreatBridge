@@ -56,6 +56,8 @@ class SocClient:
         return int(found.group(1))
 
     def _wait(self, job_id):
+        """Look at the job every POLL_EVERY seconds until it completes; SocError if it fails, is
+        deleted, says something unexpected, or is still pending after `timeout` seconds."""
         deadline = self.clock() + self.timeout
         while True:
             try:
@@ -79,6 +81,8 @@ class SocClient:
     # ---- talking to SOC -------------------------------------------------------------------
 
     def _bearer(self, renew=False):
+        """An access token for the API client: the one held, unless it is about to expire or
+        `renew` is asked (SOC refused it); else a new one from SOC's OAuth2 endpoint."""
         if renew or not self._token or self.clock() >= self._expires:
             try:
                 resp = self.session.post(f"{self.url}/oauth2/token", auth=self.client,

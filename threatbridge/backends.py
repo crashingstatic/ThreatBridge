@@ -30,7 +30,7 @@ import sqlite3
 import tempfile
 import threading
 import time
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
@@ -173,7 +173,8 @@ class ElasticBackend:
         return self._rarest(ip, direction, start, end, limit, exclude, clause)
 
     def _rarest(self, ip, direction, start, end, limit, exclude, clause=None):
-        """Exact bottom-N: count every distinct peer (up to the cap), sort ascending."""
+        """Exact bottom-N: count every distinct peer (up to the cap), a page of a composite
+        aggregation at a time, sort ascending, then get the details of the rarest."""
         cap = self.cfg.rare_scan_cap
         counts, after, truncated = [], None, False
         while True:
@@ -238,8 +239,8 @@ class ElasticBackend:
     def export(self, edges, hosts, flows, limit, **_):
         """Marked hosts, and the marked flows on drawn connections (no suspect flows: D16
         needs the case backend)."""
-        rows = marked_flow_rows(self, edges, flows, limit)
-        return {"hosts": host_rows(hosts, flows), "flows": rows, "truncated": False}
+        return {"hosts": host_rows(hosts, flows), "flows": marked_flow_rows(self, edges, flows, limit),
+                "truncated": False}
 
     def _flow(self, hit):
         """One hit as a flow, or None if it has no time: better left out than shown at a
@@ -339,23 +340,14 @@ class DemoBackend:
                  if not any(ipaddress.ip_address(p["peer"]) in n for n in nets)]
         if scope is not None:     # count only the flows that pass, as the other backends do
             peers = [p for p in (self._scoped(ip, p, direction, scope) for p in peers) if p]
-        if order == "top":
-            peers.sort(key=lambda p: (-p["count"], p["peer"]))
-        else:
-            peers.sort(key=lambda p: (p["count"], p["peer"]))
+        peers.sort(key=lambda p: (-p["count"] if order == "top" else p["count"], p["peer"]))
         return {"peers": peers[:limit], "distinct_peers": len(peers), "truncated": False}
 
     def _scoped(self, ip, peer, direction, scope):
         """A peer as neighbors() reports it, counting only the flows that pass `scope`."""
         src, dst = (peer["peer"], ip) if direction == "in" else (ip, peer["peer"])
         rows = self._passing(src, dst, parse_time(peer["first_seen"]), parse_time(peer["last_seen"]), scope)
-        if not rows:
-            return None
-        ports = {}
-        for r in rows:
-            ports[r["dport"]] = ports.get(r["dport"], 0) + 1
-        return dict(peer, count=len(rows), first_seen=rows[0]["start"], last_seen=rows[-1]["start"],
-                    ports=_top_ports(ports), protocols=sorted({p for r in rows for p in r["protocols"]}))
+        return dict(peer, **_summary(rows)) if rows else None
 
     def _passing(self, src, dst, start, end, scope):
         rows = self._rows(src, dst, start, end)
@@ -368,18 +360,9 @@ class DemoBackend:
         return {"total": len(rows), "flows": rows[offset:offset + limit]}
 
     def edge(self, src, dst, start, end, scope=None):
-        rows = self._passing(src, dst, start, end, scope)
-        ports = {}
-        for r in rows:
-            ports[r["dport"]] = ports.get(r["dport"], 0) + 1
-        return {"source": src, "target": dst, "count": len(rows),
-                "first_seen": rows[0]["start"] if rows else None,
-                "last_seen": rows[-1]["start"] if rows else None, "ports": _top_ports(ports),
-                "protocols": sorted({p for r in rows for p in r["protocols"]})}
+        return {"source": src, "target": dst, **_summary(self._passing(src, dst, start, end, scope))}
 
-    def export(self, edges, hosts, flows, limit, **_):
-        return {"hosts": host_rows(hosts, flows), "flows": marked_flow_rows(self, edges, flows, limit),
-                "truncated": False}
+    export = ElasticBackend.export      # the same: marks only, no suspect flows
 
     def _rows(self, src, dst, start, end):
         # As many flows as neighbors() reports for the pair, the first and last at the ends
@@ -396,6 +379,14 @@ class DemoBackend:
             row["id"] = f"demo{hashlib.sha256(f'{src}>{dst}>{i}'.encode()).hexdigest()[:16]}"
             row["soc_pcap"] = soc_pcap_url(self.cfg, row["id"], row["start"])
         return rows
+
+
+def _summary(rows):
+    """The count, first and last start, ports and protocols of a connection's flow rows."""
+    return {"count": len(rows), "first_seen": rows[0]["start"] if rows else None,
+            "last_seen": rows[-1]["start"] if rows else None,
+            "ports": _top_ports(Counter(r["dport"] for r in rows)),
+            "protocols": sorted({p for r in rows for p in r["protocols"]})}
 
 
 def _utc(epoch):
@@ -547,18 +538,16 @@ class CaseBackend:
             "truncated": False,
         }
 
-    def _edge(self, src, dst, intervals, role, where=None):
+    def _edge(self, src, dst, intervals, where=None):
         n, first, last, ports, found = self.store.edge(src, dst, intervals, where)
-        return {"source": src, "target": dst, "role": role, "count": n,
+        return {"source": src, "target": dst, "count": n,
                 "first_seen": fmt_time(_utc(first)) if n else None,
                 "last_seen": fmt_time(_utc(last)) if n else None,
                 "ports": _top_ports(ports), "protocols": found}
 
     def edge(self, src, dst, start, end, scope=None):
         lo, hi = start.timestamp() - TIME_SLACK, end.timestamp() + TIME_SLACK
-        e = self._edge(src, dst, [(lo, hi)], None, self._where(scope))
-        del e["role"]
-        return e
+        return self._edge(src, dst, [(lo, hi)], self._where(scope))
 
     def flows(self, src, dst, start, end, offset, limit, scope=None, within=None):
         """One page of the flows src -> dst that started in [start, end]; with `within`
@@ -594,7 +583,7 @@ class CaseBackend:
         # The conversation's own first and last flow, not the rounding slack around them.
         nodes = {a: {"id": a, "role": "selected", "time": fmt_time(_utc(end)), "hops": 0},
                  b: {"id": b, "role": "selected", "time": fmt_time(_utc(start)), "hops": 0}}
-        for reach, role in ((up, "up"), (down, "down")):
+        for reach, role in ((up, "up"), (down, "down")):     # on both lines: "both"
             for ip in reach.via:
                 node = nodes.get(ip)
                 if node is None:
@@ -602,9 +591,9 @@ class CaseBackend:
                                  "time": fmt_time(_utc(reach.via[ip].start)), "hops": reach.hops[ip]}
                 elif node["role"] not in ("selected", role):
                     node["role"] = "both"
-        edges = [self._edge(a, b, [(first, last)], "selected", where)]
+        edges = [dict(self._edge(a, b, [(first, last)], where), role="selected")]
         for reach, role in ((up, "up"), (down, "down")):
-            edges += [self._edge(s, d, iv, role, where) for s, d, iv in analysis.tree_edges(reach)]
+            edges += [dict(self._edge(s, d, iv, where), role=role) for s, d, iv in analysis.tree_edges(reach)]
         return {"nodes": list(nodes.values()), "edges": edges,
                 "truncated": up.truncated or down.truncated}
 
@@ -643,35 +632,34 @@ class CaseBackend:
         where = self._where(scope)
         lo_b, hi_b = _epochs(bounds)
         drawn = {(src, dst) for src, dst, _, _ in edges}
-        marked = {pair: found for pair, found in self._marked(flows).items() if pair in drawn}
-        points = set()
-        for src, dst, lo, hi in edges:
-            for t in self.store.times(src, dst, max(lo - TIME_SLACK, lo_b), min(hi + TIME_SLACK, hi_b), where):
-                points.add((src, dst, t))
-        points.update((src, dst, t) for (src, dst), found in marked.items() for _, t in found)
-        g = build_graph(points)
-        on_map = {h for e in edges for h in e[:2]}
+        marked = {pair: [t for _, t in found] for pair, found in self._marked(flows).items() if pair in drawn}
+        on_map = {h for pair in drawn for h in pair}
         marks = {h: t for h, t in reached(hosts, flows).items() if h in on_map}
-        found = analysis.suspects(g, marks, window.total_seconds(), max_hops, _Excluded(exclude),
-                                  (lo_b, hi_b), TIME_SLACK)
-        part = _parts(on_map, ((src, dst) for src, dst, _, _ in edges))
+        found = analysis.suspects(self._drawn(edges, marked, where, lo_b, hi_b), marks, window.total_seconds(),
+                                  max_hops, _Excluded(exclude), (lo_b, hi_b), TIME_SLACK)
+        part = _parts(on_map, drawn)
         affected = {part[h] for h in marks}
-        out = []
-        for src, dst, _, _ in edges:
-            entry = {"source": src, "target": dst}
-            if part[src] not in affected:
-                out.append(dict(entry, status="unaffected"))
-                continue
-            locked = [t for _, t in marked.get((src, dst), [])]
-            intervals = analysis.merge(found.get((src, dst), []) + [(t, t) for t in locked])
-            e = self._edge(src, dst, intervals, None, where) if intervals else {"count": 0}
-            if not e["count"]:
-                out.append(dict(entry, status="hidden"))
-                continue
-            del e["role"]
-            out.append(dict(e, status="kept", marked=len(locked), suspect=e["count"] - len(locked),
-                            within=[[fmt_time(_utc(a)), fmt_time(_utc(b))] for a, b in intervals]))
-        return {"edges": out}
+        return {"edges": [self._kept(src, dst, found.get((src, dst), []), marked.get((src, dst), []), where)
+                          if part[src] in affected else {"source": src, "target": dst, "status": "unaffected"}
+                          for src, dst, _, _ in edges]}
+
+    def _drawn(self, edges, marked, where, lo_b, hi_b):
+        """A graph of the flows on the drawn connections: within each one's span and the time
+        range, and the marked ones on them."""
+        points = {(src, dst, t) for src, dst, lo, hi in edges
+                  for t in self.store.times(src, dst, max(lo - TIME_SLACK, lo_b), min(hi + TIME_SLACK, hi_b), where)}
+        points.update((src, dst, t) for (src, dst), times in marked.items() for t in times)
+        return build_graph(points)
+
+    def _kept(self, src, dst, runs, locked, where):
+        """A drawn connection in a part of the map with a marked host: "kept", counting its
+        suspect flows (`runs`) and marked ones (start times `locked`), or "hidden" if none."""
+        intervals = analysis.merge(runs + [(t, t) for t in locked])
+        e = self._edge(src, dst, intervals, where) if intervals else {"count": 0}
+        if not e["count"]:
+            return {"source": src, "target": dst, "status": "hidden"}
+        return dict(e, status="kept", marked=len(locked), suspect=e["count"] - len(locked),
+                    within=[[fmt_time(_utc(a)), fmt_time(_utc(b))] for a, b in intervals])
 
     def export(self, edges, hosts, flows, limit, window=None, max_hops=None, exclude=(),
                bounds=(None, None), scope=None):

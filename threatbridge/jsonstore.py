@@ -4,7 +4,6 @@ import fcntl
 import json
 import os
 import tempfile
-import threading
 
 
 class StoreError(RuntimeError):
@@ -12,35 +11,36 @@ class StoreError(RuntimeError):
 
 
 class JsonStore:
-    def __init__(self, path, key, *more):
+    def __init__(self, path, *keys):
         self.path = path
-        self.key = key            # top-level list in the file, e.g. {"entries": [...]}
-        self.keys = (key, *more)  # all the lists it holds
-        self._tlock = threading.Lock()
+        self.keys = keys          # the top-level lists in the file, e.g. {"entries": [...]}
 
     @contextlib.contextmanager
     def locked(self):
-        """Yield the current list; if the block changes it in place, it is written back."""
+        """Yield the (first) list; if the block changes it in place, it is written back."""
         with self.locked_all() as lists:
-            yield lists[self.key]
+            yield lists[self.keys[0]]
 
     @contextlib.contextmanager
     def locked_all(self):
         """Yield {key: list} for every list the file holds; changed in place, they are written
         back together."""
-        # Thread lock + flock: gunicorn runs several worker processes.
-        with self._tlock, open(self.path + ".lock", "a") as fh:
+        # flock on a file opened for each call: it excludes gunicorn's other worker processes
+        # and this process's other threads alike.
+        with open(self.path + ".lock", "a") as fh:
             fcntl.flock(fh, fcntl.LOCK_EX)
             try:
                 lists = self._load()
-                before = json.dumps(lists, sort_keys=True)
+                before = json.dumps(lists)
                 yield lists
-                if json.dumps(lists, sort_keys=True) != before:
-                    self._save(lists)
+                if json.dumps(lists) != before:
+                    write_atomically(self.path, json.dumps(lists, indent=2))
             finally:
                 fcntl.flock(fh, fcntl.LOCK_UN)
 
     def _load(self):
+        """{key: list} from the file: empty lists if there is no file; StoreError if it isn't
+        JSON or a key isn't a list."""
         try:
             with open(self.path, encoding="utf-8") as fh:
                 data = json.load(fh)
@@ -55,9 +55,6 @@ class JsonStore:
                 raise StoreError(f'{self.path} should hold {{"{key}": [...]}}; fix or remove it')
             lists[key] = items
         return lists
-
-    def _save(self, lists):
-        write_atomically(self.path, json.dumps({k: lists[k] for k in self.keys}, indent=2))
 
 
 def write_atomically(path, text):

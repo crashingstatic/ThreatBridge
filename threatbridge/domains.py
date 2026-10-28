@@ -44,18 +44,13 @@ class DomainResolver:
         self._pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="dns") if live else None
 
     def captured(self, entry):
-        ips = self._capture_cache.get(entry)
-        if ips is None:
-            if entry.startswith("*."):
-                suffix = entry[1:]  # ".example.com": subdomains only
-                found = set()
-                for name, seen in self.passive.items():
-                    if name.endswith(suffix):
-                        found.update(seen)
-            else:
-                found = set(self.passive.get(entry, {}))
-            ips = self._capture_cache[entry] = sorted(found, key=ip_key)
-        return ips
+        """The addresses the capture's DNS answers gave for `entry`; for "*.example.com", those
+        of its subdomains (names ending ".example.com")."""
+        if entry not in self._capture_cache:
+            names = [n for n in self.passive if n.endswith(entry[1:])] if entry.startswith("*.") else [entry]
+            found = {ip for n in names for ip in self.passive.get(n, {})}
+            self._capture_cache[entry] = sorted(found, key=ip_key)
+        return self._capture_cache[entry]
 
     def _refresh(self, names):
         """Look up names whose cached answer is missing or older than the TTL, in parallel,
@@ -70,10 +65,10 @@ class DomainResolver:
                 ips, error = fut.result(timeout=max(0.0, deadline - time.monotonic())), None
             except FutureTimeout:
                 ips, error = [], "DNS lookup timed out"
-            except OSError as e:  # socket.gaierror: no such name, no resolver, ...
-                ips, error = [], f"DNS lookup failed: {e.strerror or e}"
-            except ValueError as e:  # e.g. UnicodeError from IDNA encoding
-                ips, error = [], f"DNS lookup failed: {e}"
+            # socket.gaierror (an OSError): no such name, no resolver, ...; ValueError: e.g. a
+            # UnicodeError from IDNA encoding.
+            except (OSError, ValueError) as e:
+                ips, error = [], f"DNS lookup failed: {getattr(e, 'strerror', None) or e}"
             self._live_cache[name] = (now, ips, error)
 
     def _refresh_answers(self, entries):
@@ -100,13 +95,10 @@ class DomainResolver:
             self._refresh([d for d in domains if not d.startswith("*.")])
         out = {}
         for d in domains:
-            _, live_ips, error = self._live_cache.get(d, (None, [], None))
-            if self.answers:
-                _, captured, capture_error = self._capture_cache[d]
-                error = "; ".join(e for e in (capture_error, error) if e) or None
-            else:
-                captured = self.captured(d)
-            out[d] = {"capture": captured, "dns": live_ips, "error": error}
+            _, live_ips, live_error = self._live_cache.get(d, (None, [], None))
+            _, captured, capture_error = self._capture_cache[d] if self.answers else (None, self.captured(d), None)
+            out[d] = {"capture": captured, "dns": live_ips,
+                      "error": "; ".join(e for e in (capture_error, live_error) if e) or None}
         return out
 
     def expand(self, entries):

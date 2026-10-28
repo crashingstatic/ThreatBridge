@@ -7,7 +7,7 @@ venv/
 .venv/
 
 # Browser tests
-node_modules/
+node_modules
 
 # Local deployment: PKI, credentials, shared lists, case databases
 certs/

@@ -68,9 +68,8 @@ class _Conn:
         started it, the first packets' flags, then the ports, decide."""
         if refused(self.oall, self.rall):
             return []
-        flip = self.time_flip
-        if flip is None:
-            flip = settle(self.first_flags, self.other_flags, self.oport, self.rport, packets=True)
+        flip = self.time_flip if self.time_flip is not None else \
+            settle(self.first_flags, self.other_flags, self.oport, self.rport, packets=True)
         server, client = (self.oport, self.rport) if flip else (self.rport, self.oport)
         return oriented(flip, self.orig, self.oport, self.resp, self.rport, self.proto,
                         self.start, self.last, self.packets, self.bytes, self.source,
@@ -111,6 +110,8 @@ class FlowTracker:
         self.expected = {}   # (host, port) -> (who connects to it, until when): FTP data
 
     def add(self, ts, src, dst, proto, sport, dport, nbytes, flags, source, code=0, note=None):
+        """One packet: its connection (a new one after the idle timeout, or a SYN after a FIN)
+        takes its protocol code (or FTP message), flags, size and time."""
         if ts > self.now:
             self.now = ts
         if self.now >= self.next_sweep:
@@ -150,6 +151,7 @@ class FlowTracker:
                 conn.closing = True
 
     def _sweep(self):
+        """Close the idle connections, and forget the FTP announcements past their time."""
         idle = [k for k, c in self.open.items() if self.now - c.last > idle_timeout(c.proto)]
         for key in idle:
             self._close(key)
@@ -281,14 +283,7 @@ def record_dns(payload, ts, dns):
         elif rr.type == dpkt.dns.DNS_AAAA and len(rr.rdata) == 16:
             ips.add(socket.inet_ntop(socket.AF_INET6, rr.rdata))
     names.discard("")
-    for name in names:
-        seen = dns.setdefault(name, {})
-        for ip in ips:
-            if ip in seen:
-                seen[ip][0] = min(seen[ip][0], ts)
-                seen[ip][1] = max(seen[ip][1], ts)
-            else:
-                seen[ip] = [ts, ts]
+    _merge_dns(dns, {name: {ip: (ts, ts) for ip in ips} for name in names})
 
 
 REPORT_EVERY = 4096   # packets between progress reports
@@ -316,17 +311,10 @@ def _decoded(path, dns, counts, report=None, notes=None):
             except (dpkt.Error, IndexError, struct.error):
                 counts.skipped += 1
                 continue
-            if isinstance(ip, dpkt.ip.IP):
-                if ip.offset:
-                    continue  # later fragments have no ports; only the first is counted
-                version, nbytes = 4, ip.len or len(ip)
-            elif isinstance(ip, dpkt.ip6.IP6):
-                frag = getattr(ip, "extension_hdrs", {}).get(dpkt.ip.IP_PROTO_FRAGMENT)
-                if frag is not None and frag.frag_off:
-                    continue  # as above: a later fragment is payload only
-                version, nbytes = 6, ip.plen + 40
-            else:
-                continue  # ARP and other non-IP traffic
+            sized = _ip_size(ip)
+            if sized is None:
+                continue
+            version, nbytes = sized
             t = ip.data
             code = 0
             if isinstance(t, dpkt.tcp.TCP):
@@ -358,6 +346,17 @@ def _decoded(path, dns, counts, report=None, notes=None):
             index += 1
         if report:
             report(fh.tell() - offset)
+
+
+def _ip_size(ip):
+    """(IP version, IP-layer bytes) of a decoded frame; None for one that isn't IP (ARP, ...)
+    or is a later fragment, which has no ports (only the first fragment is counted)."""
+    if isinstance(ip, dpkt.ip.IP):
+        return None if ip.offset else (4, ip.len or len(ip))
+    if isinstance(ip, dpkt.ip6.IP6):
+        frag = getattr(ip, "extension_hdrs", {}).get(dpkt.ip.IP_PROTO_FRAGMENT)
+        return None if frag is not None and frag.frag_off else (6, ip.plen + 40)
+    return None
 
 
 class _Hosts:
@@ -405,6 +404,7 @@ def _decode_file(path, want_dns):
 
 
 def _merge_dns(dns, more):
+    """Add `more` ({name: {ip: (first, last)}}) to `dns`, widening the times already there."""
     for name, seen in more.items():
         known = dns.setdefault(name, {})
         for ip, (first, last) in seen.items():
@@ -427,7 +427,7 @@ def read_pcaps(paths, dns=None, workers=1, stage=None):
     tracker, hosts = FlowTracker(), _Hosts()
     files = sorted(paths, key=_first_timestamp)
     packets = 0
-    if workers <= 1 or len(files) <= 1:
+    if workers <= 1 or len(files) <= 1:        # decoded and followed as they are read, unpacked
         for i, path in enumerate(files, 1):
             counts, notes = _Counts(), {}
             note = f"file {i} of {len(files)}"
