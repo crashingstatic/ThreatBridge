@@ -162,8 +162,8 @@ flows of a connection (`offset + limit` past that is a 400); narrow the time ran
 ### `POST /api/flows`
 
 `GET /api/flows` with its parameters in a JSON object, plus `filters`, `marks`, and `within`:
-`[[from, to], ...]` from `POST /api/suspect`, to list only a kept connection's marked and suspect
-flows (case backend).
+`[[from, to], ...]` from `POST /api/suspect` (at most 100,000 intervals), to list only a kept
+connection's marked and suspect flows (case backend).
 
 ### `GET /api/edge`
 

@@ -2,6 +2,7 @@
 Elasticsearch's query match exactly the same flows as the Python test."""
 import fnmatch
 import ipaddress
+import json
 import random
 from datetime import datetime, timezone
 
@@ -34,6 +35,10 @@ T = 1_714_564_800.0
     ("time > 2024-05-01T12:00:00Z", "time > 2024-05-01T12:00:00Z"),
     ("Kerberos OR DCE-RPC OR MSSQL OR VNC OR FTP OR Unknown OR ICMP", None),
     ("QUIC OR MQTT_V5", "QUIC OR MQTT_V5"),              # other Zeek services, in capitals
+    ("SMB  ", "SMB"),                                    # spaces after the last term
+    ("sport 5-5", "sport == 5-5"),                       # a range of one
+    ("proto 255", "proto == 255"),
+    (" OR ".join(["SMB"] * 72), None),                   # 500 characters, the most there may be
 ])
 def test_expressions_read(text, canonical):
     assert F.parse(text).text == (canonical or text)
@@ -99,6 +104,53 @@ def test_the_deepest_nesting_allowed():
     assert F.parse("(" * F.MAX_DEPTH + "SMB" + ")" * F.MAX_DEPTH).text.count("(") == F.MAX_DEPTH
 
 
+def test_nesting_counts_only_what_encloses_a_term():
+    deep = "(" * F.MAX_DEPTH + "SMB" + ")" * F.MAX_DEPTH
+    assert F.parse(" AND ".join(["(SMB)", "NOT DNS", "(HTTP)", deep])).text.count("(") == F.MAX_DEPTH + 2
+    with pytest.raises(F.FilterError, match="more than 50 levels"):
+        F.parse("(SMB) AND (DNS) AND (" + deep + ")")
+
+
+@pytest.mark.parametrize("text,error", [
+    ("", "a filter needs an expression, e.g. SMB AND dport 445"),
+    ("x" * (F.MAX_LENGTH + 1), "a filter is at most 500 characters"),
+    ("sport (", "at character 7: sport needs a value"),
+    ("sport )", "at character 7: sport needs a value"),
+    ("sport !", "at character 7: sport needs a value"),
+    ("sport &&", "at character 7: sport needs a value"),
+    ("sport ||", "at character 7: sport needs a value"),
+    ("SMB or DNS", "at character 5: operators are in capitals: write OR"),
+    ("SMB not DNS", "at character 5: operators are in capitals: write NOT"),
+    ("and SMB", "at character 1: operators are in capitals: write AND"),
+    ("Or SMB", "at character 1: operators are in capitals: write OR"),
+    ("not SMB", "at character 1: operators are in capitals: write NOT"),
+    ("proto > 6", "at character 9: proto takes == or !="),
+    ("proto 256", "at character 7: proto is tcp, udp, icmp or an IP protocol number, not '256'"),
+    ("sport -5", "at character 7: sport takes a whole number, not '-5'"),
+    ("sport 5-", "at character 7: sport takes a whole number, not '5-'"),
+    ("sport X-5", "at character 7: sport takes a whole number, not 'X'"),
+    ("sport 1-2-3", "at character 7: sport takes a whole number, not '2-3'"),
+    ("sport 1.5", "at character 7: sport takes a whole number, not '1.5'"),
+    ("445", "at character 1: unknown term '445': write a protocol as the map shows it (e.g. SMB, TLS, "
+            "Kerberos), or a field (sport, dport, port, src, dst, host, proto, packets, bytes, duration, time)"),
+])
+def test_error_messages_in_full(text, error):
+    with pytest.raises(F.FilterError) as e:
+        F.parse(text)
+    assert str(e.value) == error
+
+
+def test_values_keep_their_type_and_times_their_millisecond():
+    assert type(F.parse("bytes 10").core[2]) is int and type(F.parse("duration 10").core[2]) is float
+    assert F.parse("time 2024-05-01T12:00:00.1239Z").core == F.parse("time 2024-05-01T12:00:00.123Z").core
+
+
+def test_filters_are_the_same_when_their_text_is():
+    assert F.parse("SMB || DNS") == F.parse("SMB OR DNS") and F.parse("SMB") != F.parse("DNS")
+    assert F.parse("SMB") != "SMB"
+    assert hash(F.parse("SMB || DNS")) == hash("SMB OR DNS")
+
+
 def test_several_filters_combine_with_and():
     assert F.combine(None) is None and F.combine([]) is None
     one = F.combine(["SMB"])
@@ -109,6 +161,12 @@ def test_several_filters_combine_with_and():
     assert not F.matches(both.core, flow_dict(protocols=["dns"], sport=1))
     with pytest.raises(F.FilterError, match=r"filter 2 \('smb'\) at character 1"):
         F.combine(["SMB", "smb"])
+    with pytest.raises(F.FilterError) as e:                 # one filter: just what's wrong
+        F.combine(["smb"])
+    assert str(e.value) == "at character 1: protocol names are case-sensitive: write SMB"
+    with pytest.raises(F.FilterError) as e:                 # a long one, cut short
+        F.combine(["SMB", "  " + "x" * 70])
+    assert str(e.value).startswith(f"filter 2 ('{'x' * 60}') at character 3: unknown term")
     with pytest.raises(F.FilterError, match="at most 20 filters"):
         F.combine(["SMB"] * (F.MAX_FILTERS + 1))
     assert F.combine(["SMB"] * F.MAX_FILTERS) is not None
@@ -116,6 +174,13 @@ def test_several_filters_combine_with_and():
         F.combine("SMB")
     with pytest.raises(F.FilterError, match="a list of expressions"):
         F.combine([1])
+
+
+def test_the_sql_a_filter_stands_for():
+    assert F.to_sql(F.parse("NOT (SMB OR sport 5)").core, "f.") == (
+        "NOT ((coalesce(f.service IN (?), 0)) OR (f.sport IS NOT NULL AND f.sport >= ? AND f.sport <= ?))",
+        ["smb", 5, 5])
+    assert F.to_sql(F.parse("sport 5").core) == ("sport IS NOT NULL AND sport >= ? AND sport <= ?", [5, 5])
 
 
 # ---- what they match ----------------------------------------------------------------------
@@ -253,18 +318,24 @@ def es_values(doc, field):
 
 
 def es_eval(q, doc):
+    """Like Elasticsearch, it refuses a clause with a key it doesn't know."""
     (kind, body), = q.items()
     if kind == "bool":
+        assert set(body) <= {"filter", "should", "must_not", "minimum_should_match"}, body
         ok = all(es_eval(c, doc) for c in body.get("filter", []))
         if "should" in body:
-            ok = ok and any(es_eval(c, doc) for c in body["should"])
+            need = body.get("minimum_should_match", 0 if "filter" in body else 1)
+            ok = ok and sum(es_eval(c, doc) for c in body["should"]) >= need
         return ok and not any(es_eval(c, doc) for c in body.get("must_not", []))
     if kind == "match_none":
         return False
     if kind == "exists":
         return bool(es_values(doc, body["field"]))
     if kind == "script":
-        p = body["script"]["params"]
+        script, = body.values()
+        assert set(body) == {"script"} and set(script) == {"source", "lang", "params"}, body
+        assert script["lang"] == "painless" and script["source"] == F._SUM_SCRIPT
+        p = script["params"]
         found = [v for f in p["fields"] for v in es_values(doc, f)]
         if not found:
             return False
@@ -276,6 +347,8 @@ def es_eval(q, doc):
     values = es_values(doc, field)
     if kind == "terms":
         return any(v in test for v in values)
+    if kind in ("term", "wildcard") and isinstance(test, dict):
+        assert set(test) <= {"value", "case_insensitive"}, test
     if kind == "term":
         want, nocase = (test["value"], test.get("case_insensitive")) if isinstance(test, dict) else (test, False)
         if field in ("source.ip", "destination.ip"):
@@ -283,7 +356,8 @@ def es_eval(q, doc):
             return any(ipaddress.ip_address(v) in net for v in values)
         return any((str(v).lower() == str(want).lower()) if nocase else v == want for v in values)
     if kind == "wildcard":
-        return any(fnmatch.fnmatchcase(str(v).lower(), test["value"].lower()) for v in values)
+        fold = str.lower if test.get("case_insensitive") else str
+        return any(fnmatch.fnmatchcase(fold(str(v)), fold(test["value"])) for v in values)
     if kind == "range":
         if test.get("format") == "epoch_millis":
             values = [datetime.fromisoformat(v.replace("Z", "+00:00")).timestamp() * 1000 for v in values]
@@ -305,8 +379,9 @@ def random_record(rng):
            "event.duration": rng.choice([0, 0.5, 1, 1.5, 30, None]),
            "client.packets": rng.choice([1, 5, 10, None]), "server.packets": rng.choice([0, 1, None]),
            "client.ip_bytes": rng.choice([60, 1000, None]), "server.ip_bytes": rng.choice([0, 1, None]),
-           "network.protocol": rng.choice(["smb", "smb,ntlm,gssapi", "ntlm,smb", "ssl", "dns", "krb_tcp",
-                                           "ftp-data", "DCE_RPC", "quic", "", "-", None, None])}
+           "network.protocol": rng.choice(["smb", "smb,ntlm,gssapi", "ntlm,smb", "SMB,NTLM", "NTLM,SMB,GSSAPI",
+                                           "ssl", "dns", "krb_tcp", "ftp-data", "DCE_RPC", "quic", "", "-",
+                                           None, None])}
     return {k: v for k, v in doc.items() if v is not None}
 
 
@@ -330,13 +405,14 @@ def test_elasticsearch_without_zeek_service_names_only_icmp_and_unknown():
     icmp, tcp = {"network.transport": "icmp"}, {"network.transport": "tcp", "network.protocol": "smb"}
     assert es_eval(F.to_es(F.parse("ICMP").core, cfg), icmp) and not es_eval(F.to_es(F.parse("ICMP").core, cfg), tcp)
     assert es_eval(F.to_es(F.parse("Unknown").core, cfg), tcp)
+    assert not es_eval(F.to_es(F.parse("Unknown").core, cfg), icmp)
     assert F.to_es(F.parse("SMB").core, cfg) == {"match_none": {}}
 
 
 def test_elasticsearch_fields_follow_the_config():
     cfg = Config(f_sport="s.p", f_dport="d.p", f_duration="dur", f_ts="ts", f_src="s.ip", f_dst="d.ip",
                  f_proto="tr", f_packets=["pk"], f_bytes=["by1", "by2"])
-    assert F.to_es(F.parse("sport 5").core, cfg) == {"range": {"s.p": {"gte": 5, "lte": 5}}}
+    assert json.dumps(F.to_es(F.parse("sport 5").core, cfg)) == '{"range": {"s.p": {"gte": 5, "lte": 5}}}'
     assert F.to_es(F.parse("dport > 5").core, cfg) == {"range": {"d.p": {"gt": 5}}}
     assert F.to_es(F.parse("duration < 2").core, cfg) == {"range": {"dur": {"lt": 2.0}}}
     assert F.to_es(F.parse("time 2024-05-01T12:00:00Z").core, cfg) == \

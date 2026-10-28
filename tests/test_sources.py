@@ -951,14 +951,25 @@ def test_netflow_names_protocols_by_port():
     (b"PORT 10,0,0,256,195,80\r\n", None),                                          # not an address
     (b"PORT 10,0,0,5,0,0\r\n", None),                                               # port 0
     (b"PORT 10,0,0,5\r\n", None),
+    (b"PORT 256,0,0,5,195,80\r\n", None), (b"PORT 10,256,0,5,195,80\r\n", None),
+    (b"PORT 10,0,256,5,195,80\r\n", None), (b"PORT 10,0,0,5,256,80\r\n", None),
+    (b"PORT 10,0,0,5,195,256\r\n", None),
+    (b"PORT 255,255,255,255,255,255\r\n", (protocols.FTP_PORT, "255.255.255.255", 65535)),
+    (b"PORT 10,0,0,5,0,1\r\n", (protocols.FTP_PORT, "10.0.0.5", 1)),
     (b"EPRT |1|10.0.0.5|50000|\r\n", (protocols.FTP_PORT, "10.0.0.5", 50000)),
     (b"EPRT !2!2001:DB8::5!50000!\r\n", (protocols.FTP_PORT, "2001:db8::5", 50000)),  # any delimiter
     (b"EPRT |1|2001:db8::5|50000|\r\n", None),                                      # IPv4 said, IPv6 given
     (b"EPRT |1|10.0.0.5|70000|\r\n", None),
+    (b"EPRT |1|10.0.0.5|65536|\r\n", None), (b"EPRT |1|10.0.0.5|0|\r\n", None),
+    (b"EPRT |1|10.0.0.5|65535|\r\n", (protocols.FTP_PORT, "10.0.0.5", 65535)),
+    (b"EPRT |1|10.0.0.5|1|\r\n", (protocols.FTP_PORT, "10.0.0.5", 1)),
     (b"227 Entering Passive Mode (10,0,0,9,19,137).\r\n", (protocols.FTP_PASV, "10.0.0.9", 5001)),
     (b"227 =10,0,0,9,19,137\r\n", (protocols.FTP_PASV, "10.0.0.9", 5001)),
     (b"229 Entering Extended Passive Mode (|||6446|)\r\n", (protocols.FTP_PASV, None, 6446)),
     (b"229 Entering Extended Passive Mode (|||0|)\r\n", None),
+    (b"229 Entering Extended Passive Mode (|||65536|)\r\n", None),
+    (b"229 Entering Extended Passive Mode (|||65535|)\r\n", (protocols.FTP_PASV, None, 65535)),
+    (b"229 Entering Extended Passive Mode (|||1|)\r\n", (protocols.FTP_PASV, None, 1)),
     (b"220 ProFTPD Server ready.\r\n", (protocols.FTP_GREETING, None, None)),
     (b"\r\n120 Ready in 5 minutes\r\n", (protocols.FTP_GREETING, None, None)),
     (b"220", None),
@@ -1070,9 +1081,62 @@ def test_ftp_announcements_are_capped_and_expire():
     assert set(tracker.expected) == {(FTP_S, 5002)}          # only what is past its time
 
 
+def said(tracker, t, src, sport, dst, dport, code=0, note=None):
+    tracker.add(t, src, dst, "tcp", sport, dport, 60, PSH | ACK, "x", code, note)
+
+
+def answered(tracker, t, src, sport, dst, dport):
+    """A TCP connection's SYN and SYN-ACK, told to the tracker."""
+    tracker.add(t, src, dst, "tcp", sport, dport, 60, SYN, "x")
+    tracker.add(t + 0.001, dst, src, "tcp", dport, sport, 60, SYN | ACK, "x")
+
+
+@pytest.mark.parametrize("server_first", [False, True])
+def test_ftp_control_connections_joined_midway_are_told_by_their_port(server_first):
+    # No greeting or login seen: the side on port 21 is the server, whichever was seen first.
+    tracker = pcap.FlowTracker()
+    if server_first:
+        said(tracker, T, FTP_S, 21, FTP_C, 40000)
+    said(tracker, T + 1, FTP_C, 40000, FTP_S, 21, protocols.FTP_PORT, (FTP_C, 50001))
+    said(tracker, T + 2, FTP_S, 21, FTP_C, 40000, protocols.FTP_PASV, (None, 5001))
+    said(tracker, T + 3, FTP_S, 21, FTP_C, 40000, protocols.FTP_PORT, (FTP_S, 50002))     # wrong side
+    said(tracker, T + 4, FTP_C, 40000, FTP_S, 21, protocols.FTP_PASV, (None, 5002))       # wrong side
+    wait = protocols.FTP_DATA_WAIT
+    assert tracker.expected == {(FTP_C, 50001): (FTP_S, T + 1 + wait), (FTP_S, 5001): (FTP_C, T + 2 + wait)}
+
+
+def test_ftp_needs_a_login_answered_by_the_side_that_greeted():
+    tracker = pcap.FlowTracker()
+    said(tracker, T, FTP_S, 2121, FTP_C, 40000, protocols.FTP_GREETING)
+    said(tracker, T + 1, FTP_C, 40000, FTP_S, 2121, protocols.FTP_USER)
+    said(tracker, T + 2, FTP_C, 40000, FTP_S, 2121, protocols.FTP_LOGIN)                 # the wrong side
+    said(tracker, T + 3, FTP_S, 2121, FTP_C, 40000, protocols.FTP_PASV, (None, 5001))
+    assert tracker.expected == {} and not next(iter(tracker.open.values())).code
+    tracker = pcap.FlowTracker()
+    said(tracker, T, FTP_S, 2121, FTP_C, 40000, protocols.FTP_GREETING)
+    said(tracker, T + 1, FTP_C, 40000, FTP_S, 2121, protocols.FTP_USER)
+    said(tracker, T + 2, FTP_S, 2121, FTP_C, 40000, protocols.FTP_LOGIN)
+    said(tracker, T + 3, FTP_S, 2121, FTP_C, 40000, protocols.FTP_PASV, (None, 5001))
+    assert set(tracker.expected) == {(FTP_S, 5001)}
+
+
+def test_an_announced_data_connection_may_start_at_its_deadline():
+    tracker = pcap.FlowTracker()
+    tracker._expect(FTP_S, 5001, FTP_C, T)
+    tracker._expect(FTP_S, 5002, FTP_C, T)
+    deadline = T + protocols.FTP_DATA_WAIT
+    answered(tracker, deadline, FTP_C, 40100, FTP_S, 5001)          # sweeps first: still expected
+    answered(tracker, deadline + 0.01, FTP_C, 40101, FTP_S, 5002)   # too late
+    tracker.add(deadline, C, S, "udp", 1, 2, 10, 0, "x")                  # no protocol said
+    flows = tracker.finish()
+    assert sorted((f.sport, f.service) for f in flows if f.proto == "tcp") == [(40100, "ftp"), (40101, "unknown")]
+    assert {f.service for f in flows if f.proto == "udp"} == {"unknown"}
+
+
 def test_ftp_by_port_and_in_netflow_and_security_onion():
     assert protocols.name("tcp", 0, 20, 50000) == protocols.name("tcp", 0, 2811, 50000) == "ftp"
     assert protocols.split("ftp-data") == ["ftp"] and protocols.split("ftp,ftp-data") == ["ftp", "ftp"]
     flows = pair_records([rec(S, 20, C, 50000, T, T + 1, flags=SYN), rec(C, 50000, S, 20, T, T + 1, flags=SYN | ACK)])
     assert [(f.src, f.service) for f in flows] == [(S, "ftp")]
     assert protocols.display_name("ftp") == "FTP" and protocols.display_name("quic") == "QUIC"
+    assert protocols.display_name("krb") == "Kerberos" and protocols.display_name("dce_rpc") == "DCE-RPC"

@@ -25,6 +25,7 @@ MAX_HOPS = 20
 MAX_FLOW_PAGE = 500
 PATHS_PER_PAIR = 10  # attack paths between compromised hosts: a preview per pair
 MAX_EDGES = 20_000   # connections a map may send (suspect connections, exports)
+MAX_WITHIN = 100_000  # intervals a flow list may be limited to (a kept connection's "within")
 MAX_EXPORT = 200_000  # flows in an export
 MARKS_POLL = 5       # seconds between the map's checks for other analysts' marks (D15)
 
@@ -42,9 +43,6 @@ class _Body:
         if isinstance(value, bool) or not isinstance(value, (str, int, float)):
             raise ValidationError(f"{name} must be text or a number")
         return str(value)
-
-    def __contains__(self, name):
-        return self.body.get(name) is not None
 
     def __getitem__(self, name):
         value = self.get(name)
@@ -134,7 +132,7 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
         if request.method != "POST" or json_body().get("within") is None:
             return None
         within = json_body()["within"]
-        if not isinstance(within, list) or len(within) > 100_000 or not all(
+        if not isinstance(within, list) or len(within) > MAX_WITHIN or not all(
                 isinstance(w, list) and len(w) == 2 and all(isinstance(t, str) and t for t in w) for w in within):
             raise ValidationError("within is a list of [from, to] times")
         return [(parse_time(a).timestamp(), parse_time(b).timestamp()) for a, b in within]

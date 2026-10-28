@@ -511,9 +511,9 @@ def test_matches_brute_force(seed):
 M = 60.0   # a minute
 
 
-def suspect_set(flows, marks, window=W, max_hops=6, blocked=frozenset(), bounds=(-INF, INF)):
+def suspect_set(flows, marks, window=W, max_hops=6, blocked=frozenset(), bounds=(-INF, INF), slack=0.0):
     """The suspect flows, as (src, dst, start)."""
-    found = analysis.suspects(build_graph(flows), marks, window, max_hops, blocked, bounds)
+    found = analysis.suspects(build_graph(flows), marks, window, max_hops, blocked, bounds, slack)
     return {(x.src, x.dst, x.start) for x in flows
             if any(lo <= x.start <= hi for lo, hi in found.get((x.src, x.dst), []))}
 
@@ -544,6 +544,9 @@ def test_a_reached_time_bounds_both_lines():
     assert suspect_set(STORY, {"A": T0}, window=20 * M) == flows_named("EA", "AX", "XB", "XC", "BF")
     # The Window between hops: X -> C 10 minutes after A -> X breaks a 4-minute window.
     assert suspect_set(STORY, {"C": None}, window=4 * M) == flows_named("XC")
+    # Times a little off (TIME_SLACK): a flow out of A up to the slack before A was reached counts.
+    assert suspect_set(STORY, {"A": T0 + 5 * M + 30}) == flows_named("EA", "AY")
+    assert suspect_set(STORY, {"A": T0 + 5 * M + 30}, slack=M) == flows_named("EA", "AX", "XB", "XC", "BF", "AY")
 
 
 def test_hop_limit_excludes_and_time_range():
@@ -554,6 +557,9 @@ def test_hop_limit_excludes_and_time_range():
     assert suspect_set(chain, {"h8": None}, blocked={"h5"}) == {(x.src, x.dst, x.start) for x in chain[6:]}
     assert suspect_set(chain, {"h5": None}, blocked={"h5"}) == set()
     assert suspect_set(chain, {"h8": None}, bounds=(T0 + 4 * M, INF)) == {(x.src, x.dst, x.start) for x in chain[4:]}
+    # The same on the way out of a mark.
+    assert suspect_set(chain, {"h0": None}, blocked={"h3"}) == {(x.src, x.dst, x.start) for x in chain[:2]}
+    assert suspect_set(chain, {"h0": None}, bounds=(-INF, T0 + 3 * M)) == {(x.src, x.dst, x.start) for x in chain[:4]}
     assert suspect_set(chain, {"nowhere": None}) == set()
 
 
