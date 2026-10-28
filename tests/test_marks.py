@@ -354,6 +354,8 @@ def test_a_filter_picks_the_flow_each_hop_of_a_path_shows():
     scope = Scope(filters.parse("NOT (SMB OR DNS)"))
     [path] = backend.paths_between(E, B, None, None, hour, 6, [], scope=scope)["paths"]
     assert [(h["source"], h["protocols"]) for h in path["hops"]] == [(E, ["ssl"]), (A, ["http"]), (X, ["rdp"])]
+    assert path["hops"][1] == {"source": A, "target": X, "start": iso(T + 5 * M), "sport": 50001, "dport": 80,
+                               "proto": "tcp", "packets": 2, "bytes": 120, "protocols": ["http"]}
     [pair] = backend.attack_paths({E: None, B: None}, hour, 6, [], scope=scope)["pairs"]
     assert pair["paths"] == [path]
 
@@ -382,10 +384,30 @@ def test_a_filter_narrows_suspect_connections_and_their_flow_lists(client, monke
     assert r["total"] == 1 and [f["dport"] for f in r["flows"]] == [53]
 
 
-def test_a_reached_time_a_little_after_a_flow_out_still_keeps_it(client):
+def test_a_reached_time_a_little_after_a_flow_out_still_keeps_it():
     # Times a little off (TIME_SLACK): A reached half a millisecond after A -> X started.
-    client.post("/api/compromised", json={"ip": A, "time": "2024-05-01T12:05:00.0005Z"}, headers=WRITE)
-    assert suspect(client)[(A, X)]["status"] == "kept"
+    backend = CaseBackend(Config(backend="case"), flows=[flow(A, X, T + 0.0005)])
+    hosts = [comp.parse_host({"ip": A, "time": "2024-05-01T12:00:00.001Z"})]
+    got = backend.suspects([(A, X, T, T + 1)], hosts, [], timedelta(hours=1), 6, [])
+    assert got["edges"][0]["status"] == "kept"
+
+
+def test_an_export_lists_only_the_flows_a_kept_connection_counts():
+    # A reached at 12:00:30: E -> A's TLS flow before then, not its DNS flow after; and of
+    # A -> X's two flows at 12:05, only the one that passes the filter.
+    backend = CaseBackend(Config(backend="case"), flows=MIXED)
+    drawn = [(E, A, T, T + 60), (A, X, T + 5 * M, T + 5 * M)]
+    hosts = [comp.parse_host({"ip": A, "time": iso(T + 30)})]
+    r = backend.export(drawn, hosts, [], 100, window=timedelta(hours=1), max_hops=6, exclude=[],
+                       scope=Scope(filters.parse("NOT SMB")))
+    assert [(f["src"], f["dst"], f["protocols"]) for f in r["flows"]] == [(E, A, ["ssl"]), (A, X, ["http"])]
+
+
+def test_the_conversations_own_hosts_stay_selected():
+    # X -> A after A -> X: A is on the line down from X, and still the conversation's own.
+    backend = CaseBackend(Config(backend="case"), flows=[flow(A, X, T), flow(X, A, T + 60)])
+    line = backend.threat_line(A, X, at(T), at(T), timedelta(hours=1), 6, [], 300)
+    assert {n["id"]: n["role"] for n in line["nodes"]} == {A: "selected", X: "selected"}
 
 
 def test_a_filter_counts_only_the_flows_it_lets_through_on_a_kept_connection():

@@ -270,11 +270,11 @@ The nfcapd test needs `nfdump` installed (`apt install nfdump`); without it, it 
 
 ```bash
 pip install mutmut
-mutmut run --max-children 4        # ~7 minutes; results in mutants/ (ignored by git)
+mutmut run --max-children 4        # ~17 minutes; results in mutants/ (ignored by git)
 mutmut results                     # the survivors; `mutmut show <name>` for one
 ```
 
-On 2026-10-25: 4,815 of 5,239 mutants caught (91.9%). The 424 survivors were reviewed. None is a missing test that matters; they change:
+On 2026-10-28: 8,130 of 8,656 mutants caught (93.9%). The 526 survivors were reviewed. None is a missing test that matters; they change:
 
 - text only: log messages and their arguments, error message wording, SQL keyword case, command-line help;
 - performance only: caches, pruning in the path search, work skipped when the answer is already known, and whether files are read in worker processes or one at a time (both give the same flows, by design);
