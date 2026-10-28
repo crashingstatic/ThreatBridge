@@ -162,16 +162,19 @@ try {
   await page.keyboard.press("Escape");
 
   // 3b. Right-clicking a connection of a case shows its details and flows, and no menu (no SOC
-  //     pivots for case files). The flows shown are those of the connection clicked last.
+  //     pivots for case files) but, when it holds a single flow, marking it compromised. The
+  //     flows shown are those of the connection clicked last.
   await page.route("**/api/flows?*", async (route) => {
     if (route.request().url().includes("src=10.0.0.5")) await sleep(1000);
     await route.continue().catch(() => {});
   });
   for (const id of ["10.0.0.5->10.0.0.9", "10.0.0.77->10.0.0.9"]) {
     const e = await at(`edge[id = "${id}"]`, "edge");
+    await page.keyboard.press("Escape");                    // the last menu might cover it
     await page.mouse.click(e.x, e.y, { button: "right" });
   }
-  assert.ok(await menuHidden());
+  assert.deepEqual(await menuItems(), ["10.0.0.77 ↔ 10.0.0.9", "Mark compromised"]);
+  await page.keyboard.press("Escape");
   assert.deepEqual(await rows(), ["Source", "10.0.0.77", "Destination", "10.0.0.9", "Direction", "inbound (past)",
     "Connections", "1", "Top dst ports", "80", "Protocols", "HTTP", "First seen", "2024-05-01T12:30:00.000Z",
     "Last seen", "2024-05-01T12:30:00.000Z"]);
@@ -519,11 +522,14 @@ try {
   await waitStatus(/^Replaced the map "incident 42" for everyone$/);
   assert.equal(await page.locator("#session-list li").count(), 1);
   assert.deepEqual(await othersSee("#session-list .session"), ["incident 42"]);
-  // Clear clears the protocol chosen too.
+  // Clear resets the protocol preview, and only that: the map and its protocols stay (D18).
+  const options = await page.$$eval("#protocol option", (l) => l.length);
   await page.selectOption("#protocol", await page.$eval("#protocol option:nth-child(2)", (o) => o.value));
   await page.click("#clear");
-  await page.waitForFunction(() => document.querySelectorAll("#protocol option").length === 1);
   assert.equal(await page.inputValue("#protocol"), "");
+  assert.equal(await page.$$eval("#protocol option", (l) => l.length), options);
+  assert.equal(await cyEval(() => window.threatbridge.cy.$(".proto-hit, .proto-dim").length), 0);
+  assert.deepEqual(await elements(), before);
   await page.fill("#window", "1h");
   await page.selectOption("#order", "top");
   await page.fill("#limit", "50");
@@ -541,19 +547,20 @@ try {
   const [mapFile] = await Promise.all([page.waitForEvent("download"), page.click("#session-download")]);
   assert.equal(mapFile.suggestedFilename(), "threatbridge-incident_42.json");
   const doc = JSON.parse(await readFile(await mapFile.path(), "utf8"));
-  assert.equal(doc.version, 1);
+  assert.equal(doc.version, 2);
+  assert.deepEqual([doc.filters, doc.marks], [[], { hosts: [], flows: [] }]);
+  assert.deepEqual(doc.queries.map((q) => q.op), ["root", "threatline"]);
   const openFile = async (name, content) => {
     await page.setInputFiles("#session-file", { name, mimeType: "application/json",
                                                 buffer: Buffer.from(typeof content === "string" ? content : JSON.stringify(content)) });
   };
-  await page.click("#clear");
   await openFile("incident.json", doc);
   await waitStatus(/^Opened incident\.json: /);
   assert.deepEqual(await elements(), before);
   await openFile("notes.json", "not a map");
   await waitStatus(/^notes\.json is not a ThreatBridge map$/);
-  await openFile("v2.json", Object.assign({}, doc, { version: 2 }));
-  await waitStatus(/^v2\.json is not a ThreatBridge map$/);
+  await openFile("v3.json", Object.assign({}, doc, { version: 3 }));
+  await waitStatus(/^v3\.json is not a ThreatBridge map$/);
   assert.deepEqual(await elements(), before, "a refused file leaves the map alone");
   const noView = Object.assign({}, doc);
   delete noView.view;                                          // no view saved: fit the map
@@ -581,27 +588,38 @@ try {
   await page.fill("#session-name", "");
   let [named] = await Promise.all([page.waitForEvent("download"), page.click("#session-download")]);
   assert.equal(named.suggestedFilename(), "threatbridge-10.0.0.9.json");
-  await page.click("#clear");
+  await checkpoint(page, "actions-2");
+  await page.goto(BASE);                                     // a page with no map yet
+  await page.waitForFunction(() => document.querySelector("#session-list li"));
   [named] = await Promise.all([page.waitForEvent("download"), page.click("#session-download")]);
   assert.equal(named.suggestedFilename(), "threatbridge-map.json");
-  // The attack paths shown come from the compromised list now, not from the file.
+  // An opened map shows its own marks, and marking changes only them (D19): the shared list
+  // stays as it was, and the attack paths come from the map's marks.
   await openFile("incident.json", doc);
   await waitStatus(/^Opened incident\.json: /);
+  assert.equal(await page.textContent("#local-marks-name"), "incident.json");
+  assert.ok(await page.locator("#local-marks").isVisible());
   await page.fill("#compromised-ip", "203.0.113.66");
   await page.click("#compromised-form button");
   await page.fill("#compromised-ip", "10.0.0.20");
   await page.fill("#compromised-time", "2024-05-01T12:20:00Z");
   await page.click("#compromised-form button");
   await page.waitForFunction(() => window.threatbridge.cy.edges(".attack").nonempty());
+  assert.deepEqual((await (await page.request.get(`${BASE}/api/compromised`)).json()).hosts, []);
   const [withPaths] = await Promise.all([page.waitForEvent("download"), page.click("#session-download")]);
   const pathsDoc = JSON.parse(await readFile(await withPaths.path(), "utf8"));
   assert.ok(pathsDoc.edges.some((e) => e.classes.includes("attack")));
+  assert.deepEqual(pathsDoc.marks.hosts.map((h) => [h.ip, h.time]),
+                   [["203.0.113.66", null], ["10.0.0.20", "2024-05-01T12:20:00.000Z"]]);
   await page.click("#compromised-list li:has-text('203.0.113.66') button");
   await page.waitForSelector("#path-list li.hint >> text=Mark at least two hosts as compromised.");
-  await openFile("with-paths.json", pathsDoc);
-  await waitStatus(/^Opened with-paths\.json: /);
   assert.ok(!(await attackDrawn()));
+  await openFile("with-paths.json", pathsDoc);              // its marks, so its paths, come back
+  await waitStatus(/^Opened with-paths\.json: /);
+  await page.waitForFunction(() => window.threatbridge.cy.edges(".attack").nonempty());
+  assert.equal(await page.locator("#compromised-list li").count(), 2);
   await page.click("#compromised-list li:has-text('10.0.0.20') button");
+  await page.click("#compromised-list li:has-text('203.0.113.66') button");
   await page.waitForSelector("#compromised-list li", { state: "detached" });
   // Names and hosts from saved maps and files are shown as text, never run as HTML.
   const markup = '<img src=x onerror="window.injected=1">';
@@ -675,7 +693,7 @@ try {
     await page.keyboard.press("Escape");
   }
 
-  // 13. Fit brings every host back into view; Clear empties the map.
+  // 13. Fit brings every host back into view; Clear leaves the map as it is.
   await cyEval(() => window.threatbridge.cy.pan({ x: -5000, y: -5000 }));
   await page.click("#fit");
   assert.ok(await cyEval(() => {
@@ -685,9 +703,9 @@ try {
       return r.x >= 0 && r.y >= 0 && r.x <= cy.width() && r.y <= cy.height();
     });
   }), "all hosts in view after Fit");
+  const shownBefore = await ids();
   await page.click("#clear");
-  assert.deepEqual(await ids(), []);
-  assert.equal(await status(), "");
+  assert.deepEqual(await ids(), shownBefore);
 
   assert.deepEqual(errors, [], "browser console errors");
   console.log("UI actions test passed");

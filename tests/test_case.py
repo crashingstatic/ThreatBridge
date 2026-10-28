@@ -404,13 +404,15 @@ def test_threat_line_cap_from_the_config(tmp_path):
 
 def test_compromised_hosts_crud(chain_client):
     c = chain_client
-    assert c.get("/api/compromised").get_json() == {"hosts": []}
+    r = c.get("/api/compromised").get_json()
+    assert (r["hosts"], r["marked"], r["flows"]) == ([], [], [])
     assert c.post("/api/compromised", json={"ip": H}).status_code == 403      # CSRF header
     r = c.post("/api/compromised", json={"ip": H, "time": "2024-05-01T12:10:00Z", "note": "EDR"},
                headers=WRITE).get_json()
-    assert r["hosts"] == [{"ip": H, "time": "2024-05-01T12:10:00.000Z", "note": "EDR"}]
+    assert r["hosts"] == [{"ip": H, "time": "2024-05-01T12:10:00.000Z", "note": "EDR", "direct": True, "count": 1}]
+    assert r["marked"] == [{"ip": H, "time": "2024-05-01T12:10:00.000Z", "note": "EDR"}]
     r = c.post("/api/compromised", json={"ip": H, "time": ""}, headers=WRITE).get_json()
-    assert r["hosts"] == [{"ip": H, "time": None, "note": ""}]               # re-mark replaces
+    assert r["marked"] == [{"ip": H, "time": None, "note": ""}]               # re-mark replaces
     assert c.post("/api/compromised", json={"ip": "nope"}, headers=WRITE).status_code == 400
     assert c.post("/api/compromised", json={"ip": H, "time": "soon"}, headers=WRITE).status_code == 400
     r = c.delete("/api/compromised", json={"ip": H}, headers=WRITE).get_json()

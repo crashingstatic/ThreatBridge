@@ -3,10 +3,11 @@ import argparse
 import logging
 import os
 
-from flask import Flask, Response, jsonify, request, send_from_directory
+from flask import Flask, Response, g, jsonify, request, send_from_directory
 
-from .backends import BackendError, make_backend
-from .compromised import CompromisedStore
+from . import filters, protocols
+from .backends import BackendError, Scope, make_backend
+from .compromised import CompromisedStore, parse_marks, reached
 from .config import Config
 from .domains import DomainResolver
 from .excludes import ExcludeStore
@@ -23,6 +24,33 @@ STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 MAX_HOPS = 20
 MAX_FLOW_PAGE = 500
 PATHS_PER_PAIR = 10  # attack paths between compromised hosts: a preview per pair
+MAX_EDGES = 20_000   # connections a map may send (suspect connections, exports)
+MAX_EXPORT = 200_000  # flows in an export
+MARKS_POLL = 5       # seconds between the map's checks for other analysts' marks (D15)
+
+
+class _Body:
+    """A POST request's JSON object, read like a query string: values as text."""
+
+    def __init__(self, body):
+        self.body = body
+
+    def get(self, name, default=None):
+        value = self.body.get(name)
+        if value is None:
+            return default
+        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+            raise ValidationError(f"{name} must be text or a number")
+        return str(value)
+
+    def __contains__(self, name):
+        return self.body.get(name) is not None
+
+    def __getitem__(self, name):
+        value = self.get(name)
+        if value is None:
+            raise KeyError(name)
+        return value
 
 
 class NotSupported(Exception):
@@ -66,8 +94,14 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
             raise ValidationError("the request body must be a JSON object")
         return body
 
+    def args():
+        """The request's parameters: its query string, or (POST) its JSON object."""
+        if "args" not in g:
+            g.args = request.args if request.method == "GET" else _Body(json_body())
+        return g.args
+
     def int_arg(name, default):
-        value = request.args.get(name)
+        value = args().get(name)
         try:
             return int(value) if value not in (None, "") else default
         except ValueError:
@@ -75,8 +109,52 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
 
     def time_arg(name):
         """An optional time parameter: a datetime, or None when absent or blank."""
-        value = (request.args.get(name) or "").strip()
+        value = (args().get(name) or "").strip()
         return parse_time(value) if value else None
+
+    def marks_arg():
+        """(hosts marked themselves, marked flows): those a POST sends ("marks", an opened
+        map's: D19), else the shared ones."""
+        if request.method == "POST" and "marks" in json_body():
+            return parse_marks(json_body()["marks"])
+        return compromised.marks()
+
+    def scope_arg():
+        """The analyst's filters (D17), "filter" parameters or a POST's "filters" list, with
+        the marked flows they never hide: a Scope, or None without filters."""
+        if request.method == "POST":
+            found = filters.combine(json_body().get("filters"))
+        else:
+            found = filters.combine(request.args.getlist("filter"))
+        return Scope(found, marks_arg()[1]) if found else None
+
+    def within_arg():
+        """POST "within": [[from, to], ...], the intervals a kept connection's flows are in
+        (from /api/suspect), as epoch seconds; None if not sent."""
+        if request.method != "POST" or json_body().get("within") is None:
+            return None
+        within = json_body()["within"]
+        if not isinstance(within, list) or len(within) > 100_000 or not all(
+                isinstance(w, list) and len(w) == 2 and all(isinstance(t, str) and t for t in w) for w in within):
+            raise ValidationError("within is a list of [from, to] times")
+        return [(parse_time(a).timestamp(), parse_time(b).timestamp()) for a, b in within]
+
+    def edges_arg():
+        """The drawn connections a POST sends: [(src, dst, first, last)], epoch seconds."""
+        edges = json_body().get("edges")
+        if not isinstance(edges, list) or len(edges) > MAX_EDGES:
+            raise ValidationError(f"edges is a list of at most {MAX_EDGES} connections")
+        out = []
+        for e in edges:
+            if not isinstance(e, dict) or not isinstance(e.get("from"), str) or not e["from"].strip():
+                raise ValidationError("each connection is {source, target, from, to}")
+            first = parse_time(e["from"])
+            last = parse_time(e["to"]) if isinstance(e.get("to"), str) and e["to"].strip() else first
+            if last < first:
+                raise ValidationError("a connection's to is before its from")
+            out.append((parse_ip(e.get("source")), parse_ip(e.get("target")), first.timestamp(),
+                        last.timestamp()))
+        return out
 
     def range_arg():
         """The analyst's time range (range_from, range_to): datetimes, None for an open end.
@@ -88,10 +166,10 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
 
     def from_to_args(what):
         """The required `from` and optional `to` (default: `from`) of a connection's flows."""
-        if not request.args.get("from"):
+        if not args().get("from"):
             raise ValidationError(f"from ({what}) is required")
-        first = parse_time(request.args["from"])
-        last = parse_time(request.args.get("to") or request.args["from"])
+        first = parse_time(args()["from"])
+        last = parse_time(args().get("to") or args()["from"])
         if last < first:
             raise ValidationError("to is before from")
         return first, last
@@ -172,6 +250,8 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
                        rare_scan_cap=cfg.rare_scan_cap,
                        soc_pivots=cfg.backend != "case",
                        analysis=hasattr(backend, "threat_line"), threat_hops=cfg.threat_hops,
+                       suspects=hasattr(backend, "suspects"), marks_poll=MARKS_POLL,
+                       protocol_names=protocols.DISPLAY, max_filters=filters.MAX_FILTERS,
                        live_dns=cfg.live_dns, pcap_download=soc is not None,
                        case=summary() if summary else None)
 
@@ -194,34 +274,56 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
             anchor = anchor or parse_time(None)
         return jsonify(ip=ip, anchor=fmt_time(anchor))
 
-    @app.get("/api/neighbors")
+    @app.route("/api/neighbors", methods=["GET", "POST"])
     def api_neighbors():
-        args = request.args
-        ip = parse_ip(args.get("ip"))
-        direction = parse_direction(args.get("direction", "in"))
-        anchor = parse_time(args.get("ts"))
-        window = window_arg(args.get("window"))
+        a = args()
+        ip = parse_ip(a.get("ip"))
+        direction = parse_direction(a.get("direction", "in"))
+        anchor = parse_time(a.get("ts"))
+        window = window_arg(a.get("window"))
         limit = max(1, min(int_arg("limit", cfg.default_limit), cfg.max_limit))
-        order = parse_order(args.get("order"))
+        order = parse_order(a.get("order"))
 
         start, end = clip(*time_range(anchor, direction, window), range_arg())
-        res = (backend.neighbors(ip, direction, start, end, limit, order, exclusions())
+        scope = scope_arg()
+        res = (backend.neighbors(ip, direction, start, end, limit, order, exclusions(),
+                                 **({"scope": scope} if scope else {}))
                if start <= end else {"peers": [], "distinct_peers": 0, "truncated": False})
         return jsonify(ip=ip, direction=direction, order=order, anchor=fmt_time(anchor),
                        start=fmt_time(start), end=fmt_time(end), **res)
 
-    @app.get("/api/flows")
+    @app.route("/api/flows", methods=["GET", "POST"])
     def api_flows():
         """One page of the flows src -> dst that started within [from, to], oldest first."""
-        args = request.args
-        src, dst = parse_ip(args.get("src")), parse_ip(args.get("dst"))
+        a = args()
+        src, dst = parse_ip(a.get("src")), parse_ip(a.get("dst"))
         start, end = clip(*from_to_args("start of the first flow"), range_arg())
         offset = max(0, int_arg("offset", 0))
         limit = max(1, min(int_arg("limit", 50), MAX_FLOW_PAGE))
-        res = (backend.flows(src, dst, start, end, offset, limit)
+        scope, within = scope_arg(), within_arg()
+        extra = {k: v for k, v in (("scope", scope), ("within", within)) if v is not None}
+        res = (backend.flows(src, dst, start, end, offset, limit, **extra)
                if start <= end else {"total": 0, "flows": []})
         return jsonify(src=src, dst=dst, start=fmt_time(start), end=fmt_time(end), offset=offset,
                        **res)
+
+    @app.route("/api/edge", methods=["GET", "POST"])
+    def api_edge():
+        """One connection: the count, times, ports and protocols of the flows src -> dst that
+        started within [from, to]."""
+        a = args()
+        src, dst = parse_ip(a.get("src")), parse_ip(a.get("dst"))
+        start, end = clip(*from_to_args("start of the first flow"), range_arg())
+        if start > end:
+            return jsonify(source=src, target=dst, count=0, first_seen=None, last_seen=None,
+                           ports=[], protocols=[])
+        scope = scope_arg()
+        return jsonify(**backend.edge(src, dst, start, end, **({"scope": scope} if scope else {})))
+
+    @app.get("/api/filter")
+    def api_filter():
+        """Check one filter expression (D17): its canonical text, or 400 saying what's wrong."""
+        return jsonify(filter=filters.parse(request.args.get("filter", "")).text)
 
     @app.get("/api/excludes")
     def api_excludes():
@@ -244,21 +346,41 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
 
     @app.get("/api/compromised")
     def api_compromised():
-        return jsonify(hosts=compromised.list())
+        return jsonify(**compromised.list())
 
     @app.post("/api/compromised")
     def api_compromised_mark():
         body = json_body()
-        hosts = compromised.mark(body.get("ip"), body.get("time"), body.get("note"))
+        marks = compromised.mark(body.get("ip"), body.get("time"), body.get("note"))
         log.info("marked compromised: %s at %s", body.get("ip"), body.get("time") or "unknown time")
-        return jsonify(hosts=hosts)
+        return jsonify(**marks)
 
     @app.delete("/api/compromised")
     def api_compromised_unmark():
         body = json_body()
-        hosts = compromised.unmark(body.get("ip"))
-        log.info("unmarked compromised: %s", body.get("ip"))
-        return jsonify(hosts=hosts)
+        marks = compromised.unmark(body.get("ip"))
+        log.info("unmarked compromised, with its marked flows: %s", body.get("ip"))
+        return jsonify(**marks)
+
+    @app.put("/api/compromised")
+    def api_compromised_replace():
+        marks = compromised.replace(json_body())
+        log.info("shared marks replaced: %d host(s), %d flow(s)", len(marks["marked"]), len(marks["flows"]))
+        return jsonify(**marks)
+
+    @app.post("/api/compromised/flows")
+    def api_compromised_mark_flow():
+        body = json_body()
+        marks = compromised.mark_flow(body)
+        log.info("marked compromised: the flow %s -> %s at %s", body.get("src"), body.get("dst"), body.get("start"))
+        return jsonify(**marks)
+
+    @app.delete("/api/compromised/flows")
+    def api_compromised_unmark_flow():
+        body = json_body()
+        marks = compromised.unmark_flow(body)
+        log.info("unmarked compromised: the flow %s -> %s at %s", body.get("src"), body.get("dst"), body.get("start"))
+        return jsonify(**marks)
 
     @app.get("/api/sessions")
     def api_sessions():
@@ -281,36 +403,53 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
         log.info("saved map deleted: %s", body.get("name"))
         return jsonify(sessions=sessions.list())
 
-    @app.get("/api/threatline")
+    @app.route("/api/threatline", methods=["GET", "POST"])
     def api_threatline():
         require("threat_line")
-        args = request.args
-        a, b = parse_ip(args.get("a")), parse_ip(args.get("b"))
+        a, b = parse_ip(args().get("a")), parse_ip(args().get("b"))
         bounds = range_arg()
         first, last = clip(*from_to_args("start of the conversation"), bounds)
         if last < first:
             raise ValidationError("the conversation is outside the time range")
-        res = backend.threat_line(a, b, first, last, window_arg(args.get("window")),
-                                  hops_arg(), exclusions(), cfg.threat_max_hosts, bounds)
+        res = backend.threat_line(a, b, first, last, window_arg(args().get("window")),
+                                  hops_arg(), exclusions(), cfg.threat_max_hosts, bounds,
+                                  scope=scope_arg())
         return jsonify(a=a, b=b, **res)
 
-    @app.get("/api/paths")
+    @app.route("/api/paths", methods=["GET", "POST"])
     def api_paths():
         """Every time-respecting path from src to dst (each optionally with the time it was
         compromised), up to cfg.max_paths; or, without them, the first PATHS_PER_PAIR between
         each pair of compromised hosts."""
         require("attack_paths")
-        args = request.args
-        window, hops, bounds = window_arg(args.get("window")), hops_arg(), range_arg()
-        if not (args.get("src") or args.get("dst")):
-            return jsonify(**backend.attack_paths(compromised.times(), window, hops, exclusions(),
-                                                  bounds, PATHS_PER_PAIR))
-        a, b = parse_ip(args.get("src")), parse_ip(args.get("dst"))
-        if a == b:
+        a = args()
+        window, hops, bounds = window_arg(a.get("window")), hops_arg(), range_arg()
+        scope = scope_arg()
+        if not (a.get("src") or a.get("dst")):
+            return jsonify(**backend.attack_paths(reached(*marks_arg()), window, hops, exclusions(),
+                                                  bounds, PATHS_PER_PAIR, scope=scope))
+        src, dst = parse_ip(a.get("src")), parse_ip(a.get("dst"))
+        if src == dst:
             raise ValidationError("src and dst are the same host")
-        res = backend.paths_between(a, b, time_arg("src_time"), time_arg("dst_time"), window, hops,
-                                    exclusions(), bounds, cfg.max_paths)
-        return jsonify(src=a, dst=b, **res)
+        res = backend.paths_between(src, dst, time_arg("src_time"), time_arg("dst_time"), window, hops,
+                                    exclusions(), bounds, cfg.max_paths, scope=scope)
+        return jsonify(src=src, dst=dst, **res)
+
+    @app.post("/api/suspect")
+    def api_suspect():
+        """What the marks keep of the drawn connections (D16), connection by connection."""
+        require("suspects")
+        hosts, flows = marks_arg()
+        return jsonify(**backend.suspects(edges_arg(), hosts, flows, window_arg(args().get("window")),
+                                          hops_arg(), exclusions(), range_arg(), scope=scope_arg()))
+
+    @app.post("/api/export")
+    def api_export():
+        """The marked hosts, and the marked and suspect flows on the drawn connections."""
+        hosts, flows = marks_arg()
+        return jsonify(**backend.export(edges_arg(), hosts, flows, MAX_EXPORT,
+                                        window=window_arg(args().get("window")), max_hops=hops_arg(),
+                                        exclude=exclusions(), bounds=range_arg(), scope=scope_arg()))
 
     @app.post("/api/pcap")
     def api_pcap():

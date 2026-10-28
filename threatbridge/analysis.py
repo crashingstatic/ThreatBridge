@@ -93,12 +93,13 @@ class Reach:
 
 
 def spread(g, sources, window, max_hops, forward=True, blocked=frozenset(), max_hosts=None,
-           bounds=(-INF, INF)):
+           bounds=(-INF, INF), record=None):
     """Every host reachable from `sources` ({host: interval set}) under the time rule, within
     max_hops hops: forward along flows out of hosts, backward along flows into them.
 
     Layer k adds what k-hop chains reach. Each layer starts only from the time intervals the
-    previous layer added, so a flow is looked at about once per search."""
+    previous layer added, so a flow is looked at about once per search. With `record` (a
+    dict), every hop of those chains goes into it: {(src, dst): [runs of their start times]}."""
     r = Reach(forward, {h: _clip(merge(iv), bounds) for h, iv in sources.items()})
     r.hops = {h: 0 for h in sources}
     delta = dict(r.allowed)
@@ -113,6 +114,8 @@ def spread(g, sources, window, max_hops, forward=True, blocked=frozenset(), max_
                 found_runs = _found(edge, intervals, window)
                 if not found_runs:
                     continue
+                if record is not None:
+                    record.setdefault((x, y) if forward else (y, x), []).extend(found_runs)
                 if forward:   # arriving at y at time a allows leaving y within [a, a + window]
                     found.setdefault(y, []).extend((a, b + window) for a, b in found_runs)
                     hop = Hop(x, y, found_runs[0][0])                 # earliest arrival
@@ -158,6 +161,26 @@ def threat_line(g, a, b, first, last, window, max_hops, blocked=frozenset(), max
     down = spread(g, {b: [(s, e + window) for s, e in selected]}, window, max_hops, True,
                   blocked, max_hosts, bounds)
     return up, down
+
+
+# ---- suspect flows: the lines into and out of marked hosts --------------------------------
+
+def suspects(g, marks, window, max_hops, blocked=frozenset(), bounds=(-INF, INF), slack=0.0):
+    """The suspect flows (D16): {(src, dst): interval set of their start times}.
+
+    marks: {host: when the attacker reached it (epoch), or None if unknown}. A flow is suspect
+    if it is a hop of a time-ordered chain that ends at a marked host no later than it was
+    reached (any time if unknown), or one that starts at a marked host within `window` after
+    it was reached (any time if unknown); at most max_hops hops, as spread() follows them."""
+    found = {}
+    for host, t in sorted(marks.items()):
+        if host not in g or host in blocked:
+            continue
+        into = [(-INF, INF)] if t is None else [(-INF, t + slack)]
+        out = [(-INF, INF)] if t is None else [(t - slack, t + window)]
+        spread(g, {host: into}, window, max_hops, False, blocked, bounds=bounds, record=found)
+        spread(g, {host: out}, window, max_hops, True, blocked, bounds=bounds, record=found)
+    return {pair: merge(runs) for pair, runs in found.items()}
 
 
 # ---- every path between two hosts: attack paths -------------------------------------------

@@ -20,10 +20,12 @@ Data sources: Zeek `conn` records in Security Onion's Elasticsearch (`event.data
 | Exclude list | Shared across all analysts and editable in the UI (side panel, or right-click a host). Takes IPs, CIDRs or domain names (see [Domain names](#domain-names-on-the-exclude-list)). Applied to both Top and Bottom. Stored in `/data/exclude.json`. No audit trail. Invalid entries from a hand edit are skipped with a warning; a file that is not valid JSON is reported and never overwritten. |
 | Time window | 24h per hop by default. Adjustable on the map, up to `TB_MAX_WINDOW` (30d). |
 | Time range | Optional *Range from* / *Range to* (UTC) on the map. It limits everything: expansions, the default anchor, flow lists, threat lines, attack paths and SOC pivots. Kept in the map's URL. |
-| Protocol highlight | Toolbar → *Highlight protocol* lists every protocol the connections on the map carry (SMB, DNS, TLS, ICMP, Unknown, ...). Choosing one makes the connections carrying it glow and fades the rest. The choice holds as the map changes, until you choose another, *All*, or *Clear*; while no connection carries it, it says so. Security Onion mode uses Zeek's detection (`network.protocol`); case files are identified from the payload, then by port (see [Post-mortem mode](#post-mortem-mode-pcap-and-netflow-files)). |
+| Protocol highlight | Toolbar → *Highlight protocol* lists every protocol the connections on the map carry, by a one-word name (SMB, DNS, TLS, Kerberos, DCE-RPC, MSSQL, VNC, FTP, ICMP, Unknown, ...). Choosing one makes the connections carrying it glow and fades the rest: a preview. *Apply as filter* turns it into a filter. The choice holds as the map changes, until you choose another, *All*, or *Clear* (which resets only this); while no connection carries it, it says so. Security Onion mode uses Zeek's detection (`network.protocol`); case files are identified from the payload, then by port (see [Post-mortem mode](#post-mortem-mode-pcap-and-netflow-files)). |
+| Filters | Toolbar → *Filter*: type an expression and press Enter, e.g. `(SMB \|\| TLS) && sport 42000` or `NOT DNS AND bytes > 10000`. Each one goes into a list beside the box, with an × to remove it; they combine with AND. Every query then uses only the flows that pass: the map is rebuilt from the queries it was made of (each expansion, threat line and path, with the Window, N and order it had) and laid out again, and threat lines, attack paths, paths between hosts and flow lists use them too. Marked flows always pass, and marked hosts stay on the map even with no flow left. An expression that can't be read is not applied: the box turns light red and the status says what is wrong and where. See [Filter expressions](#filter-expressions). Both modes. Filters are saved with a map, not kept in the URL. |
+| Marks | Mark a host compromised (right-click, or the side panel), or a single flow: *Mark compromised* on a flow in a connection's list, or in the menu of a connection that holds one flow. A marked flow marks its two hosts. Marks are shared: every analyst's map shows them within 5 seconds. In post-mortem mode they also hide what isn't on a line to or from them (see [Threat lines, compromised hosts and attack paths](#threat-lines-compromised-hosts-and-attack-paths)). *Export CSV* saves the marked hosts and the marked and suspect flows on the map as two CSV files. |
 | Flow list | Clicking a connection lists its flows oldest first, 50 per page, with start, protocol, ports, duration, packets and bytes. Security Onion returns at most the first 10,000 flows of a connection; narrow the time range to page past them. |
 | PCAP | Security Onion mode: each flow links to SOC's PCAP job for it, and with a SOC API client ThreatBridge downloads the PCAP itself. See [PCAP for a flow](#pcap-for-a-flow). |
-| Saved maps | Side panel → *Saved maps*: save the map under a name for every analyst (`TB_SESSIONS_DIR`), or to a JSON file to keep or pass on. Opening one brings back the hosts where they were, the connections, the highlights, the view and the toolbar; attack paths are recomputed from the current compromised list. Saving under a name that exists asks first. |
+| Saved maps | Side panel → *Saved maps*: save the map under a name for every analyst (`TB_SESSIONS_DIR`), or to a JSON file to keep or pass on. Opening one brings back the hosts where they were, the connections, the highlights, the view, the toolbar, the filters, the queries it was built from, and its marks. An opened map shows its own marks, not the shared ones: marking and unmarking change only the map's, and other analysts' don't appear, until you choose *Share* (side panel), which replaces the shared marks with the map's after asking. *Map* or reloading the page goes back to the shared marks. Saving under a name that exists asks first. Maps saved before filters (version 1) open with no marks. |
 | Progress | A request still running after a second shows its elapsed time and a *Cancel* button. Building a case shows each stage, the file being read, and the time left, on the terminal or in the log. |
 | API | The JSON API behind the map is documented as a stable interface in [docs/API.md](docs/API.md). |
 | Auth | **Mutual TLS.** Connections without a client cert signed by the ThreatBridge CA fail at the TLS handshake. |
@@ -55,6 +57,7 @@ python -m threatbridge --case /cases/incident-42/      # files or directories, i
 - **Each connection's protocol** is named as Zeek names services (`dns`, `http`, `ssl` for TLS, `smb`, ...), so case files and Security Onion agree.
   - In a capture, from the first payload whose bytes show it: DNS, HTTP, TLS, SSH, SMB, RDP or DHCP, on any port.
   - Failing that, and always for NetFlow (no payload), from the server's well-known port (e.g. 445 SMB, 3389 RDP, 5985 HTTP): a guess, so a service on an unusual port, or something else on a well-known one, is named after the port.
+  - FTP data connections are FTP, as Zeek names them. An FTP control connection (port 21 or 2811, or any port where the server greets with 120/220, the client sends `USER`, and the server answers 230/331) announces each data connection with the client's `PORT`/`EPRT` or the server's 227/229 reply to `PASV`/`EPSV`; the first connection to the announced address and port, from the side expected, within 5 minutes is FTP. FTP over TLS hides these, from Zeek too. NetFlow names ports 20 and 21 FTP; Security Onion's `ftp-data` reads as FTP.
   - ICMP is ICMP; anything else is Unknown.
 - **Refused connections aren't mapped,** so a port scan doesn't swamp the map: a SYN answered only by a RST, never a SYN-ACK (Zeek's `REJ`). The log says how many were left out. A SYN nobody answered, a scan's hit on an open port (SYN, SYN-ACK, then the scanner's RST) and a SYN-ACK scan's reset are mapped.
 - **Who started a connection** (the initiator) is decided by time, then TCP flags, then ports:
@@ -84,9 +87,28 @@ Enter a name such as `updates.example.com` and it stands for every address it re
 - **Where to see it:** the side panel shows what each name resolved to and from which source. Hosts at those addresses leave the map.
 - **Caution:** excluding a name excludes its addresses for all traffic. On shared hosting or a CDN that can hide unrelated hosts, attacker infrastructure included.
 
+### Filter expressions
+
+A filter is matched against each flow; a connection on the map then stands for the flows that pass every filter (and the marked ones).
+
+| | |
+|---|---|
+| Protocols | As the map names them: `DNS`, `HTTP`, `TLS`, `SSH`, `SMB`, `RDP`, `DHCP`, `Kerberos`, `DCE-RPC`, `NTLM`, `GSSAPI`, `LDAP`, `NTP`, `SNMP`, `FTP`, `SMTP`, `POP3`, `IMAP`, `Telnet`, `Syslog`, `MSSQL`, `MySQL`, `PostgreSQL`, `VNC`, `RADIUS`, `ICMP`, `Unknown`; any other Zeek service in capitals, e.g. `QUIC`. `TLS` is TLS on any port. |
+| Fields | `sport`, `dport`, `port` (either end), `src`, `dst`, `host` (either end), `proto` (`tcp`, `udp`, `icmp` or an IP protocol number), `packets`, `bytes`, `duration` (seconds), `time` (the flow's start, ISO-8601, UTC unless it says; to the millisecond) |
+| Comparisons | `==` (also when none is written: `sport 42000`), `!=`, `<`, `>`, `<=`, `>=` |
+| Values | numbers; inclusive ranges `40000-42000` (with `==` or `!=`); IPs and CIDRs for `src`, `dst` and `host` (`==` inside, `!=` outside) |
+| Operators | `NOT` / `!`, then `AND` / `&&`, then `OR` / `\|\|`; parentheses |
+
+- Words are case-sensitive: operators in capitals, fields in lower case, protocols as shown. A wrong case, or a name the map doesn't use (`SSL`, `HTTPS`, `FTP-DATA`), is refused with what to write instead.
+- `port != 445` and `host != 10.0.0.5` mean neither end.
+- A flow missing a value (Security Onion records without a packet count, say) fails every comparison on it.
+- Examples: `(SMB || TLS) && sport 42000` (one flow that is SMB or TLS and has source port 42000); `NOT DNS AND bytes > 10000`; `host 10.0.0.0/8 AND NOT (port 53 OR port 123)`; `time >= 2024-05-01T12:00:00Z AND duration > 60`.
+- In Security Onion mode `packets` and `bytes` add up `TB_FIELD_PACKETS` and `TB_FIELD_BYTES` with a script query, and protocols are matched in `network.protocol` whether it lists one service or several (`smb,ntlm`).
+- SOC pivots are not filtered.
+
 ### Threat lines, compromised hosts and attack paths
 
-These need the whole graph, so they work in post-mortem mode only.
+These need the whole graph, so they work in post-mortem mode only. Filters apply to all of them: only flows that pass, and marked flows, are followed.
 
 All of them follow one rule: a hop A → B counts only if A opened the connection, after the attacker could have been on A, and within the **Window** of that. That is the rule you apply by hand when you expand hosts. Searches stop after 6 hops (`TB_THREAT_HOPS`). Excluded hosts are never crossed, and flows outside the time range are ignored.
 
@@ -98,9 +120,17 @@ The searches are exact under that rule. An attacker may have reached a host at s
   - Hosts not yet on the map are added, everything else is faded, and clicking the background clears it.
   - Each host is drawn with one hop: the fewest hops from the connection, then the earliest arrival going forward or the latest departure going back.
   - A line stops at 300 hosts per direction (`TB_THREAT_MAX_HOSTS`) and says so when it does.
-- **Compromised hosts: right-click a host, or use the side panel.**
+- **Compromised hosts and flows (marks): right-click a host, or use the side panel; a flow from a connection's flow list, or from the menu of a connection that holds one flow.**
   - Mark a host at its anchor time, at a time you enter, or with the time unknown.
-  - The list is shared and kept in `compromised.json` (`TB_COMPROMISED_FILE`).
+  - Marking a flow locks it in (no filter hides it) and marks its two hosts, reached at the flow's start. A host stays marked while anything marks it (its own mark, or a marked flow it is an end of: the side panel says how many), and counts as reached at the earliest of those times.
+  - *Unmark* on a host removes its own mark and every marked flow it is an end of; *Remove* on a marked flow (side panel) or *Unmark* in a flow list removes that flow only.
+  - The list is shared and kept in `compromised.json` (`TB_COMPROMISED_FILE`). Every analyst's map checks for changes every 5 seconds.
+- **Suspect connections: what the marks keep.** In a part of the map (hosts joined by drawn connections) that holds a marked host, only connections on a line to or from a mark stay: a flow is *suspect* if it lies on a time-ordered line that ends at a marked host (how the attacker could have got there) or starts at one (where they could have gone next: every flow after the attacker reached it). The lines follow the rule above, into a marked host by the time it was reached and out of it within the Window after; with the time unknown, any time.
+  - Marked connections are drawn solid, suspect ones dashed, both dark red outlined light red. A connection that stays counts only its marked and suspect flows (its count, times, ports, protocols and flow list).
+  - Every other connection in that part is hidden, and so is a host left with none, unless marked; the map's IOC host always stays. The status line says how many connections the marks hid. They come back when the marks change.
+  - Parts of the map with no marked host are left as they are. Only what is drawn is used; filters apply first.
+  - Every analyst's map hides by the shared marks.
+  - **Post-mortem mode only.** In Security Onion mode marks are shown and shared, but hide nothing: following lines needs the whole graph, which only case files give. Making ThreatBridge a standalone tool that imports traffic from Security Onion would lift this; it is on the list of future work (FTODO-1 in [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md)).
 - **Attack paths:** recomputed after every change to the compromised or exclude lists, and drawn in red.
   - A path from A to B must leave A after A's compromise time and reach B no later than B's.
   - With A's time unknown, its first hop may happen at any point in the data.
@@ -115,6 +145,7 @@ The searches are exact under that rule. An attacker may have reached a host at s
   - Expanding the busiest host took 0.15 s, and the last page of that connection's flows 0.01 s.
   - A threat line through that connection took 0.6 s; every path between two busy hosts, 0.08 s.
   - Attack paths among the ten busiest hosts took 0.33 s. With an IOC time on each they took 4.9 s, recomputed in the background while the map stays usable.
+  - The first query with a new filter builds a graph of the flows that pass it: 3.8 s when nearly all 1M do, 0.7 s for one port. Later queries with it reuse that graph (the last 4 are kept). Working out what the marks keep of a 300-connection map took 0.6 s (1.2 s with a filter). (Another machine: there the case above took 61 s to build, and attack paths with IOC times 9 s.)
 - **Storage.** The flows go into a SQLite file. The map and searches use a graph holding one edge per host pair, with the start times of that pair's flows.
   - Without `--db` (`TB_CASE_DB`) the file is temporary. With it, the case reopens without re-reading the evidence until a file is added or changed.
   - Nothing is written to the evidence directories. Keep the `--db` file with your working files. Next to it, `<file>.lock` lets several workers share it: one builds it, the others wait and reuse it.
@@ -175,6 +206,7 @@ Deployment on a live Security Onion install has **not been tested**. These point
 10. **The PCAP links:** *PCAP in SOC* uses the same `/joblookup` link as SOC's own PCAP action. *Download PCAP* follows SOC's Connect API as published in its source (token, `/connect/joblookup/`, `/connect/job/{id}`, `/connect/stream/{id}`); it was tested against a stand-in, not a real SOC.
 11. **Refused connections** are left out by Zeek's `connection.state` `REJ` (`TB_FIELD_CONN_STATE`). The field name is from Security Onion's 2.4 ingest pipeline (`zeek.conn`); whether it is indexed as keyword or text isn't known, so a `match` query is used, which finds it either way.
 12. **Protocols** come from Zeek's `service` as Security Onion stores it, `network.protocol` (`TB_FIELD_SERVICE`; from the same pipeline). It must be aggregatable (a keyword field): if it isn't, expanding a host fails with an Elasticsearch error, and `TB_FIELD_SERVICE=` (empty) turns protocols off.
+13. **Filters in Security Onion mode:** protocols are matched with `term` and `wildcard` queries on `network.protocol` with `case_insensitive` (Elasticsearch 7.10 and later); `packets` and `bytes` with a Painless script query adding up the packet and byte fields, which Security Onion's Elasticsearch must allow; `src`/`dst`/`host` CIDRs with `term` on the ip fields; `time` as `epoch_millis` ranges on `@timestamp`.
 
 ## Configuration (env vars)
 
@@ -263,7 +295,7 @@ Run it again after changing the analysis or the readers, and look at the new sur
 | Shellcheck | `scripts/`, `deploy/`, `tests/` shell scripts |
 | Security scan | `pip-audit` (known-vulnerable dependencies), `bandit -ll` (medium+ Python security issues) |
 | Docker build + mTLS | Generates a throwaway PKI, builds and starts the container with `deploy/run.sh` (demo backend), then `tests/mtls_check.sh`. No cert and foreign-CA certs must be refused, a valid cert accepted, and writes without the CSRF header rejected. `tests/ui_mtls.mjs` then opens the map in Chromium through the container: refused without a certificate, working with one. |
-| UI tests | Headless Chromium. Every script fails on any unexpected console/CSP error, and screenshots are uploaded as an artifact. `tests/ui_smoke.mjs` (demo backend) checks the toolbar and its URL, loads the map as a SOC action would, Top and Bottom N, the SOC pivots (with the IOC time and the time range), the flows' PCAP links and download, the exclude list and what its entries resolved to, marking hosts compromised, the busy indicator, and the status line's messages. `tests/ui_case.mjs` runs post-mortem mode on a pcap made by `tests/make_case.py`: threat lines, compromised hosts and attack paths (with the Window, the time range and excludes), paths between two hosts with IOC times, and domain excludes. `tests/ui_actions.mjs` covers the rest: errors, slow writes kept in order, the details panel and layout, every menu and how menus close, time-chained hops, the compromised form, attack paths answered out of order, CIDRs, "Show all" paths, paging flows, threat lines cut short, saved maps (shared and as a file, including malformed files and markup in names), clicks after a resize or scroll, Fit and Clear. The job ends with `tests/js_coverage.mjs`, which lists what of `app.js` no browser test ran. |
+| UI tests | Headless Chromium. Every script fails on any unexpected console/CSP error, and screenshots are uploaded as an artifact. `tests/ui_smoke.mjs` (demo backend) checks the toolbar and its URL, loads the map as a SOC action would, Top and Bottom N, the SOC pivots (with the IOC time and the time range), the flows' PCAP links and download, the exclude list and what its entries resolved to, marking hosts compromised, the busy indicator, and the status line's messages. `tests/ui_case.mjs` runs post-mortem mode on a pcap made by `tests/make_case.py`: threat lines, compromised hosts and attack paths (with the Window, the time range and excludes), paths between two hosts with IOC times, and domain excludes. `tests/ui_actions.mjs` covers the rest: errors, slow writes kept in order, the details panel and layout, every menu and how menus close, time-chained hops, the compromised form, attack paths answered out of order, CIDRs, "Show all" paths, paging flows, threat lines cut short, saved maps (shared and as a file, including malformed files and markup in names), clicks after a resize or scroll, Fit and Clear. `tests/ui_marks.mjs` covers marks and filters: marking hosts and single flows, what the marks hide and how it looks, unmarking, typed filters (refused and applied), re-running the map's queries, Apply as filter, Clear, the CSV export, a second analyst seeing marks within seconds, an opened map's own marks and *Share*, and maps saved before filters. The job ends with `tests/js_coverage.mjs`, which lists what of `app.js` no browser test ran. |
 
 CI cannot reach a real Security Onion, so the items under *Things to verify on your install* still need a manual check: tests SO-01 to SO-07 in [docs/TEST_PLAN.md](docs/TEST_PLAN.md).
 
@@ -272,12 +304,13 @@ Layout:
 | Path | Contents |
 |---|---|
 | `threatbridge/query.py` | Input validation, Elasticsearch and SOC query builders |
+| `threatbridge/filters.py` | Filter expressions: read, matched in Python, and as SQL and Elasticsearch queries |
 | `threatbridge/model.py` | The `Flow` record shared by the file readers |
 | `threatbridge/sources/` | pcap and nfcapd readers; `workers.py` reads several files at once |
 | `threatbridge/store.py` | The flows, in SQLite: counts, ports and details behind each edge |
 | `threatbridge/graph.py` | The NetworkX `DiGraph`: one edge per host pair, with that pair's flow start times |
-| `threatbridge/analysis.py` | Time-ordered searches: threat lines and attack paths |
-| `threatbridge/excludes.py`, `compromised.py`, `jsonstore.py` | Shared lists, stored as JSON files that several workers can write |
+| `threatbridge/analysis.py` | Time-ordered searches: threat lines, attack paths and suspect flows |
+| `threatbridge/excludes.py`, `compromised.py`, `jsonstore.py` | Shared lists (excludes; marked hosts and flows), stored as JSON files that several workers can write |
 | `threatbridge/sessions.py` | Saved maps, one JSON file each |
 | `threatbridge/soc.py` | SOC's Connect API: a flow's PCAP from its sensor |
 | `threatbridge/progress.py` | Progress of building a case, on the terminal or in the log |

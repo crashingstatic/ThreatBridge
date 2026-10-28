@@ -941,3 +941,138 @@ def test_netflow_names_protocols_by_port():
     assert sorted((f.src, f.dport, f.service) for f in flows) == [
         (C, 0, "icmp"), (C, 53, "dns"), (C, 445, "smb"), (C, 445, "smb"), (C, 49668, "unknown"),
         (S, 50000, "unknown")]
+
+
+# ---- FTP: data connections named from the control connection, as Zeek names them ----------
+
+@pytest.mark.parametrize("payload,expect", [
+    (b"PORT 10,0,0,5,195,80\r\n", (protocols.FTP_PORT, "10.0.0.5", 50000)),
+    (b"port 10, 0, 0, 5, 195, 80\r\n", (protocols.FTP_PORT, "10.0.0.5", 50000)),   # any case, spaces
+    (b"PORT 10,0,0,256,195,80\r\n", None),                                          # not an address
+    (b"PORT 10,0,0,5,0,0\r\n", None),                                               # port 0
+    (b"PORT 10,0,0,5\r\n", None),
+    (b"EPRT |1|10.0.0.5|50000|\r\n", (protocols.FTP_PORT, "10.0.0.5", 50000)),
+    (b"EPRT !2!2001:DB8::5!50000!\r\n", (protocols.FTP_PORT, "2001:db8::5", 50000)),  # any delimiter
+    (b"EPRT |1|2001:db8::5|50000|\r\n", None),                                      # IPv4 said, IPv6 given
+    (b"EPRT |1|10.0.0.5|70000|\r\n", None),
+    (b"227 Entering Passive Mode (10,0,0,9,19,137).\r\n", (protocols.FTP_PASV, "10.0.0.9", 5001)),
+    (b"227 =10,0,0,9,19,137\r\n", (protocols.FTP_PASV, "10.0.0.9", 5001)),
+    (b"229 Entering Extended Passive Mode (|||6446|)\r\n", (protocols.FTP_PASV, None, 6446)),
+    (b"229 Entering Extended Passive Mode (|||0|)\r\n", None),
+    (b"220 ProFTPD Server ready.\r\n", (protocols.FTP_GREETING, None, None)),
+    (b"\r\n120 Ready in 5 minutes\r\n", (protocols.FTP_GREETING, None, None)),
+    (b"220", None),
+    (b"2200 x\r\n", None),
+    (b"331 Password required\r\n", (protocols.FTP_LOGIN, None, None)),
+    (b"230 Logged in\r\n", (protocols.FTP_LOGIN, None, None)),
+    (b"USER anonymous\r\n", (protocols.FTP_USER, None, None)),
+    (b"user anonymous\r\n", (protocols.FTP_USER, None, None)),
+    (b"+OK POP3 ready\r\n", None),
+    (b"EHLO mail.example\r\n", None),
+    (b"", None),
+])
+def test_ftp_control_messages(payload, expect):
+    assert protocols.ftp_signal(payload) == expect
+
+
+FTP_C, FTP_S, OTHER = "10.0.0.5", "10.0.0.21", "10.0.0.66"
+
+
+def ftp_control(t, port=21, cport=40000, then=(), greet=b"220 FTP ready\r\n", user=b"USER bob\r\n"):
+    """An FTP control connection FTP_C:cport -> FTP_S:port: handshake, greeting and login, then
+    `then`: [(who, payload)], who "c" (client) or "s" (server), 0.01 s apart."""
+    c, s = FTP_C, FTP_S
+    out = [(t, tcp(c, s, cport, port, SYN)), (t + 0.001, tcp(s, c, port, cport, SYN | ACK)),
+           (t + 0.002, tcp(c, s, cport, port, ACK))]
+    said = [("s", greet), ("c", user), ("s", b"331 Password required\r\n"), ("c", b"PASS x\r\n"),
+            ("s", b"230 Logged in\r\n"), *then]
+    for i, (who, data) in enumerate(said, 1):
+        out.append((t + 0.01 * i, tcp(s, c, port, cport, PSH | ACK, data) if who == "s"
+                    else tcp(c, s, cport, port, PSH | ACK, data)))
+    return out
+
+
+def ftp_data(t, src, sport, dst, dport, payload=b"x" * 50, syn=True):
+    """A data connection src -> dst; without `syn`, the capture begins at the responder's
+    SYN-ACK."""
+    out = [(t + 0.001, tcp(dst, src, dport, sport, SYN | ACK)),
+           (t + 0.002, tcp(src, dst, sport, dport, PSH | ACK, payload)),
+           (t + 0.003, tcp(src, dst, sport, dport, FIN | ACK)),
+           (t + 0.004, tcp(dst, src, dport, sport, FIN | ACK))]
+    return ([(t, tcp(src, dst, sport, dport, SYN))] if syn else []) + out
+
+
+def test_ftp_data_connections_are_named_from_the_control_connection(tmp_path, monkeypatch):
+    pasv = [("c", b"PASV\r\n"), ("s", b"227 Entering Passive Mode (10,0,0,21,19,137).\r\n")]
+    pkts = (
+        # Passive, on port 21: the client connects to the port the server's 227 named. The
+        # payload looks like TLS: the announcement still names it.
+        ftp_control(T, then=pasv) + ftp_data(T + 1, FTP_C, 40100, FTP_S, 5001, TLS_HELLO)
+        # Active: the server connects to the port the client's PORT named, from no port 20.
+        + ftp_control(T + 10, cport=40001, then=[("c", b"PORT 10,0,0,5,195,81\r\n"), ("s", b"200 OK\r\n")])
+        + ftp_data(T + 11, FTP_S, 30000, FTP_C, 50001)
+        # EPSV on port 2121, told by the greeting, USER and login (Zeek's signature): the control
+        # connection is FTP, and the data connection goes to the control server's address.
+        + ftp_control(T + 20, port=2121, cport=40002,
+                      then=[("c", b"EPSV\r\n"), ("s", b"229 Entering Extended Passive Mode (|||6446|)\r\n")])
+        + ftp_data(T + 21, FTP_C, 40102, FTP_S, 6446, syn=False)        # the capture missed the SYN
+        # A mail server greets with 220 too, but nobody sends USER: not FTP, and its "227" says nothing.
+        + ftp_control(T + 30, port=2525, cport=40003, user=b"EHLO mail\r\n",
+                      then=[("s", b"227 (10,0,0,21,19,138)\r\n")])
+        + ftp_data(T + 31, FTP_C, 40103, FTP_S, 5002)
+        # Announced, but the data connection comes from another host, then from the client too late.
+        + ftp_control(T + 40, cport=40004, then=[("s", b"227 Entering Passive Mode (10,0,0,21,19,140).\r\n")])
+        + ftp_data(T + 41, OTHER, 40104, FTP_S, 5004)
+        + ftp_data(T + 40.05 + protocols.FTP_DATA_WAIT + 1, FTP_C, 40105, FTP_S, 5004)
+        # Announced once, used once.
+        + ftp_control(T + 400, cport=40006, then=[("s", b"227 Entering Passive Mode (10,0,0,21,19,141).\r\n")])
+        + ftp_data(T + 401, FTP_C, 40106, FTP_S, 5005)
+        + ftp_data(T + 402, FTP_C, 40107, FTP_S, 5005)
+        # On port 21 the client must send PORT, and the server the 227.
+        + ftp_control(T + 500, cport=40008, then=[("s", b"PORT 10,0,0,5,195,90\r\n"),
+                                                   ("c", b"227 Entering Passive Mode (10,0,0,21,19,142).\r\n")])
+        + ftp_data(T + 501, FTP_S, 30001, FTP_C, 50010) + ftp_data(T + 502, FTP_C, 40108, FTP_S, 5006)
+    )
+    pkts.sort(key=lambda p: p[0])
+    files = split_into_files(tmp_path, pkts, 3, random.Random(2))
+    flows = pcap.read_pcaps(files, workers=1)
+    named = {(f.src, f.sport, f.dst, f.dport): f.service for f in flows}
+    assert named == {
+        (FTP_C, 40000, FTP_S, 21): "ftp", (FTP_C, 40100, FTP_S, 5001): "ftp",
+        (FTP_C, 40001, FTP_S, 21): "ftp", (FTP_S, 30000, FTP_C, 50001): "ftp",
+        (FTP_C, 40002, FTP_S, 2121): "ftp",
+        (FTP_S, 6446, FTP_C, 40102): "ftp",          # seen first, the server is taken as initiator (D7)
+        (FTP_C, 40003, FTP_S, 2525): "unknown", (FTP_C, 40103, FTP_S, 5002): "unknown",
+        (FTP_C, 40004, FTP_S, 21): "ftp", (OTHER, 40104, FTP_S, 5004): "unknown",
+        (FTP_C, 40105, FTP_S, 5004): "unknown",
+        (FTP_C, 40006, FTP_S, 21): "ftp", (FTP_C, 40106, FTP_S, 5005): "ftp",
+        (FTP_C, 40107, FTP_S, 5005): "unknown",
+        (FTP_C, 40008, FTP_S, 21): "ftp", (FTP_S, 30001, FTP_C, 50010): "unknown",
+        (FTP_C, 40108, FTP_S, 5006): "unknown",
+    }
+    monkeypatch.setattr(pcap, "in_order", in_process)          # packed by worker processes
+    assert pcap.read_pcaps(files, workers=2) == flows
+
+
+def test_ftp_announcements_are_capped_and_expire():
+    tracker = pcap.FlowTracker()
+    monkey = pcap.MAX_EXPECTED
+    try:
+        pcap.MAX_EXPECTED = 2
+        for i, port in enumerate((5001, 5002, 5003)):
+            tracker._expect(FTP_S, port, FTP_C, T + i)
+        assert set(tracker.expected) == {(FTP_S, 5001), (FTP_S, 5002)}
+        tracker._expect(FTP_S, 5002, OTHER, T + 5)              # a known spot is renewed
+        assert tracker.expected[(FTP_S, 5002)] == (OTHER, T + 5 + protocols.FTP_DATA_WAIT)
+    finally:
+        pcap.MAX_EXPECTED = monkey
+    tracker.add(T + 2 + protocols.FTP_DATA_WAIT, C, S, "udp", 1, 2, 10, 0, "x")    # sweeps
+    assert set(tracker.expected) == {(FTP_S, 5002)}          # only what is past its time
+
+
+def test_ftp_by_port_and_in_netflow_and_security_onion():
+    assert protocols.name("tcp", 0, 20, 50000) == protocols.name("tcp", 0, 2811, 50000) == "ftp"
+    assert protocols.split("ftp-data") == ["ftp"] and protocols.split("ftp,ftp-data") == ["ftp", "ftp"]
+    flows = pair_records([rec(S, 20, C, 50000, T, T + 1, flags=SYN), rec(C, 50000, S, 20, T, T + 1, flags=SYN | ACK)])
+    assert [(f.src, f.service) for f in flows] == [(S, "ftp")]
+    assert protocols.display_name("ftp") == "FTP" and protocols.display_name("quic") == "QUIC"

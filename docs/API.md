@@ -5,6 +5,15 @@ its paths, parameters and the fields listed stay as described. New endpoints, pa
 response fields can be added; anything removed or changed in meaning is listed here first, with
 the release that changes it.
 
+## Changes
+
+- **Marks on flows (D15).** `GET /api/compromised` (and every answer about marks) lists in `hosts`
+  every marked host, those marked through a marked flow too, each with `direct` and `count`, and
+  `time` is when the host was reached: the earliest of its own mark's time and its marked flows'
+  starts. The hosts marked themselves, as before, are in `marked`. `DELETE /api/compromised` also
+  removes the marked flows the host is an end of.
+- **FTP data connections** carry the protocol `ftp`; Security Onion's `ftp-data` reads as `ftp`.
+
 ## Conventions
 
 - **Authentication** is mutual TLS (see the README): a client needs a certificate signed by the
@@ -17,9 +26,19 @@ the release that changes it.
 - **The time range** (`range_from`, `range_to`, optional, either end open) limits every query that
   takes it: only flows that started inside it count.
 - **Hop limits** (`hops`) are 1 to 20. Default: `TB_THREAT_HOPS` (6).
-- **Writes** (`POST`, `DELETE`) send a JSON object and need the header `X-ThreatBridge: 1`; without
-  it the answer is 403. Browsers cannot add that header to a cross-site request, which is what
-  stops other sites from writing through an analyst's certificate.
+- **Filters** (D17), on every query about flows (`/api/neighbors`, `/api/flows`, `/api/edge`,
+  `/api/threatline`, `/api/paths`, `/api/suspect`, `/api/export`): repeat `filter=` in a query
+  string, or send `"filters": [...]` with a `POST`. A flow counts only if it matches every one, or
+  is a marked flow. Up to 20, each up to 500 characters; an expression that can't be read is a 400
+  saying what and where (`GET /api/filter` checks one). Without filters, every flow counts.
+- **Queries as POST.** Each query that takes filters can also be a `POST` with its parameters in a
+  JSON object (strings or numbers, the same names), plus `filters` and `marks`:
+  `{"hosts": [{"ip", "time", "note"}], "flows": [{"src", "dst", "start", "sport", "dport", "proto"}]}`,
+  marks to use instead of the shared ones (an opened map's own, D19), for what filters never hide
+  and for attack paths and suspect connections.
+- **Writes** (`POST`, `PUT`, `DELETE`) send a JSON object and need the header `X-ThreatBridge: 1`;
+  without it the answer is 403. Browsers cannot add that header to a cross-site request, which is
+  what stops other sites from writing through an analyst's certificate.
 - **Errors** are JSON: `{"error": "invalid IP address: 'nope'"}`, with the status:
 
   | Status | When |
@@ -29,7 +48,7 @@ the release that changes it.
   | 404 | No such saved map |
   | 409 | A map is already saved under that name |
   | 500 | A shared file (exclude list, compromised hosts, saved map) is not valid JSON; it is left as it is for someone to fix |
-  | 501 | The endpoint needs another backend (threat lines and paths need the case backend; PCAP downloads need Security Onion and a SOC API client) |
+  | 501 | The endpoint needs another backend (threat lines, paths and suspect connections need the case backend; PCAP downloads need Security Onion and a SOC API client) |
   | 502 | Elasticsearch or SOC failed or answered unexpectedly |
 
 ## Status and settings
@@ -53,6 +72,10 @@ What the map needs to know about this server:
 | `soc_pivots` | whether SOC pivots and PCAP links apply (not for the case backend) |
 | `analysis` | whether threat lines and paths are available (case backend) |
 | `threat_hops` | the default hop limit |
+| `suspects` | whether marks hide what isn't on a line through them (`POST /api/suspect`; case backend) |
+| `marks_poll` | seconds between the map's checks for other analysts' marks |
+| `protocol_names` | how the map names each protocol: `{"ssl": "TLS", "krb": "Kerberos", ...}`; others in capitals |
+| `max_filters` | filters at once |
 | `live_dns` | `TB_LIVE_DNS` |
 | `pcap_download` | whether `POST /api/pcap` is available |
 | `case` | case backend: `{"flows", "hosts", "start", "end", "dns_names"}` (`start`/`end` null for an empty case); otherwise null |
@@ -102,7 +125,13 @@ are identified from the payload, then by well-known port (README, *Post-mortem m
 `distinct_peers` may be null (Elasticsearch
 estimate unavailable). `truncated`: the rarest scan stopped at `rare_scan_cap` distinct peers, so
 the bottom list may be incomplete. Hosts on the exclude list are left out. When the window and
-the time range don't overlap, `start` is after `end` and `peers` is empty.
+the time range don't overlap, `start` is after `end` and `peers` is empty. With filters, counts,
+times, ports and protocols are those of the flows that pass.
+
+### `POST /api/neighbors`
+
+`GET /api/neighbors` with its parameters in a JSON object, plus `filters` and `marks` (see
+*Conventions*).
 
 ### `GET /api/flows`
 
@@ -129,6 +158,28 @@ may name several for one connection) may be null. Flows from Security Onion also
 `id` (the connection log's Elasticsearch ID, for `POST /api/pcap`) and `soc_pcap` (SOC's link
 that has the sensor extract the flow's packets). Security Onion lists at most the first 10,000
 flows of a connection (`offset + limit` past that is a 400); narrow the time range for later ones.
+
+### `POST /api/flows`
+
+`GET /api/flows` with its parameters in a JSON object, plus `filters`, `marks`, and `within`:
+`[[from, to], ...]` from `POST /api/suspect`, to list only a kept connection's marked and suspect
+flows (case backend).
+
+### `GET /api/edge`
+
+One connection, as it would be drawn: `{"source", "target", "count", "first_seen", "last_seen",
+"ports", "protocols"}` of the flows `src` → `dst` that started in [`from`, `to`] (parameters as for
+`/api/flows`, and filters). With none, `count` is 0 and the times null.
+
+### `POST /api/edge`
+
+`GET /api/edge` with its parameters in a JSON object, plus `filters` and `marks`.
+
+### `GET /api/filter`
+
+Checks one filter expression (`filter`): `{"filter": "(SMB OR TLS) AND sport == 42000"}`, its
+canonical form, or a 400 saying what is wrong and where, e.g. `"at character 1: protocol names
+are case-sensitive: write SMB"`. The grammar is D17 in the requirements and in the README.
 
 ### `GET /api/pivot`
 
@@ -178,6 +229,10 @@ and where `b` could have gone after it.
 host pair that fit the line. `truncated`: a direction stopped at `TB_THREAT_MAX_HOSTS` hosts.
 A 400 says when there are no flows from `a` to `b` in that time.
 
+### `POST /api/threatline`
+
+`GET /api/threatline` with its parameters in a JSON object, plus `filters` and `marks`.
+
 ### `GET /api/paths`
 
 Without `src` and `dst`: the paths between each pair of compromised hosts, the first 10 per pair,
@@ -198,6 +253,34 @@ With them: every path from `src` to `dst`, up to `TB_MAX_PATHS`:
 
 A path is `{"hops": [{"source", "target", "start", "sport", "dport", "proto", "packets",
 "bytes", "protocols"}, ...]}`: one chain of flows that proves it. `truncated`: there are more than listed.
+Compromised hosts are every marked host, each with the time it was reached (`GET /api/compromised`).
+
+### `POST /api/paths`
+
+`GET /api/paths` with its parameters in a JSON object, plus `filters` and `marks` (whose hosts are
+then the compromised ones).
+
+### `POST /api/suspect`
+
+What the marks keep of the connections on a map (D16). Body: `edges`, the connections drawn,
+`[{"source", "target", "from", "to"}, ...]` (each with the span drawn; up to 20,000), plus
+`window`, `hops`, `range_from`, `range_to`, `filters` and `marks`. Answer
+`{"edges": [...]}`, one per connection sent, with `status`:
+
+- `unaffected`: no marked host is in its part of the map (hosts joined by the connections sent);
+- `hidden`: in a part with marks, it carries no marked or suspect flow;
+- `kept`: it does. It then has `count`, `first_seen`, `last_seen`, `ports` and `protocols` of
+  those flows only, `marked` and `suspect` (how many of each), and `within`, the intervals they
+  started in, to list them (`POST /api/flows`).
+
+### `POST /api/export`
+
+The marks and what they keep, for a CSV export. Body as `POST /api/suspect`. Answer:
+`{"hosts": [{"ip", "time", "note", "marked": "direct" | "flows" | "both", "count"}], "flows":
+[{"start", "end", "src", "sport", "dst", "dport", "proto", "protocols", "packets", "bytes",
+"status": "marked" | "suspect"}], "truncated"}`: every marked host, and each marked or suspect
+flow on the connections sent, up to 200,000 (`truncated` beyond). Without the case backend, the
+marked flows only.
 
 ## Shared lists
 
@@ -219,17 +302,45 @@ Body `{"entry": ...}`. Answers as `GET`.
 
 ### `GET /api/compromised`
 
-`{"hosts": [{"ip": "10.0.0.20", "time": "2024-05-01T13:00:00.000Z", "note": "EDR"}]}`; `time` is
-null when unknown. Sorted by time, unknown first.
+The marks (D15), shared by every analyst:
+
+```json
+{"hosts": [{"ip": "10.0.0.20", "time": "2024-05-01T13:00:00.000Z", "note": "EDR", "direct": true, "count": 2}],
+ "marked": [{"ip": "10.0.0.20", "time": "2024-05-01T13:00:00.000Z", "note": "EDR"}],
+ "flows": [{"src": "10.0.0.9", "dst": "10.0.0.20", "start": "2024-05-01T13:20:00.000Z", "sport": 50001,
+            "dport": 3389, "proto": "tcp", "note": ""}],
+ "version": "5f0c2a91d0e4b7c3"}
+```
+
+`hosts`: every marked host, sorted by time, unknown first. `count` is its own mark (`direct`) plus
+the marked flows it is an end of; `time` (null if unknown) is when it was reached, the earliest
+known of its own mark's time and those flows' starts. `marked`: the hosts marked themselves.
+`flows`: the marked flows, `start` to the millisecond as flow lists show it. `version` changes
+whenever the marks do.
 
 ### `POST /api/compromised`
 
 Body `{"ip", "time" (optional; blank or null: unknown), "note" (optional, up to 500 characters)}`.
-Marking a host again replaces its entry. Answers as `GET`.
+Marking a host again replaces its own mark. Answers as `GET`.
 
 ### `DELETE /api/compromised`
 
-Body `{"ip"}`. Answers as `GET`.
+Body `{"ip"}`: removes the host's own mark and every marked flow it is an end of. Answers as `GET`.
+
+### `PUT /api/compromised`
+
+Replaces every mark: body `{"hosts": [{"ip", "time", "note"}], "flows": [...]}` (up to 10,000 of
+each; any invalid one is a 400 and nothing changes). The map does it to share an opened map's
+marks, after asking. Answers as `GET`.
+
+### `POST /api/compromised/flows`
+
+Marks one flow: body `{"src", "dst", "start", "sport", "dport", "proto", "note" (optional)}`, as a
+connection's flow list gives them. Marking it again replaces its note. Answers as `GET`.
+
+### `DELETE /api/compromised/flows`
+
+Body `{"src", "dst", "start", "sport", "dport", "proto"}`: unmarks that flow. Answers as `GET`.
 
 ## Saved maps
 
@@ -241,7 +352,8 @@ saved first. With `?name=`: that map, `{"name", "saved", "map"}`, or 404.
 ### `POST /api/sessions`
 
 Body `{"name", "map", "overwrite" (optional)}`. `name`: 1 to 100 printable characters. `map`: a
-JSON object of at most 2 MB, kept as it is (the map's own format, `version` 1). An existing name
+JSON object of at most 2 MB, kept as it is (the map's own format, `version` 2; 1 before filters
+and marks were saved with it). An existing name
 is a 409 unless `overwrite` is `true`. Answers `{"name", "saved", "sessions"}`.
 
 ### `DELETE /api/sessions`

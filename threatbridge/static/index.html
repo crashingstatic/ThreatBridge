@@ -35,8 +35,13 @@
     <label>Highlight protocol
       <select id="protocol"><option value="">All</option></select>
     </label>
+    <button id="apply-protocol" type="button" disabled title="Add the protocol highlighted as a filter">Apply as filter</button>
+    <label class="filter">Filter (Enter applies)
+      <input id="filter" placeholder="e.g. (SMB || TLS) &amp;&amp; sport 42000" autocomplete="off" spellcheck="false">
+    </label>
+    <ul id="filter-list" class="chips" aria-label="Filters applied"></ul>
     <span id="busy" hidden><span id="busy-text"></span> <button id="cancel" type="button">Cancel</button></span>
-    <span id="status" role="status"></span>
+    <div id="status-line"><span id="status" role="status"></span> <span id="hidden-note"></span></div>
   </header>
   <main>
     <div id="cy"></div>
@@ -46,15 +51,23 @@
         Left-click a connection to list its flows in time order and trace its threat line
         (PCAP/NetFlow cases). The time range, when set, limits everything shown.
         Right-click a host or connection for more, such as marking a host compromised or a
-        Security Onion filter for two hosts.</p></div>
+        Security Onion filter for two hosts. A flow in a connection's list can be marked
+        compromised too. Filters (toolbar) narrow every query, for example
+        <code>(SMB || TLS) &amp;&amp; sport 42000</code> or <code>NOT DNS AND bytes &gt; 10000</code>.</p></div>
       <section id="compromised-section">
         <h2>Compromised hosts</h2>
+        <p id="local-marks" class="local-marks" hidden>Showing the marks saved with <span id="local-marks-name"></span>,
+          not the shared ones. Changes stay in this map until you share them.
+          <button id="share-marks" type="button">Share</button></p>
         <form id="compromised-form" class="entry-form">
           <input id="compromised-ip" placeholder="10.0.0.5" spellcheck="false" autocomplete="off">
           <input id="compromised-time" placeholder="time UTC (blank = unknown)" spellcheck="false" autocomplete="off">
           <button type="submit">Mark</button>
         </form>
         <ul id="compromised-list" class="entries"></ul>
+        <h3>Marked flows</h3>
+        <ul id="marked-flow-list" class="entries"></ul>
+        <div class="file-buttons"><button id="export-csv" type="button">Export CSV</button></div>
       </section>
       <section id="paths">
         <h2>Attack paths</h2>
@@ -108,6 +121,8 @@
         <span><span class="sw in"></span> inbound (past)</span>
         <span><span class="sw out"></span> outbound (future)</span>
         <span><span class="sw compromised"></span> compromised</span>
+        <span><span class="sw marked-line"></span> marked connection</span>
+        <span><span class="sw suspect-line"></span> suspect connection</span>
         <span><span class="sw attack"></span> attack path</span>
         <span><span class="sw route"></span> path between two hosts</span>
         <span><span class="sw up"></span> threat line: earlier</span>

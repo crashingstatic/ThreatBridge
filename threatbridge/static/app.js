@@ -7,14 +7,22 @@
   const menu = $("menu");
   let iocTime = null;          // anchor of the root (IOC) event; upper bound for SOC pivots
   let cfg = {};                // /api/config
-  let compromised = new Map(); // ip -> {time, note}
+  let compromised = new Map(); // ip -> {ip, time, note, direct, count}: every marked host (D15)
+  let markedFlows = new Map(); // flowKey -> marked flow
+  let markedPairs = new Set(); // "src->dst" of the connections holding a marked flow
+  let marks = { hosts: [], flows: [] };   // the marks shown: hosts marked themselves, and flows
+  let shared = null;           // the shared marks as last read: {hosts, marked, flows, version}
+  let localMap = null;         // the opened map whose own marks are shown (D19), or null
+  let filters = [];            // the analyst's filter expressions, combined with AND (D17)
+  let queries = [];            // the queries the map was built from, to re-run with the filters
   let detailsFor = null;       // host shown in the details panel
   let flowsFor = null;         // connection whose flows the details panel lists
+  let lastFlows = null;        // the page of flows listed, to redraw when marks change
   const FLOW_PAGE = 50;
   const WRITE_HEADERS = { "Content-Type": "application/json", "X-ThreatBridge": "1" };
   const COLORS = { root: "#e5484d", in: "#3e9bff", out: "#f5a524", node: "#9aa7bd",
                    up: "#a78bfa", down: "#2dd4bf", attack: "#ff4d5e", compromised: "#b4232a",
-                   route: "#f472b6", protocol: "#ffe066" };
+                   outline: "#ff8a8a", route: "#f472b6", protocol: "#ffe066" };
 
   const cy = cytoscape({
     container: $("cy"),
@@ -35,7 +43,15 @@
       { selector: "edge[direction = 'in']", style: { "line-color": COLORS.in, "target-arrow-color": COLORS.in } },
       { selector: "edge[direction = 'out']", style: { "line-color": COLORS.out, "target-arrow-color": COLORS.out } },
       { selector: "node[?compromised]", style: {
-          "background-color": COLORS.compromised, "border-width": 3, "border-color": "#ff8a8a" } },
+          "background-color": COLORS.compromised, "border-width": 3, "border-color": COLORS.outline } },
+      // Marked connections (solid) and suspect ones (dashed): dark red, outlined light red (D16).
+      // An attack path or a path between two hosts keeps its own colour, dashed or solid as above.
+      { selector: "edge.marked, edge.suspect", style: {
+          width: "mapData(logCount, 0, 4, 3, 8)", "line-color": COLORS.compromised,
+          "target-arrow-color": COLORS.compromised, "line-outline-width": 1.5, "line-outline-color": COLORS.outline,
+          "z-index": 9 } },
+      { selector: "edge.suspect", style: { "line-style": "dashed", "line-dash-pattern": [10, 6] } },
+      { selector: "edge.marked", style: { "line-style": "solid" } },
       // Attack paths, paths between two hosts, and the threat line through a clicked edge.
       { selector: "edge.attack", style: {
           "line-color": COLORS.attack, "target-arrow-color": COLORS.attack, width: 6, "z-index": 10 } },
@@ -55,21 +71,17 @@
       { selector: "edge.proto-hit", style: {
           opacity: 1, "underlay-color": COLORS.protocol, "underlay-opacity": 0.55, "underlay-padding": 4,
           "z-index": 20 } },
+      // Hidden by the marks: restored when they change (D16). Hiding comes before any dimming.
+      { selector: ".mark-hidden", style: { display: "none" } },
       { selector: ":selected", style: { "overlay-color": "#fff", "overlay-opacity": 0.15 } },
     ],
   });
 
   window.threatbridge = { cy }; // handle for debugging / UI tests
 
-  // Protocols as the server names them (Zeek's service names), as people know them.
-  const PROTOCOL_NAMES = {
-    dns: "DNS", http: "HTTP", ssl: "TLS", ssh: "SSH", smb: "SMB", rdp: "RDP", dhcp: "DHCP",
-    krb: "Kerberos", dce_rpc: "DCE/RPC", ntlm: "NTLM", gssapi: "GSSAPI", ldap: "LDAP", ntp: "NTP",
-    snmp: "SNMP", ftp: "FTP", "ftp-data": "FTP data", smtp: "SMTP", pop3: "POP3", imap: "IMAP",
-    telnet: "Telnet", syslog: "Syslog", tds: "MS SQL (TDS)", mysql: "MySQL", postgresql: "PostgreSQL",
-    rfb: "VNC (RFB)", radius: "RADIUS", icmp: "ICMP", unknown: "Unknown",
-  };
-  const protocolName = (p) => PROTOCOL_NAMES[p] || p.toUpperCase();
+  // Protocols as the server names them (Zeek's service names), as the map shows them (D14).
+  const PROTOCOL_ALIASES = { "ftp-data": "ftp", krb_tcp: "krb" };
+  const protocolName = (p) => (cfg.protocol_names || {})[p] || p.toUpperCase();
 
   function setStatus(msg, isError, isWarn) {
     statusEl.textContent = msg || "";
@@ -122,6 +134,19 @@
   }
 
   const getJSON = (url, opts) => request(url, opts, "json");
+  const post = (url, body) => getJSON(url, { method: "POST", headers: WRITE_HEADERS, body: JSON.stringify(body) });
+
+  // A query about the map's data, with the analyst's filters (D17). An opened map's own marks
+  // (D19), and `extra` fields, go in a POST; otherwise a GET says it all.
+  function ask(path, params, extra) {
+    if (localMap || extra) {
+      const body = Object.assign(Object.fromEntries(params.entries()), extra || {}, { filters });
+      if (localMap) body.marks = marks;
+      return post(path, body);
+    }
+    for (const f of filters) params.append("filter", f);
+    return getJSON(`${path}?${params}`);
+  }
 
   $("cancel").addEventListener("click", () => { for (const c of inFlight) c.abort(); });
 
@@ -154,9 +179,11 @@
   }
 
   // Tree by hop distance from the IOC host (top row), each host's peers placed under it.
+  // What the marks hide is left out.
   function relayout() {
-    const root = cy.nodes("[?root]");
-    cy.layout({
+    const shown = cy.elements().not(".mark-hidden");
+    const root = shown.nodes("[?root]");
+    shown.layout({
       name: "breadthfirst", circle: false, directed: false, roots: root.length ? root : undefined,
       animate: false, fit: true, padding: 40, spacingFactor: 1.1, avoidOverlap: true,
     }).run();
@@ -171,12 +198,17 @@
     return n;
   }
 
+  // An edge's data: what a query said of it ("full"), and what is shown, the same until the
+  // marks narrow it to its marked and suspect flows (shown()).
   function edgeData(src, dst, direction, count, ports, first, last, protocols) {
-    return {
-      id: `${src}->${dst}`, source: src, target: dst, direction, count, ports, protocols,
-      first_seen: first, last_seen: last, logCount: Math.log10(count + 1),
-      label: `${count}${ports.length ? " · " + ports.join(",") : ""}`,
-    };
+    const full = { count, ports, protocols, first_seen: first, last_seen: last };
+    return Object.assign({ id: `${src}->${dst}`, source: src, target: dst, direction, full }, shown(full));
+  }
+
+  function shown(d) {
+    return { count: d.count, ports: d.ports, protocols: d.protocols, first_seen: d.first_seen,
+             last_seen: d.last_seen, logCount: Math.log10(d.count + 1),
+             label: `${d.count}${d.ports.length ? " · " + d.ports.join(",") : ""}` };
   }
 
   // Add an edge unless the map already shows it (keep the data from the expansion).
@@ -194,14 +226,17 @@
     cy.batch(() => {
       cy.edges().removeClass("proto-hit proto-dim");
       if (!want) return;
-      for (const e of cy.edges()) e.addClass(e.data("protocols").includes(want) ? "proto-hit" : "proto-dim");
+      for (const e of cy.edges().not(".mark-hidden")) {
+        e.addClass(e.data("protocols").includes(want) ? "proto-hit" : "proto-dim");
+      }
     });
+    $("apply-protocol").disabled = !want;
   }
 
   // The drop-down lists every protocol on the map's edges, by name. A choice holds until
   // another is made (or Clear): while no edge carries it, it says so, and every edge fades.
   function refreshProtocols() {
-    const found = new Set(cy.edges().map((e) => e.data("protocols")).flat());
+    const found = new Set(cy.edges().not(".mark-hidden").map((e) => e.data("protocols")).flat());
     const chosen = protocolSelect.value;
     const options = [...found].sort((a, b) => protocolName(a).localeCompare(protocolName(b)))
       .map((p) => new Option(protocolName(p), p));
@@ -229,17 +264,28 @@
     cy.elements().not(elements).addClass("faded");
   }
 
+  // ---- the queries the map is built from: each is logged, to re-run with the filters -------
+  // The toolbar's Window, N and peer order, as a query uses them.
+  function settingsNow() {
+    return { window: $("window").value.trim(), limit: $("limit").value.trim(), order: $("order").value };
+  }
+
   // direction "in": peer -> host, anchored in the past; "out": host -> peer, anchored in the future.
   async function expand(ip, direction) {
     const node = cy.getElementById(ip);
     const anchor = node.nonempty() ? node.data("anchor") : $("ts").value.trim();
-    const params = withRange(new URLSearchParams({
-      ip, direction, window: $("window").value.trim(), limit: $("limit").value.trim(),
-      order: $("order").value,
-    }));
-    if (anchor) params.set("ts", anchor);
-    setStatus(`Querying ${direction === "in" ? "inbound (past)" : "outbound (future)"} for ${ip}…`);
-    const res = await getJSON(`/api/neighbors?${params}`);
+    const q = Object.assign({ op: "expand", ip, direction, anchor }, settingsNow());
+    queries.push(q);
+    return expandWith(q, true);
+  }
+
+  async function expandWith(q, say) {
+    const params = withRange(new URLSearchParams({ ip: q.ip, direction: q.direction, window: q.window,
+                                                   limit: q.limit, order: q.order }));
+    if (q.anchor) params.set("ts", q.anchor);
+    if (say) setStatus(`Querying ${q.direction === "in" ? "inbound (past)" : "outbound (future)"} for ${q.ip}…`);
+    const res = await ask("/api/neighbors", params);
+    const direction = q.direction;
 
     const host = addNode(res.ip, res.anchor, { depth: 0 });
     const depth = (host.data("depth") || 0) + 1;
@@ -258,7 +304,9 @@
         if (e.nonempty()) e.data(data); else cy.add({ group: "edges", data });
       }
     });
+    if (!say) return res;
     relayout();
+    hidingDue();
     const which = res.order === "top" ? "top" : "rarest";
     let msg = `${res.ip}: showing ${which} ${res.peers.length}`;
     if (res.distinct_peers != null) msg += ` of ${res.distinct_peers} distinct peer(s)`;
@@ -268,13 +316,18 @@
     return res;
   }
 
+  // Map: a fresh map, with the shared marks again (D19) and the filters still applied.
   async function start() {
     const ip = $("ip").value.trim();
     if (!ip) { setStatus("Enter an IP address", true); return; }
     cy.elements().remove();
+    queries = [];
+    if (localMap) leaveLocal();
     const ts = $("ts").value.trim();
     try {
-      const res = await expandRoot(ip, ts, $("direction").value);
+      const q = Object.assign({ op: "root", ip, ts, direction: $("direction").value }, settingsNow());
+      queries.push(q);
+      const res = await rootWith(q, true);
       rememberInUrl(res.ip);
       await refreshPaths(true);
     } catch (err) { fail(err); }
@@ -287,18 +340,75 @@
     history.replaceState(null, "", `?${q}`);
   }
 
-  async function expandRoot(ip, ts, direction) {
+  async function rootWith(q, say) {
     // Normalise IP/anchor server-side; the root anchor is the IOC time used for pivots.
-    const params = withRange(new URLSearchParams({ ip, direction }));
-    if (ts) params.set("ts", ts);
+    const params = withRange(new URLSearchParams({ ip: q.ip, direction: q.direction }));
+    if (q.ts) params.set("ts", q.ts);
     const r = await getJSON(`/api/resolve?${params}`);
     iocTime = r.anchor;
     addNode(r.ip, r.anchor, { root: true, depth: 0 });
-    return expand(r.ip, direction);
+    return expandWith(Object.assign({}, q, { op: "expand", ip: r.ip, anchor: r.anchor }), say);
+  }
+
+  // A connection of a map saved before filters (version 1), fetched again as it was drawn.
+  async function edgeWith(q) {
+    const r = await ask("/api/edge", withRange(new URLSearchParams({ src: q.source, dst: q.target,
+                                                                      from: q.from, to: q.to })));
+    if (!r.count) return;
+    for (const ip of [q.source, q.target]) addNode(ip, null, {});
+    mergeEdge(q.source, q.target, q.direction, r.count, r.ports, r.first_seen, r.last_seen, r.protocols);
+  }
+
+  // Re-run every query the map was built from with the filters (D17), then lay it out again.
+  // Marked hosts on the map stay, even with no flow left; with filters, other hosts left with
+  // no connection go.
+  async function requery() {
+    const log = queries.slice();
+    const keep = cy.nodes().filter((n) => compromised.has(n.id())).map((n) => [n.id(), n.data("anchor")]);
+    cy.elements().remove();
+    setStatus(`Re-running ${log.length} quer${log.length === 1 ? "y" : "ies"} with ${filters.length} filter(s)…`);
+    let skipped = 0;
+    for (const q of log) {
+      try {
+        await run(q);
+      } catch (err) {
+        if (err.cancelled) throw err;
+        skipped += 1;
+      }
+    }
+    for (const [ip, anchor] of keep) addNode(ip, anchor, {});
+    if (filters.length) {
+      cy.nodes().filter((n) => n.degree() === 0 && !compromised.has(n.id()) && !n.data("root")).remove();
+    }
+    markEdges();
+    relayout();
+    await refreshPaths(true);
+    await refreshHiding();
+    setStatus(`Re-ran ${log.length - skipped} of ${log.length} quer${log.length === 1 ? "y" : "ies"} with ` +
+              `${filters.length} filter(s): ${cy.nodes().length} host(s), ${cy.edges().length} connection(s)` +
+              (skipped ? `; ${skipped} found nothing that passes them` : ""));
+  }
+
+  function run(q) {
+    switch (q.op) {
+      case "root": return rootWith(q, false);
+      case "expand": return expandWith(q, false);
+      case "threatline": return threatLineWith(q, false);
+      case "routes": return routesWith(q, false);
+      case "node": addNode(q.id, q.data.anchor || null, q.data); return null;   // a version 1 map's host
+      case "edge": return edgeWith(q);
+      case "remove": {
+        const n = cy.getElementById(q.ip);
+        if (n.nonempty() && !n.data("root")) n.remove();
+        return null;
+      }
+      default: return null;
+    }
   }
 
   function showDetails(rows) {
     flowsFor = null;
+    lastFlows = null;
     const body = $("detail-body");
     body.replaceChildren();
     const dl = document.createElement("dl");
@@ -315,12 +425,19 @@
     if (detailsFor === ip && n.nonempty()) nodeDetails(n);
   }
 
+  function compromisedText(ip) {
+    const h = compromised.get(ip);
+    if (!h) return "no";
+    const time = h.time || "yes, time unknown";
+    const through = h.count - (h.direct ? 1 : 0);
+    return through ? `${time} (through ${through} marked flow(s))` : time;
+  }
+
   function nodeDetails(n) {
     detailsFor = n.id();
     showDetails([
       ["Host", n.id()], ["Anchor", n.data("anchor")], ["IOC root", n.data("root") ? "yes" : "no"],
-      ["Compromised", compromised.has(n.id())
-        ? (compromised.get(n.id()).time || "yes, time unknown") : "no"],
+      ["Compromised", compromisedText(n.id())],
       ["Hops from IOC", n.data("depth")],
       ["Inbound expanded", n.data("expandedIn") ? "yes" : "no"],
       ["Outbound expanded", n.data("expandedOut") ? "yes" : "no"],
@@ -330,15 +447,18 @@
 
   function edgeDetails(e) {
     detailsFor = null;
-    showDetails([
+    const rows = [
       ["Source", e.data("source")], ["Destination", e.data("target")],
       ["Direction", e.data("direction") === "in" ? "inbound (past)" : "outbound (future)"],
       ["Connections", e.data("count")], ["Top dst ports", (e.data("ports") || []).join(", ")],
       ["Protocols", e.data("protocols").map(protocolName).join(", ")],
       ["First seen", e.data("first_seen")], ["Last seen", e.data("last_seen")],
-    ]);
-    flowsFor = { src: e.data("source"), dst: e.data("target"),
-                 from: e.data("first_seen"), to: e.data("last_seen") };
+    ];
+    if (e.data("kept")) rows.push(["Marks keep", `${e.data("kept").marked} marked, ${e.data("kept").suspect} suspect ` +
+                                                 `of ${e.data("full").count}`]);
+    showDetails(rows);
+    flowsFor = { src: e.data("source"), dst: e.data("target"), from: e.data("first_seen"), to: e.data("last_seen"),
+                 within: e.data("kept") ? e.data("kept").within : null };
     loadFlows(flowsFor, 0).catch((err) => fail(err));
   }
 
@@ -346,7 +466,7 @@
   async function loadFlows(conn, offset) {
     const params = withRange(new URLSearchParams({ src: conn.src, dst: conn.dst, from: conn.from,
                                                    to: conn.to, offset, limit: FLOW_PAGE }));
-    const r = await getJSON(`/api/flows?${params}`);
+    const r = await ask("/api/flows", params, conn.within ? { within: conn.within } : null);
     if (flowsFor === conn) renderFlows(conn, r); // else another element was clicked meanwhile
   }
 
@@ -361,6 +481,7 @@
   }
 
   function renderFlows(conn, r) {
+    lastFlows = r;
     let section = $("flows");
     if (!section) {
       section = document.createElement("section");
@@ -395,30 +516,39 @@
       li.textContent = f.start;
       small.textContent = flowMeta(f);
       li.append(small);
-      const actions = pcapActions(conn, f);
+      const actions = flowActions(conn, f);
       if (actions) li.append(actions);
       list.append(li);
     }
     section.replaceChildren(title, pager, list);
   }
 
-  // A Security Onion flow's packets: SOC's own PCAP job, or downloaded through ThreatBridge.
-  function pcapActions(conn, f) {
-    if (!f.id || cfg.soc_pivots === false) return null;
+  // A flow's own actions: mark it compromised (D15), and in Security Onion mode its packets.
+  function flowActions(conn, f) {
     const span = document.createElement("span");
     span.className = "actions";
-    if (f.soc_pcap) {
-      const a = document.createElement("a");
-      a.href = f.soc_pcap; a.target = "_blank"; a.rel = "noopener noreferrer"; a.textContent = "PCAP in SOC";
-      span.append(a);
-    }
-    if (cfg.pcap_download) {
+    const key = flowOf(conn, f);
+    if (key) {
+      const marked = markedFlows.has(flowKey(key));
       const b = document.createElement("button");
-      b.type = "button"; b.textContent = "Download PCAP";
-      b.addEventListener("click", () => downloadPcap(conn, f).catch(fail));
+      b.type = "button"; b.className = "mark"; b.textContent = marked ? "Unmark" : "Mark compromised";
+      b.addEventListener("click", () => (marked ? unmarkFlow(key) : markFlow(key)).catch(fail));
       span.append(b);
     }
-    return span;
+    if (f.id && cfg.soc_pivots !== false) {
+      if (f.soc_pcap) {
+        const a = document.createElement("a");
+        a.href = f.soc_pcap; a.target = "_blank"; a.rel = "noopener noreferrer"; a.textContent = "PCAP in SOC";
+        span.append(a);
+      }
+      if (cfg.pcap_download) {
+        const b = document.createElement("button");
+        b.type = "button"; b.textContent = "Download PCAP";
+        b.addEventListener("click", () => downloadPcap(conn, f).catch(fail));
+        span.append(b);
+      }
+    }
+    return span.childElementCount ? span : null;
   }
 
   async function downloadPcap(conn, f) {
@@ -474,13 +604,29 @@
     const [a, b, until] = [e.data("source"), e.data("target"), iocTime];
     edgeDetails(e);
     const oe = evt.originalEvent;
-    if (cfg.soc_pivots === false) return;
-    showMenu(oe.clientX, oe.clientY, [
-      { title: `${a} ↔ ${b}` },
-      { label: `Filter SOC Dashboards: all conversations up to IOC time`, action: () => openPivot(a, b, until) },
-      { label: "Copy SOC query", action: () => copyPivot(a, b, until) },
-    ]);
+    const items = [];
+    if (e.data("count") === 1) {     // one flow: mark it here (D15); otherwise in the flow list
+      items.push({ label: markedPairs.has(e.id()) ? "Unmark compromised" : "Mark compromised",
+                   action: () => toggleOnlyFlow(e) });
+    }
+    if (cfg.soc_pivots !== false) {
+      items.push({ label: `Filter SOC Dashboards: all conversations up to IOC time`, action: () => openPivot(a, b, until) },
+                 { label: "Copy SOC query", action: () => copyPivot(a, b, until) });
+    }
+    if (items.length) showMenu(oe.clientX, oe.clientY, [{ title: `${a} ↔ ${b}` }, ...items]);
   });
+
+  // The flow of a single-flow connection, marked or unmarked.
+  async function toggleOnlyFlow(e) {
+    const conn = { src: e.data("source"), dst: e.data("target"), from: e.data("first_seen"), to: e.data("last_seen") };
+    const params = withRange(new URLSearchParams({ src: conn.src, dst: conn.dst, from: conn.from, to: conn.to,
+                                                   offset: 0, limit: 1 }));
+    const kept = e.data("kept");
+    const r = await ask("/api/flows", params, kept ? { within: kept.within } : null);
+    const key = r.flows.length ? flowOf(conn, r.flows[0]) : null;
+    if (!key) throw new Error(`No flow of ${conn.src} → ${conn.dst} to mark`);
+    return markedFlows.has(flowKey(key)) ? unmarkFlow(key) : markFlow(key);
+  }
 
   cy.on("cxttap", "node", (evt) => {
     const n = evt.target;
@@ -497,10 +643,16 @@
       ...(cfg.analysis ? [
         { label: "Find paths from this host…", action: () => routeEnd(n.id(), "src") },
         { label: "Find paths to this host…", action: () => routeEnd(n.id(), "dst") }] : []),
-      { label: "Remove from map", action: () => { if (!n.data("root")) { n.remove(); } } },
+      { label: "Remove from map", action: () => removeHost(n) },
       { label: "Add to shared exclude list", action: () => addExclude(n.id()) },
     ]);
   });
+
+  function removeHost(n) {
+    if (n.data("root")) return;
+    queries.push({ op: "remove", ip: n.id() });
+    n.remove();
+  }
 
   function compromiseItems(n) {
     if (compromised.has(n.id())) {
@@ -529,13 +681,66 @@
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") hideMenu(); });
 
   $("go").addEventListener("click", start);
-  $("fit").addEventListener("click", () => cy.fit(undefined, 40));
-  $("clear").addEventListener("click", () => {
-    cy.elements().remove(); iocTime = null; setStatus(""); protocolSelect.value = "";
-  });
+  $("fit").addEventListener("click", () => cy.fit(cy.elements().not(".mark-hidden"), 40));
+  // Clear resets the protocol preview, nothing else (D18).
+  $("clear").addEventListener("click", () => { protocolSelect.value = ""; refreshProtocols(); });
   for (const id of ["ip", "ts", "window", "limit", "range-from", "range-to"]) {
     $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") start(); });
   }
+
+  // ---- filters (D17): typed expressions, applied with Enter, each removable -----------------
+  const filterInput = $("filter");
+
+  function renderFilters() {
+    const ul = $("filter-list");
+    ul.replaceChildren(...filters.map((f, i) => {
+      const li = document.createElement("li");
+      const span = document.createElement("span");
+      span.textContent = f;
+      const x = document.createElement("button");
+      x.type = "button"; x.textContent = "×"; x.title = `Remove the filter ${f}`;
+      x.addEventListener("click", () => removeFilter(i).catch(fail));
+      li.append(span, x);
+      return li;
+    }));
+  }
+
+  async function addFilter(text) {
+    const r = await getJSON(`/api/filter?${new URLSearchParams({ filter: text })}`).catch((err) => {
+      filterInput.classList.add("invalid");
+      throw err;
+    });
+    if (!filters.includes(r.filter)) {
+      if (filters.length >= (cfg.max_filters || 20)) throw new Error(`At most ${cfg.max_filters || 20} filters at once`);
+      filters.push(r.filter);
+      renderFilters();
+      await requery();
+    }
+    return r.filter;
+  }
+
+  async function removeFilter(i) {
+    filters.splice(i, 1);
+    renderFilters();
+    await requery();
+  }
+
+  filterInput.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    const text = filterInput.value;
+    if (!text.trim()) return;
+    addFilter(text).then(() => clearForm(["filter"], [text.trim()])).catch(fail);
+  });
+  filterInput.addEventListener("input", () => filterInput.classList.remove("invalid"));
+
+  // The protocol previewed, as a filter (INT-6).
+  $("apply-protocol").addEventListener("click", () => {
+    const want = protocolSelect.value;
+    if (!want) return;
+    protocolSelect.value = "";
+    refreshProtocols();
+    addFilter(protocolName(want)).catch(fail);
+  });
 
   // ---- shared exclude list --------------------------------------------------
   // What a domain entry stands for: DNS answers seen in the capture, and a live lookup.
@@ -604,11 +809,17 @@
   // Earlier hosts that could have led to the edge's source, and later hosts its target
   // could have reached, following time order with at most `window` between hops.
   async function showThreatLine(e) {
-    const [a, b] = [e.data("source"), e.data("target")];
-    const params = withRange(new URLSearchParams({ a, b, from: e.data("first_seen"),
-                                                   to: e.data("last_seen"), window: $("window").value.trim() }));
-    setStatus(`Tracing the threat line through ${a} → ${b}…`);
-    const r = await getJSON(`/api/threatline?${params}`);
+    const q = { op: "threatline", a: e.data("source"), b: e.data("target"), from: e.data("first_seen"),
+                to: e.data("last_seen"), window: $("window").value.trim() };
+    queries.push(q);
+    return threatLineWith(q, true);
+  }
+
+  async function threatLineWith(q, say) {
+    const { a, b } = q;
+    const params = withRange(new URLSearchParams({ a, b, from: q.from, to: q.to, window: q.window }));
+    if (say) setStatus(`Tracing the threat line through ${a} → ${b}…`);
+    const r = await ask("/api/threatline", params);
     let line = cy.collection();
     cy.batch(() => {
       for (const n of r.nodes) line = line.union(addNode(n.id, n.time, {}));
@@ -618,6 +829,7 @@
         line = line.union(el);
       }
     });
+    if (!say) return;
     relayout();
     focus(line);
     cy.batch(() => {
@@ -633,43 +845,152 @@
     const up = r.nodes.filter((n) => n.role === "up" || n.role === "both").length;
     const down = r.nodes.filter((n) => n.role === "down" || n.role === "both").length;
     let msg = `Threat line through ${a} → ${b}: ${up} earlier host(s) (violet), ` +
-              `${down} later host(s) (teal); ≤ ${cfg.threat_hops} hops, ≤ ${$("window").value.trim()} ` +
+              `${down} later host(s) (teal); ≤ ${cfg.threat_hops} hops, ≤ ${q.window} ` +
               "between hops. Click the background to clear.";
     if (r.truncated) msg += " WARNING: stopped at the host limit; the line is incomplete.";
     setStatus(msg, false, r.truncated);
   }
 
-  // ---- compromised hosts and the attack paths between them ------------------
-  function renderCompromised(hosts) {
-    compromised = new Map(hosts.map((h) => [h.ip, h]));
-    cy.nodes().forEach((n) => { n.data("compromised", compromised.has(n.id())); });
+  // ---- marks (D15): hosts and flows marked compromised, shared or an opened map's own -----
+  const flowKey = (f) => [f.src, f.dst, f.start, f.sport, f.dport, f.proto].join("|");
+
+  // A listed flow as a mark names it; null if it lacks what a mark needs.
+  function flowOf(conn, f) {
+    if (!Number.isInteger(f.sport) || !Number.isInteger(f.dport) || f.proto == null) return null;
+    return { src: conn.src, dst: conn.dst, start: f.start, sport: f.sport, dport: f.dport, proto: String(f.proto) };
+  }
+
+  // Every marked host, as the server works them out (compromised.marked_hosts).
+  function markedHosts(hosts, flows) {
+    const out = new Map(hosts.map((h) => [h.ip, { ip: h.ip, time: h.time, note: h.note || "", direct: true, count: 1 }]));
+    for (const f of flows) {
+      for (const ip of new Set([f.src, f.dst])) {
+        if (!out.has(ip)) out.set(ip, { ip, time: null, note: "", direct: false, count: 0 });
+        const row = out.get(ip);
+        row.count += 1;
+        if (row.time == null || f.start < row.time) row.time = f.start;
+      }
+    }
+    return [...out.values()].sort((a, b) => ((a.time || "") < (b.time || "") ? -1 : (a.time || "") > (b.time || "") ? 1
+      : a.ip < b.ip ? -1 : a.ip > b.ip ? 1 : 0));
+  }
+
+  function markEdges() {
+    cy.edges().forEach((e) => { e.toggleClass("marked", markedPairs.has(e.id())); });
+  }
+
+  function setMarks(hosts, flows) {
+    marks = { hosts: hosts.map((h) => ({ ip: h.ip, time: h.time, note: h.note || "" })), flows: flows.slice() };
+    const rows = markedHosts(marks.hosts, marks.flows);
+    compromised = new Map(rows.map((h) => [h.ip, h]));
+    markedFlows = new Map(marks.flows.map((f) => [flowKey(f), f]));
+    markedPairs = new Set(marks.flows.map((f) => `${f.src}->${f.dst}`));
+    cy.batch(() => {
+      cy.nodes().forEach((n) => { n.data("compromised", compromised.has(n.id())); });
+      markEdges();
+    });
+    renderCompromised(rows);
+  }
+
+  // The marks changed: show them, and redo what depends on them.
+  function marksChanged(hosts, flows, quiet) {
+    const before = new Set(compromised.keys());
+    setMarks(hosts, flows);
+    if (detailsFor) refreshDetails(detailsFor);
+    if (flowsFor && lastFlows) renderFlows(flowsFor, lastFlows);
+    if (filters.length) {          // shown only for its mark, a host with no flow left goes (C2)
+      cy.nodes().filter((n) => before.has(n.id()) && !compromised.has(n.id()) && n.degree() === 0 &&
+                               !n.data("root")).remove();
+    }
+    refreshPaths(quiet).catch(fail);   // in the background: the map stays usable meanwhile
+    refreshHiding().catch(fail);
+  }
+
+  function showShared(view, quiet) {
+    shared = view;
+    marksChanged(view.marked, view.flows, quiet);
+  }
+
+  function renderCompromised(rows) {
     const ul = $("compromised-list");
     ul.replaceChildren();
-    for (const h of hosts) {
+    for (const h of rows) {
       const li = document.createElement("li");
       const span = document.createElement("span");
       span.textContent = `${h.ip} @ ${h.time || "time unknown"}`;
+      const through = h.count - (h.direct ? 1 : 0);
+      if (through) {
+        const small = document.createElement("small");
+        small.className = "resolved";
+        small.textContent = `${h.direct ? "marked, and " : ""}through ${through} marked flow(s)`;
+        span.append(small);
+      }
       const btn = document.createElement("button"); btn.type = "button"; btn.textContent = "Remove";
       btn.addEventListener("click", () => unmarkCompromised(h.ip).catch((e) => fail(e)));
       li.append(span, btn);
       ul.append(li);
     }
+    const flowList = $("marked-flow-list");
+    flowList.replaceChildren(...marks.flows.map((f) => {
+      const li = document.createElement("li");
+      const span = document.createElement("span");
+      span.textContent = `${f.src} → ${f.dst} @ ${f.start}`;
+      const small = document.createElement("small");
+      small.className = "resolved";
+      small.textContent = `${f.proto} ${f.sport} → ${f.dport}`;
+      span.append(small);
+      const btn = document.createElement("button"); btn.type = "button"; btn.textContent = "Remove";
+      btn.addEventListener("click", () => unmarkFlow(f).catch(fail));
+      li.append(span, btn);
+      return li;
+    }));
+  }
+
+  // A change to the marks: written to the shared list, or, with an opened map, to its own.
+  async function changeMarks(sharedWrite, localChange) {
+    if (localMap) {
+      localChange();
+      marksChanged(marks.hosts, marks.flows);
+    } else {
+      showShared(await sharedWrite());
+    }
   }
 
   async function markCompromised(ip, time) {
-    const r = await write("/api/compromised", "POST", { ip, time });
-    renderCompromised(r.hosts);
+    let local = null;
+    if (localMap) {      // checked and written as the server would (an IP, a time to the ms)
+      const params = new URLSearchParams({ ip });
+      if (time) params.set("ts", time);
+      const r = await getJSON(`/api/resolve?${params}`);
+      local = { ip: r.ip, time: time ? r.anchor : null, note: "" };
+    }
+    await changeMarks(() => write("/api/compromised", "POST", { ip, time }),
+                      () => { marks.hosts = marks.hosts.filter((h) => h.ip !== local.ip).concat([local]); });
     refreshDetails(ip);
     setStatus(`Marked ${ip} compromised${time ? " at " + time : " (time unknown)"}`);
-    refreshPaths().catch(fail);       // in the background: the map stays usable meanwhile
   }
 
   async function unmarkCompromised(ip) {
-    const r = await write("/api/compromised", "DELETE", { ip });
-    renderCompromised(r.hosts);
+    await changeMarks(() => write("/api/compromised", "DELETE", { ip }), () => {
+      marks.hosts = marks.hosts.filter((h) => h.ip !== ip);
+      marks.flows = marks.flows.filter((f) => f.src !== ip && f.dst !== ip);
+    });
     refreshDetails(ip);
     setStatus(`Unmarked ${ip}`);
-    refreshPaths().catch(fail);
+  }
+
+  async function markFlow(key) {
+    await changeMarks(() => write("/api/compromised/flows", "POST", key), () => {
+      marks.flows = marks.flows.filter((f) => flowKey(f) !== flowKey(key)).concat([Object.assign({ note: "" }, key)]);
+    });
+    setStatus(`Marked the flow ${key.src} → ${key.dst} at ${key.start} compromised`);
+  }
+
+  async function unmarkFlow(key) {
+    await changeMarks(() => write("/api/compromised/flows", "DELETE", key), () => {
+      marks.flows = marks.flows.filter((f) => flowKey(f) !== flowKey(key));
+    });
+    setStatus(`Unmarked the flow ${key.src} → ${key.dst} at ${key.start}`);
   }
 
   $("compromised-form").addEventListener("submit", (e) => {
@@ -680,6 +1001,102 @@
       .catch((err) => fail(err));
   });
 
+  // Other analysts' marks appear within a few seconds (D15); an opened map keeps its own.
+  async function pollMarks() {
+    try {
+      const r = await fetch("/api/compromised", { credentials: "same-origin" });
+      if (!r.ok) return;
+      const view = await r.json();
+      if (shared && view.version === shared.version) return;
+      if (localMap) shared = view; else showShared(view, true);
+    } catch (_) { /* the next check will tell */ }
+  }
+
+  // ---- an opened map's own marks, until shared (D19) ------------------------------------------
+  function showLocal() {
+    $("local-marks").hidden = !localMap;
+    $("local-marks-name").textContent = localMap || "";
+  }
+
+  function leaveLocal() {
+    localMap = null;
+    showLocal();
+    if (shared) showShared(shared, true);
+  }
+
+  async function shareMarks() {
+    const now = shared ? shared.marked.length + shared.flows.length : 0;
+    const mine = marks.hosts.length + marks.flows.length;
+    if (!confirm(`Replace the ${now} shared mark(s) with this map's ${mine}? Every analyst's map will show them.`)) return;
+    const r = await write("/api/compromised", "PUT", { hosts: marks.hosts, flows: marks.flows });
+    localMap = null;
+    showLocal();
+    showShared(r, true);
+    setStatus(`Shared this map's ${mine} mark(s) with every analyst`);
+  }
+
+  $("share-marks").addEventListener("click", () => shareMarks().catch(fail));
+
+  // ---- hiding by the marks (D16): only marked and suspect connections stay in their part -----
+  let hidingAsked = 0, hidingTimer = null, hidingWaiting = false, hidingBusy = 0;
+
+  function hidingDue() {
+    clearTimeout(hidingTimer);
+    hidingWaiting = true;
+    hidingTimer = setTimeout(() => { hidingWaiting = false; refreshHiding().catch(fail); }, 30);
+  }
+
+  // Whether the hiding is still being worked out (the map may yet be laid out again).
+  window.threatbridge.settling = () => hidingWaiting || hidingBusy > 0;
+
+  cy.on("add remove", "edge", () => { if (cfg.suspects) hidingDue(); });
+  cy.on("add", "edge", (evt) => { evt.target.toggleClass("marked", markedPairs.has(evt.target.id())); });
+
+  async function refreshHiding() {
+    if (!cfg.suspects) return;
+    const asked = ++hidingAsked;
+    const edges = cy.edges();
+    if (edges.empty() || !cy.nodes().some((n) => compromised.has(n.id()))) { applyHiding(null); return; }
+    const params = withRange(new URLSearchParams({ window: $("window").value.trim() }));
+    const body = Object.assign(Object.fromEntries(params.entries()), { filters, edges: edges.map((e) => ({
+      source: e.data("source"), target: e.data("target"), from: e.data("full").first_seen, to: e.data("full").last_seen })) });
+    if (localMap) body.marks = marks;
+    hidingBusy += 1;
+    try {
+      const r = await post("/api/suspect", body);
+      if (asked === hidingAsked) applyHiding(r.edges);
+    } finally {
+      hidingBusy -= 1;
+    }
+  }
+
+  function applyHiding(entries) {
+    const before = cy.elements(".mark-hidden").map((el) => el.id()).sort().join(" ");
+    cy.batch(() => {
+      cy.elements().removeClass("mark-hidden suspect");
+      for (const e of cy.edges()) if (e.data("kept")) { e.removeData("kept"); e.data(shown(e.data("full"))); }
+      if (!entries) return;
+      const affected = new Set();
+      for (const x of entries) {
+        const e = cy.getElementById(`${x.source}->${x.target}`);
+        if (e.empty() || x.status === "unaffected") continue;
+        affected.add(x.source); affected.add(x.target);
+        if (x.status === "hidden") { e.addClass("mark-hidden"); continue; }
+        e.data(Object.assign(shown(x), { kept: { marked: x.marked, suspect: x.suspect, within: x.within } }));
+        if (!x.marked) e.addClass("suspect");
+      }
+      for (const n of cy.nodes()) {
+        if (affected.has(n.id()) && !compromised.has(n.id()) && !n.data("root") &&
+            n.connectedEdges().not(".mark-hidden").empty()) n.addClass("mark-hidden");
+      }
+    });
+    const hidden = cy.edges(".mark-hidden").length;
+    $("hidden-note").textContent = hidden ? `${hidden} connection(s) hidden by marks` : "";
+    if (cy.elements(".mark-hidden").map((el) => el.id()).sort().join(" ") !== before) relayout();
+    refreshProtocols();
+  }
+
+  // ---- attack paths between marked hosts -------------------------------------------------
   function pathElements(p) {
     let els = cy.collection();
     for (const h of p.hops) {
@@ -701,6 +1118,7 @@
           mergeEdge(h.source, h.target, "out", 1, ports, h.start, h.start, h.protocols).addClass(cls);
         }
       }
+      markEdges();
     });
     if (paths.length) relayout();
   }
@@ -740,8 +1158,7 @@
   async function refreshPaths(quiet) {
     if (!cfg.analysis) return;
     const asked = ++pathsAsked;
-    const params = withRange(new URLSearchParams({ window: $("window").value.trim() }));
-    const r = await getJSON(`/api/paths?${params}`);
+    const r = await ask("/api/paths", withRange(new URLSearchParams({ window: $("window").value.trim() })));
     if (asked !== pathsAsked) return;
     const paths = r.pairs.flatMap((pair) => pair.paths);
     drawPaths(paths, "attack");
@@ -800,13 +1217,19 @@
   async function findRoutes() {
     const src = $("route-src").value.trim(), dst = $("route-dst").value.trim();
     if (!src || !dst) { setStatus("Enter both hosts to find the paths between them", true); return; }
-    const params = withRange(new URLSearchParams({ src, dst, window: $("window").value.trim() }));
-    for (const end of ["src", "dst"]) {
-      const t = $(`route-${end}-time`).value.trim();
-      if (t) params.set(`${end}_time`, t);
-    }
-    setStatus(`Finding every path from ${src} to ${dst}…`);
-    const r = await getJSON(`/api/paths?${params}`);
+    const q = { op: "routes", src, dst, src_time: $("route-src-time").value.trim(),
+                dst_time: $("route-dst-time").value.trim(), window: $("window").value.trim() };
+    queries.push(q);
+    await routesWith(q, true);
+  }
+
+  async function routesWith(q, say) {
+    const { src, dst } = q;
+    const params = withRange(new URLSearchParams({ src, dst, window: q.window }));
+    if (q.src_time) params.set("src_time", q.src_time);
+    if (q.dst_time) params.set("dst_time", q.dst_time);
+    if (say) setStatus(`Finding every path from ${src} to ${dst}…`);
+    const r = await ask("/api/paths", params);
     drawPaths(r.paths, "route");
     const ul = $("route-list");
     ul.replaceChildren(...r.paths.map((p) => pathItem(p, "Path")));
@@ -816,11 +1239,12 @@
         "narrow them with the Window, the time range or the exclude list."
       : `${r.paths.length} path(s) from ${r.src} to ${r.dst}.`;
     $("route-summary").textContent = summary;
+    if (!say) return;
     if (r.paths.length) {
       const edges = cy.edges(".route");
       focus(edges.union(edges.connectedNodes()));
     }
-    setStatus(`${summary} At most ${cfg.threat_hops} hops, ${$("window").value.trim()} between hops.` +
+    setStatus(`${summary} At most ${cfg.threat_hops} hops, ${q.window} between hops.` +
               (r.paths.length ? " Click the background to clear." : ""), false, r.truncated);
   }
 
@@ -829,15 +1253,48 @@
     findRoutes().catch((err) => fail(err));
   });
 
+  // ---- export: the marked hosts, and the marked and suspect flows on the map, as CSV -------
+  // A CSV cell: quoted when it must be, and never read as a formula by a spreadsheet.
+  function csvCell(v) {
+    let s = v == null ? "" : Array.isArray(v) ? v.join("/") : String(v);
+    if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+    return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  }
+
+  function csv(columns, rows) {
+    return [columns.join(","), ...rows.map((r) => columns.map((c) => csvCell(r[c])).join(","))].join("\r\n") + "\r\n";
+  }
+
+  async function exportCsv() {
+    const params = withRange(new URLSearchParams({ window: $("window").value.trim() }));
+    const body = Object.assign(Object.fromEntries(params.entries()), { filters, edges: cy.edges().map((e) => ({
+      source: e.data("source"), target: e.data("target"), from: e.data("full").first_seen, to: e.data("full").last_seen })) });
+    if (localMap) body.marks = marks;
+    const r = await post("/api/export", body);
+    const name = ($("session-name").value.trim() || cy.nodes("[?root]").map((n) => n.id())[0] || "map")
+      .replace(/[^\w.-]+/g, "_");
+    saveFile(new Blob([csv(["ip", "time", "note", "marked", "count"], r.hosts)], { type: "text/csv" }),
+             `threatbridge-${name}-hosts.csv`);
+    saveFile(new Blob([csv(["start", "end", "src", "sport", "dst", "dport", "proto", "protocols", "packets", "bytes",
+                            "status"], r.flows)], { type: "text/csv" }), `threatbridge-${name}-flows.csv`);
+    setStatus(`Exported ${r.hosts.length} marked host(s) and ${r.flows.length} marked or suspect flow(s)` +
+              (r.truncated ? " (the first ones only)" : ""), false, r.truncated);
+  }
+
+  $("export-csv").addEventListener("click", () => exportCsv().catch(fail));
+
   // ---- saved maps: shared on the server, or as a file -----------------------
-  // A map document (version 1) keeps the hosts and their positions, the connections, the
-  // highlights, the view and the toolbar. Opening one takes only the fields below from it.
-  const MAP_VERSION = 1;
+  // A map document (version 2) keeps the hosts and their positions, the connections, the
+  // highlights, the view and the toolbar, and the filters, the marks and the queries the map
+  // was built from (D19). Opening one takes only the fields below from it; version 1 too.
+  const MAP_VERSION = 2;
   const NODE_FIELDS = ["anchor", "root", "depth", "expandedIn", "expandedOut"];
   const EDGE_FIELDS = ["first_seen", "last_seen"];
   const HIGHLIGHTS = ["up", "down", "line-selected", "faded", "attack", "route"];
   const SETTINGS = ["ip", "ts", "direction", "window", "range-from", "range-to", "order", "limit",
                     "route-src", "route-src-time", "route-dst", "route-dst-time"];
+  const QUERY_FIELDS = ["op", "ip", "ts", "direction", "anchor", "window", "limit", "order", "a", "b", "from", "to",
+                        "src", "dst", "src_time", "dst_time", "id", "source", "target"];
 
   function pick(from, fields) {
     const out = {};
@@ -855,11 +1312,14 @@
       nodes: cy.nodes().map((n) => Object.assign({ id: n.id(), position: n.position(), classes: n.classes() },
                                                  pick(n.data(), NODE_FIELDS))),
       edges: cy.edges().map((e) => Object.assign({ source: e.data("source"), target: e.data("target"),
-                                                   direction: e.data("direction"), count: e.data("count"),
-                                                   ports: e.data("ports"), protocols: e.data("protocols"),
+                                                   direction: e.data("direction"), count: e.data("full").count,
+                                                   ports: e.data("full").ports, protocols: e.data("full").protocols,
                                                    classes: e.classes() },
-                                                 pick(e.data(), EDGE_FIELDS))),
+                                                 pick(e.data("full"), EDGE_FIELDS))),
       view: { zoom: cy.zoom(), pan: cy.pan() },
+      filters: filters.slice(),
+      marks: { hosts: marks.hosts, flows: marks.flows },
+      queries,
     };
   }
 
@@ -867,8 +1327,11 @@
     if (Array.isArray(classes)) el.addClass(classes.filter((c) => HIGHLIGHTS.includes(c)).join(" "));
   }
 
+  const isText = (v) => typeof v === "string";
+
   async function openMap(doc, what) {
-    if (!doc || doc.version !== MAP_VERSION || !Array.isArray(doc.nodes) || !Array.isArray(doc.edges)) {
+    if (!doc || (doc.version !== 1 && doc.version !== MAP_VERSION) || !Array.isArray(doc.nodes) ||
+        !Array.isArray(doc.edges)) {
       throw new Error(`${what} is not a ThreatBridge map`);
     }
     cy.elements().remove();
@@ -889,7 +1352,8 @@
         if (cy.getElementById(e.source).empty() || cy.getElementById(e.target).empty()) continue;
         const ports = Array.isArray(e.ports) ? e.ports.filter(Number.isInteger) : [];
         const protocols = Array.isArray(e.protocols)
-          ? e.protocols.filter((p) => typeof p === "string" && p.length > 0 && p.length <= 40) : [];
+          ? [...new Set(e.protocols.filter((p) => typeof p === "string" && p.length > 0 && p.length <= 40)
+            .map((p) => PROTOCOL_ALIASES[p] || p))] : [];
         const t = pick(e, EDGE_FIELDS);
         const edge = mergeEdge(e.source, e.target, e.direction === "in" ? "in" : "out",
                                Number.isFinite(e.count) ? e.count : 0, ports, t.first_seen, t.last_seen,
@@ -897,6 +1361,25 @@
         highlight(edge, e.classes);
       }
     });
+    // Its filters, its queries (or, saved before them, its hosts and connections), and its
+    // own marks, shown until shared (D19).
+    filters = doc.version === 1 || !Array.isArray(doc.filters) ? [] : doc.filters.filter(isText).slice(0, cfg.max_filters || 20);
+    renderFilters();
+    queries = doc.version !== 1 && Array.isArray(doc.queries)
+      ? doc.queries.filter((q) => q && typeof q === "object" && isText(q.op) && (q.op !== "node" || isText(q.id)))
+        .map((q) => Object.assign(pick(q, QUERY_FIELDS), q.op === "node" ? { data: pick(q.data || {}, NODE_FIELDS) } : {}))
+      : [...cy.nodes().map((n) => ({ op: "node", id: n.id(), data: pick(n.data(), NODE_FIELDS) })),
+         ...cy.edges().map((e) => ({ op: "edge", source: e.data("source"), target: e.data("target"),
+                                     direction: e.data("direction"), from: e.data("first_seen"), to: e.data("last_seen") }))
+          .filter((q) => q.from)];
+    const saved = (doc.version !== 1 && doc.marks) || {};
+    localMap = what;
+    showLocal();
+    setMarks((Array.isArray(saved.hosts) ? saved.hosts : []).filter((h) => h && isText(h.ip))
+               .map((h) => ({ ip: h.ip, time: isText(h.time) ? h.time : null, note: isText(h.note) ? h.note : "" })),
+             (Array.isArray(saved.flows) ? saved.flows : []).filter((f) => f && isText(f.src) && isText(f.dst) &&
+               isText(f.start) && Number.isInteger(f.sport) && Number.isInteger(f.dport) && isText(f.proto))
+               .map((f) => pick(f, ["src", "dst", "start", "sport", "dport", "proto", "note"])));
     const view = doc.view || {};
     if (Number.isFinite(view.zoom) && view.pan && Number.isFinite(view.pan.x) && Number.isFinite(view.pan.y)) {
       cy.viewport({ zoom: view.zoom, pan: { x: view.pan.x, y: view.pan.y } });
@@ -906,6 +1389,7 @@
     const root = cy.nodes("[?root]");
     if (root.nonempty()) rememberInUrl(root.id());
     await refreshPaths(true);
+    await refreshHiding();
     setStatus(`Opened ${what}: ${cy.nodes().length} host(s), ${cy.edges().length} connection(s)`);
   }
 
@@ -998,7 +1482,8 @@
     getJSON("/api/excludes").then(renderExcludes).catch(() => {});
     $("paths").hidden = !cfg.analysis;
     $("routes").hidden = !cfg.analysis;
-    try { renderCompromised((await getJSON("/api/compromised")).hosts); } catch (_) { /* none */ }
+    try { showShared(await getJSON("/api/compromised"), true); } catch (_) { /* none */ }
+    setInterval(pollMarks, (cfg.marks_poll || 5) * 1000);
     getJSON("/api/sessions").then((r) => renderSessions(r.sessions)).catch(() => {});
     const q = new URLSearchParams(location.search);
     if (q.get("ip")) $("ip").value = q.get("ip");

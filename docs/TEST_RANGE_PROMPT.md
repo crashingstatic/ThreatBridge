@@ -172,9 +172,12 @@ listener that accepts and closes), as the scenario needs:
 - 8080 on 10.0.3.1;
 - on 10.0.5.1: a real web server on 80 and 8080 serving files from 1 KB to 50 MB, with keep-alive,
   and with TLS (a self-signed certificate) on 443; sshd on 22 and also on 2222; an SMB share
-  (Samba) on 445; a UDP service on 514 (e.g. syslog); and nothing on 81, so connections to it are
-  refused. REAL-01 step 4 compares the protocols ThreatBridge names with Zeek's: SSH on 2222 shows
-  the payload recognized where the port alone wouldn't tell.
+  (Samba) on 445; a UDP service on 514 (e.g. syslog); an FTP server (e.g. vsftpd) on 21 with
+  anonymous downloads of the same files, active mode from port 20 (`connect_from_port_20=YES`)
+  and passive mode on high ports (e.g. 40000–40100), plain FTP, no TLS; and nothing on 81, so
+  connections to it are refused. REAL-01 step 4 compares the protocols ThreatBridge names with
+  Zeek's: SSH on 2222 shows the payload recognized where the port alone wouldn't tell. REAL-01
+  step 5 compares FTP data connections, named from the control connection.
 
 10.0.0.53 runs dnsmasq (or similar) answering:
 
@@ -321,7 +324,10 @@ scenario.
   which are refused; a download aborted with a reset (e.g. a socket closed with `SO_LINGER` 0);
   an SSH session idle for more than 5 minutes; a TCP connection idle for 6 minutes and then
   used again; a slow download (rate-limited) that starts 30 s before the capture; a few HTTPS
-  downloads from 443; an SSH login to 2222; and listing the SMB share.
+  downloads from 443; an SSH login to 2222; listing the SMB share; and FTP downloads from 21, at
+  least one each in active mode (`PORT`, e.g. `curl --ftp-port - ftp://10.0.5.1/<file>`),
+  passive mode (`PASV`, `curl --disable-epsv ftp://…`) and extended passive mode (`EPSV`, plain
+  `curl ftp://…`).
 - **DNS:** all four hosts query 10.0.0.53 over UDP for all the names above throughout, and a
   few times over TCP (e.g. `dig +tcp`).
 - Keep the whole capture under about 2 GB.
@@ -428,6 +434,8 @@ Run all of these and put the results in your report:
      `pool.example.com`.
    - Zeek's `conn.log` names `http`, `ssl`, `ssh` (on 22 and 2222), `smb` and `dns` among the
      services, and ThreatBridge, serving the capture, names the same for those connections.
+   - Zeek's `conn.log` names `ftp` for the FTP control connections and `ftp-data` for the data
+     connections of all three FTP downloads, and ThreatBridge names each of them `FTP`.
 10. **Reset:** the reset playbook rolls back to `baseline`, and step 4 passes again after a new
     scenario run.
 11. **Teardown:** `tofu destroy` (plus the documented Ansible cleanup of host network changes)

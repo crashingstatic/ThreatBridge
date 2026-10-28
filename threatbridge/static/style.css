@@ -21,7 +21,19 @@ button:hover, label.button:hover { background: #36496b; }
 label.button input { display: none; }
 #go { background: #2f6fde; border-color: #2f6fde; }
 .brand { font-size: 15px; margin-right: 6px; align-self: center; }
-#status { flex-basis: 100%; min-height: 1.4em; color: var(--muted); }
+#status-line { flex-basis: 100%; min-height: 1.4em; color: var(--muted); }
+#status { color: var(--muted); }
+#hidden-note { color: var(--out); }
+#filter { width: 34ch; }
+/* An expression that can't be applied (D17). */
+#filter.invalid { background: #ffcdd2; color: #11151c; border-color: var(--root); }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 0; padding: 0; list-style: none; align-self: center; }
+.chips li { display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px 2px 8px; border: 1px solid var(--line);
+  border-radius: 12px; background: var(--bg); font-family: ui-monospace, monospace; font-size: 12px; }
+.chips button { padding: 0 6px; border-radius: 10px; }
+#apply-protocol:disabled { opacity: .5; cursor: default; }
+.local-marks { padding: 6px 8px; border: 1px solid var(--out); border-radius: 4px; color: var(--text); }
+#compromised-section h3 { font-size: 12px; margin: 10px 0 0; color: var(--muted); font-weight: 600; }
 #status.error { color: var(--root); }
 #status.warn { color: var(--out); }
 #busy { align-self: center; color: var(--muted); }
@@ -73,6 +85,9 @@ ol.flows .actions button { padding: 0 6px; font-size: 11px; }
 .sw { display: inline-block; width: 12px; height: 12px; border-radius: 50%; }
 .sw.root { background: var(--root); } .sw.in { background: var(--in); } .sw.out { background: var(--out); }
 .sw.compromised { background: var(--compromised); box-shadow: 0 0 0 2px #ff8a8a; }
+.sw.marked-line, .sw.suspect-line { width: 18px; height: 4px; border-radius: 2px; box-shadow: 0 0 0 1px #ff8a8a; }
+.sw.marked-line { background: var(--compromised); }
+.sw.suspect-line { background: repeating-linear-gradient(90deg, var(--compromised) 0 5px, transparent 5px 8px); }
 .sw.attack, .sw.route, .sw.up, .sw.down { border-radius: 2px; height: 4px; }
 .sw.attack { background: var(--attack); } .sw.route { background: var(--route); }
 .sw.up { background: var(--up); } .sw.down { background: var(--down); }

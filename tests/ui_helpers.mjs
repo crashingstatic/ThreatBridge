@@ -22,7 +22,13 @@ export async function launch({ context = {}, expected = null } = {}) {
     if (m.type() === "error" && !(expected && expected.test(m.text()))) errors.push(m.text());
   });
   page.on("pageerror", (e) => errors.push(String(e)));
-  const at = (selector, kind) => page.evaluate(([sel, k]) => {
+  // Marks may hide part of the map and lay it out again: positions are read once that settles.
+  const at = async (selector, kind) => {
+    await page.waitForFunction(() => !(window.threatbridge && window.threatbridge.settling &&
+                                       window.threatbridge.settling()));
+    return position(selector, kind);
+  };
+  const position = (selector, kind) => page.evaluate(([sel, k]) => {
     const el = window.threatbridge.cy.$(sel)[0];
     const p = k === "edge" ? el.renderedMidpoint() : el.renderedPosition();
     const box = document.getElementById("cy").getBoundingClientRect();

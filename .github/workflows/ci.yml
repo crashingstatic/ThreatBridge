@@ -139,6 +139,9 @@ jobs:
       - run: TB_URL=http://127.0.0.1:5056 node tests/ui_actions.mjs "$RUNNER_TEMP/shots"
         env:
           JS_COVERAGE: ${{ runner.temp }}/js-coverage
+      - run: TB_URL=http://127.0.0.1:5056 node tests/ui_marks.mjs "$RUNNER_TEMP/shots"
+        env:
+          JS_COVERAGE: ${{ runner.temp }}/js-coverage
       - name: JavaScript coverage (what the browser tests ran of app.js)
         run: node tests/js_coverage.mjs "$RUNNER_TEMP/js-coverage"
       - name: Upload screenshots

@@ -52,7 +52,7 @@ def test_compromised_notes_and_hand_edits(tmp_path):
     path = tmp_path / "c.json"
     path.write_text(json.dumps({"hosts": [{"ip": "nope", "time": None, "note": ""}]}))
     store = CompromisedStore(str(path))
-    assert store.mark("10.0.0.5", None, "x" * 500)[0]["note"] == "x" * 500
+    assert store.mark("10.0.0.5", None, "x" * 500)["hosts"][0]["note"] == "x" * 500
     with pytest.raises(ValidationError, match="note longer than 500 characters"):
         store.mark("10.0.0.5", None, "x" * 501)
     with pytest.raises(ValidationError, match="invalid time: True"):
@@ -68,4 +68,4 @@ def test_hand_edited_note_that_is_not_text(tmp_path):
     path = tmp_path / "c.json"
     path.write_text(json.dumps({"hosts": [{"ip": "10.0.0.5", "time": None, "note": 7},
                                           {"ip": "10.0.0.6", "time": None}]}))
-    assert CompromisedStore(str(path)).list() == [{"ip": "10.0.0.6", "time": None, "note": ""}]
+    assert CompromisedStore(str(path)).list()["marked"] == [{"ip": "10.0.0.6", "time": None, "note": ""}]

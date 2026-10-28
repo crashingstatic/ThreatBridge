@@ -205,6 +205,6 @@ def test_every_endpoint_is_documented_and_every_documented_endpoint_exists(tmp_p
     app = create_app(cfg, DemoBackend(cfg))
     served = {(m, r.rule) for r in app.url_map.iter_rules() for m in r.methods - {"HEAD", "OPTIONS"}
               if not r.rule.startswith("/static/") and r.rule != "/"}   # the UI itself
-    documented = set(re.findall(r"^### `(GET|POST|DELETE) (/\S*)`$", read("docs", "API.md"), re.M))
+    documented = set(re.findall(r"^### `(GET|POST|PUT|DELETE) (/\S*)`$", read("docs", "API.md"), re.M))
     assert served - documented == set(), "served but not in docs/API.md"
     assert documented - served == set(), "in docs/API.md but not served"

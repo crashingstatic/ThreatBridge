@@ -3,15 +3,15 @@
 The automated tests run in CI on every push (`.github/workflows/ci.yml`):
 
 - pytest, including the performance tests;
-- three headless-browser suites against the map;
+- four headless-browser suites against the map;
 - the container with mutual TLS, checked with curl and in a browser.
 
 [Section 4](#4-where-each-requirement-is-tested) lists where each requirement is tested. This
 plan holds only what those tests can't check, and why:
 
-- **How the map looks** (VIS-01, VIS-02). The browser tests check which colour class each host
-  and connection gets, but whether the colours match the legend, and whether the map is
-  readable, takes a person looking at it.
+- **How the map looks** (VIS-01, VIS-02, VIS-03). The browser tests check which colour class
+  and line style each host and connection gets, but whether they match the legend, and whether
+  the map is readable, takes a person looking at it.
 - **Browsers and terminals CI doesn't use** (XB-01, TLS-01, TERM-01).
   - CI's browser tests run only in headless Chromium.
   - `ui_mtls.mjs` hands the client certificate to Playwright, which presents it itself, so a
@@ -96,7 +96,11 @@ and, off the chain:
 
 - a shortcut, 10.0.0.5 → 10.0.0.20:5985 at 12:15;
 - 10.0.0.77 → 10.0.0.9:80 at 12:30;
-- twelve two-hop routes from 10.0.2.1 to 10.0.2.2 (`tests/make_case.py` describes the rest).
+- twelve two-hop routes from 10.0.2.1 to 10.0.2.2 (`tests/make_case.py` describes the rest);
+- for marks and filters, apart from the rest: 10.9.0.1 → 10.9.0.2:443 at 12:01:40, 10.9.0.2 →
+  10.9.0.3:445 at 12:06:40, 10.9.0.3 → 10.9.0.4:3389 at 12:11:40, 10.9.0.3 → 10.9.0.5:445 at
+  12:16:40, 10.9.0.4 → 10.9.0.6:22 at 12:21:40, and 10.9.0.2 → 10.9.0.7 on ports 80 and 53 at
+  12:31:40 and 12:32:40.
 
 `TB_MAX_PATHS=11` lowers the path cap so that a test can reach it.
 
@@ -212,10 +216,23 @@ permissions `events/read`, `jobs/read` and `jobs/write` (README, *PCAP for a flo
 | # | Do | Expect | Proves | Result |
 |---|---|---|---|---|
 | 1 | Map `10.0.0.9` inbound; left-click the arrow 10.0.0.5 → 10.0.0.9. | 203.0.113.66's border and the arrow 203.0.113.66 → 10.0.0.5 are violet, the legend's *threat line: earlier*. 10.0.0.20's border and the arrow 10.0.0.9 → 10.0.0.20 are teal, *threat line: later*. The clicked arrow is white. 10.0.0.77 and its arrow are faded but still visible. | The threat line and its time relations can be seen at a glance (INT-1, INT-2). | |
-| 2 | Click the background. Mark `203.0.113.66` (time blank) and `10.0.0.20` at `2024-05-01T12:20:00Z` in the side panel. | Both hosts are dark red with a light red ring, the legend's *compromised*. The arrows of the two attack paths are thick and red, *attack path*. | Compromised hosts (ATK-4) and attack paths (ATK-1) stand out. | |
+| 2 | Click the background. Mark `203.0.113.66` (time blank) and `10.0.0.20` at `2024-05-01T12:20:00Z` in the side panel. | Both hosts are dark red with a light red ring, the legend's *compromised*. The arrows of the two attack paths are thick and red, *attack path*, dashed (no flow on them is marked). 10.0.0.77 and its arrow disappear, and the status line ends `1 connection(s) hidden by marks` in amber. | Compromised hosts (ATK-4), attack paths (ATK-1), and what marks hide (ATK-7) stand out. | |
 | 3 | *Paths between two hosts*: from `203.0.113.66` to `10.0.0.20`; **Find paths**. | The same arrows as in step 2 are now thick and pink, *path between two hosts*, clearly different from step 2's red. The rest of the map is faded. | Paths between two hosts stand out. | |
 | 4 | Remove both compromised hosts. Mark `10.0.2.1` (time blank) and `10.0.2.2` at `2024-05-01T13:00:00Z`; click **Show all**. | The status line is amber, clearly different from an error's red, and says `First 11 paths from 10.0.2.1 to 10.0.2.2, shortest first. There are more: …`. | Warnings stand out from errors. | |
 | 5 | Remove both compromised hosts. | | | |
+
+### VIS-03 · Marks and filters are drawn as the legend says: marked and suspect connections, what is hidden, a refused filter (INT-7, ATK-5, ATK-7, FIL-S6)
+
+**Environment:** ENV-CASE. **Starting state:** fresh state; page open, toolbar defaults.
+
+| # | Do | Expect | Proves | Result |
+|---|---|---|---|---|
+| 1 | Anchor `2024-05-01T12:00:00Z`, Window `1h`; map `10.9.0.2` outbound. Left-click the arrow 10.9.0.2 → 10.9.0.3; click the background. | Seven hosts: 10.9.0.1 → 10.9.0.2, then 10.9.0.3, 10.9.0.4, 10.9.0.5, 10.9.0.6 and 10.9.0.7. | | |
+| 2 | Right-click 10.9.0.4 → `Mark compromised (time unknown)`. | 10.9.0.5, 10.9.0.7 and their arrows disappear. The arrows 10.9.0.1 → 10.9.0.2 → 10.9.0.3 → 10.9.0.4 → 10.9.0.6 are dark red and dashed, with a thin light red outline, like the legend's *suspect connection*; the dashes are clear at the normal zoom. The status line ends `2 connection(s) hidden by marks`, in amber. | Suspect connections, and what the marks hide, can be seen at a glance (INT-7, ATK-7). | |
+| 3 | Right-click the arrow 10.9.0.2 → 10.9.0.3 → `Mark compromised`. | 10.9.0.2 and 10.9.0.3 turn dark red with a light red ring. The arrow 10.9.0.2 → 10.9.0.3 is solid, like the legend's *marked connection*, drawn in the attack paths' red, as is 10.9.0.3 → 10.9.0.4, which stays dashed. 10.9.0.5 and 10.9.0.7 come back, their arrows dashed. | Marked and suspect connections can be told apart, on attack paths too (INT-7, ATK-5). | |
+| 4 | Type `smb` in *Filter*; press Enter. | The box turns light red, its text still readable; the status line, red, says `at character 1: protocol names are case-sensitive: write SMB`. Typing in the box makes it white again. | A refused filter stands out (FIL-S6). | |
+| 5 | Type `SMB`; press Enter. | `SMB` appears beside the box with an ×, readable on the toolbar; the box is empty. Click the ×. | | |
+| 6 | Remove the marks in the side panel. | | | |
 
 ### XB-01 · The map works in other browsers: menus, new tabs, clipboard, dialogs, saving and opening files (GRA-4, INT-S2)
 
@@ -233,7 +250,8 @@ console open (Firefox: Web Console).
 | 4 | Right-click the same arrow → `Copy SOC query`; paste into *Host / IOC IP*, then clear it. | Status `SOC query copied to clipboard`. The pasted text starts `((source.ip:"10.1.0.26" AND destination.ip:"10.0.0.5")`. | The clipboard. | |
 | 5 | Left-click the arrow; click a flow's **PCAP in SOC**. | The flow list appears. A new tab opens on `https://so.example/joblookup?esid=…`. | | |
 | 6 | *Saved maps*: name `xb`, **Save**; then **Save** again and choose Cancel in the dialog. | `Saved the map "xb" for everyone`. The browser's own dialog asks `Replace the saved map "xb"?`. After Cancel: red `a map called 'xb' is already saved`. | Saving, and the browser's confirm dialog. | |
-| 7 | **Save to file**; **Clear**; **Open file** and choose the saved file. | The browser saves `threatbridge-xb.json` (to its download folder, or after asking where). The file chooser offers `.json` files. Opening the file: `Opened threatbridge-xb.json: …`, and the map is as before. | Downloads and the file chooser. | |
+| 7 | **Save to file**; **Open file** and choose the saved file. | The browser saves `threatbridge-xb.json` (to its download folder, or after asking where). The file chooser offers `.json` files. Opening the file: `Opened threatbridge-xb.json: …`, the map is as before, and the side panel says it shows the marks saved with `threatbridge-xb.json`. | Downloads and the file chooser. | |
+| 7b | **Share** (side panel); choose Cancel. Then **Export CSV**. | The browser's dialog asks `Replace the 0 shared mark(s) with this map's 0? Every analyst's map will show them.`; after Cancel nothing changes. Export saves two files, `threatbridge-xb-hosts.csv` and `threatbridge-xb-flows.csv` (the browser may ask once to allow several downloads). | The confirmation before sharing; several downloads at once. | |
 | 8 | Click **Delete** next to `xb`; choose OK. | The dialog asks `Delete the saved map "xb" for everyone?`. Then: `Deleted the saved map "xb"`. | | |
 | 9 | Look at the browser's console. | No errors, apart from step 6's refused save (HTTP 409). | The page runs under its Content Security Policy in this browser. | |
 
@@ -328,6 +346,7 @@ serving it; page open.
 | 2 | For one pair, left-click the arrow. List Zeek's records in the same form: `zc ts id.orig_h id.orig_p id.resp_h id.resp_p duration orig_pkts resp_pkts orig_ip_bytes resp_ip_bytes < $W/conn.log \| awk -F'\t' -v a=A -v b=B '$2 == a && $4 == b {printf "%s tcp %s → %s · %.3f s · %d pkts · %d B\n", $1, $3, $5, $6, $7 + $8, $9 + $10}' \| sort -n \| while read ts rest; do echo "$(date -u -d @$ts +%FT%T.%3NZ) $rest"; done`. Compare the first page of flows, and the last (**Last**), with those lines. | Each flow matches a line: the same start, ports, protocol, packets and bytes (IP bytes of both sides), and the same duration give or take 0.001 s. | Per-flow fields (ING-4, GRA-S3). | |
 | 3 | List the names answered over UDP port 53, with their answers: `zc proto id.resp_p rcode_name query answers < $W/dns.log \| awk -F'\t' '$1 == "udp" && $2 == 53 && $3 == "NOERROR" {print tolower($4), $5}' \| sort -u`. Pick a name whose lines hold one to four IP addresses in all, and that is no other name's alias: `zc answers < $W/dns.log \| grep -Fiwc <name>` prints `0`. Add it to the exclude list. | The entry shows `capture: ` and exactly the IP addresses on that name's lines (not the names among the answers), IPv4 before IPv6, each in numeric order. An address on the lines but not in the entry is F, unless Wireshark shows the response gave it for an unrelated name (ThreatBridge ignores those). | Domain names from real DNS answers, through CNAMEs (FIL-2). | |
 | 4 | Find connections Zeek named with `dns`, `http`, `ssl`, `ssh` and `smb`, if the capture has them: `zc id.orig_h id.resp_h id.resp_p service < $W/conn.log \| awk -F'\t' '$4 != "-"' \| sort -u \| head -40`. Map each one's responder inbound, left-click the arrow from its originator, and read the protocol at the start of each flow's line. | ThreatBridge names what Zeek names (`TLS` for Zeek's `ssl`), including on ports where the service doesn't usually run. A connection Zeek names nothing for is named by its server's port, or Unknown. | Protocols recognized from real payloads (D14). | |
+| 5 | Find FTP sessions (on the range: active, passive and extended passive downloads from 10.0.5.1): `zc id.orig_h id.orig_p id.resp_h id.resp_p service < $W/conn.log \| awk -F'\t' '$5 ~ /ftp/'`. Map each data connection's responder inbound (for an active transfer the client, which the server connects to), left-click its arrow, and read its flows' protocol. Do the same for the control connection. | Every connection Zeek names `ftp` or `ftp-data` is `FTP`, the passive transfer's (both ports high) included. | FTP data connections are named from the control connection's `PORT`/`PASV`, as Zeek does (ING-5, D14). | |
 
 ### REAL-02 · NetFlow from a real exporter is read as Zeek reads the same traffic: connections, orientation, packets (ING-2, D7)
 
@@ -354,6 +373,7 @@ NetFlow served on another port, and `http://127.0.0.1:5057/` open:
 | 1 | From REAL-01's listing, take the pairs A → B whose connections all go to one port that the port rule decides: `zc id.orig_h id.orig_p id.resp_h id.resp_p < $W/conn.log \| awk -F'\t' -v a=A -v b=B '$1 == a && $3 == b {ok = ($2 >= 1024 && $4 < 1024) \|\| ($2 >= 32768 && $4 < 32768); print ok ? "ok" : "no", $4}' \| sort -u` prints one line, starting `ok`. For each, set N to `200` and map B inbound. | An arrow runs from A to B, and its count is the listing's. A higher count is right only if each extra flow lies partly outside the capture: it began before tcpdump started, or ended after it stopped (softflowd runs longer). | Each connection's two records become one flow, initiator → responder (ING-2, D7). | |
 | 2 | Left-click the arrow. List Zeek's records with REAL-01 step 2's command, and compare the first page of flows, and the last (**Last**), with those lines. | Each line matches a flow: the same ports and packets, and a start and duration that agree to within 0.01 s (the exporter keeps times in milliseconds). NetFlow has no payload, so each flow's protocol is the one its server's port is known for (e.g. `HTTP` for 80 and 8080). Packets may differ only if tcpdump or softflowd reported dropped packets (ENV-REAL). | Per-flow fields from NetFlow (ING-4, GRA-S3). | |
 | 3 | For one flow, from port P, list its records: `TZ=UTC nfdump -R $W/nf -N -o long 'proto tcp and host A and host B and port P'`. | Two records, one each way, with the same *Date first seen*. The flow's packets and bytes are the sums of the two records'; its start is their *Date first seen*. | The two one-way records are merged (ING-2). | |
+| 4 | Find REAL-01 step 5's FTP connections here. | The control connections, and active-mode data connections (from port 20), are `FTP`; a passive transfer's data connection, both ports high, is `Unknown`: NetFlow has no payload to follow `PASV` in. | FTP in NetFlow is named by port only (D14). | |
 
 ### SO-01 · SOC actions open the map at the event's IP and time (EXT-1)
 
@@ -379,6 +399,7 @@ NetFlow served on another port, and `http://127.0.0.1:5057/` open:
 | 6 | Peers *Bottom (rarest)*, N `5`. Map inbound a host H with 6 to 20 distinct peers in the window (on the range of [TEST_RANGE_PROMPT.md](TEST_RANGE_PROMPT.md), 10.0.3.1). In SOC Hunt, query `event.dataset:conn AND destination.ip:"H" \| groupby source.ip` over the status line's times, and sort the groups by count, fewest first. | The map shows the five peers with the fewest connections, each arrow's count equal to Hunt's. Among peers tied on a count, those first in text order are shown (`10.0.0.10` before `10.0.0.9`). The status starts `H: showing rarest 5 of N distinct peer(s)`, N being Hunt's number of groups. On the range: 10.0.3.10, 10.0.3.9, 10.0.3.11, 10.0.3.2 and 10.0.3.3, of 11 (10.0.3.4 is tied with the last three, but after them in text order). | Bottom N is exact on a live install: every peer's connections are counted (README, *Peer selection*). | |
 | 7 | Peers *Bottom (rarest)*, N `5`. Map inbound a host with more than 1,000 distinct peers in the window (on the range, 10.0.1.3). Then choose Peers *Top* and map it again. | Bottom: the status says `of N distinct peer(s)` with N over 1000, the host's number of distinct peers. Top's status gives Elasticsearch's estimate, which is the same or very close. The five shown have the fewest connections, ties in text order. On the range: N is 1101, and the five are 10.0.10.1, 10.0.10.10, 10.0.10.100, 10.0.10.101 and 10.0.10.102. | The scan reads past its first page of 1,000 peers. | |
 | 8 | Map a host with varied traffic (e.g. a DNS server, or on the range 10.0.0.9 inbound and outbound). Open *Highlight protocol*, and compare it with Hunt: `event.dataset:conn AND destination.ip:"H" \| groupby source.ip network.protocol`. Choose each protocol in turn. | Mapping works (an Elasticsearch error here means `network.protocol` can't be aggregated: README, *Things to verify*, item 12). The drop-down lists Hunt's protocols for the connections drawn (`TLS` for Zeek's `ssl`; `Unknown` where Zeek named none, `ICMP` for ICMP). Each choice highlights the connections whose records carry it. | Zeek's protocols reach the map on this install (D14). | |
+| 9 | On step 8's map, apply each of these filters alone (*Filter*, Enter; then its ×): `SMB`, `NOT DNS`, `bytes > 10000`, `packets <= 3`, `host <a peer's /24>`, `duration > 1`. For each, compare an arrow's count with Hunt's for the same pair and window, adding the same condition (`AND network.protocol:smb`, `AND NOT network.protocol:dns`, and for bytes and packets, the records whose two fields add up as said). | Each filter is applied (no Elasticsearch error: a script error on `bytes` or `packets` means scripts are not allowed: README, *Things to verify*, item 13), and every count matches Hunt's. | Filters work against Security Onion's records (FIL-S8). | |
 
 ### SO-03 · Zeek DNS records resolve domain names on the exclude list (ING-S2, FIL-2)
 
@@ -421,7 +442,7 @@ NetFlow served on another port, and `http://127.0.0.1:5057/` open:
 | 2 | Set both Range from and Range to; repeat step 1. | Only conversations inside the range (and before the IOC time). | SOC accepts `["…" TO "…"]` (README item 8). | |
 | 3 | Right-click a host → `Open host in SOC dashboard`. | Dashboards shows everything to or from that host. | Host pivot. | |
 
-### SO-07 · The shared lists and saved maps outlive a redeploy; a second workstation reaches them through SO's firewall (FIL-S2, INT-S2)
+### SO-07 · The shared lists and saved maps outlive a redeploy; a second workstation reaches them through SO's firewall, and sees marks as they are made (FIL-S2, INT-S2, ATK-8)
 
 CI runs the container once, and opens the map from the machine it runs on.
 
@@ -433,13 +454,14 @@ first workstation.
 | 1 | Add `192.0.2.77` to the exclude list; mark `192.0.2.78` compromised (time blank); save the map as `redeploy`. | All three are listed. | | |
 | 2 | On the manager, re-run `SO_CA=/etc/pki/ca.crt deploy/run.sh` (it replaces the container). Reload the page. | `192.0.2.77` is still excluded, `192.0.2.78` still compromised, and opening `redeploy` restores the map. | The state is kept in the `threatbridge-data` volume, not the container (FIL-S2, INT-S2). | |
 | 3 | On the manager, make a certificate for the second analyst: `scripts/make-certs.sh client <name>`. On the second workstation, trust `certs/ca.crt`, import `certs/<name>.p12`, and browse to `https://<manager>:5443/`. | The map opens, and shows step 1's three entries. | SO's firewall lets analysts reach port 5443, and every analyst sees the same lists and saved maps (README, *Things to verify*, item 5; FIL-S2). | |
-| 4 | Clean up: **Remove** `192.0.2.77` and `192.0.2.78` from their lists; **Delete** `redeploy`. | The lists are as before step 1. | | |
+| 4 | On the second workstation, map a host with traffic and left-click an arrow; on its first flow, **Mark compromised**. | Within 5 seconds, the first workstation's side panel lists the flow under *Marked flows* and its two hosts under the compromised hosts. Nothing is hidden on either map: in Security Onion mode marks hide nothing (README). | Marks reach every analyst through the deployment (ATK-8). | |
+| 5 | Clean up: **Remove** `192.0.2.77` and `192.0.2.78` and the marked flow from their lists; **Delete** `redeploy`. | The lists are as before step 1, on both workstations within 5 seconds. | | |
 
 ## 4. Where each requirement is tested
 
 *Automated* names the tests in `tests/` that check the requirement on every CI run. The browser
-suites are `ui_smoke.mjs` (demo data), `ui_case.mjs` and `ui_actions.mjs` (the generated case)
-and `ui_mtls.mjs` (the container). *Manual* names the tests above.
+suites are `ui_smoke.mjs` (demo data), `ui_case.mjs`, `ui_actions.mjs` and `ui_marks.mjs` (the
+generated case) and `ui_mtls.mjs` (the container). *Manual* names the tests above.
 
 | Requirement or decision | Automated | Manual |
 |---|---|---|
@@ -447,6 +469,7 @@ and `ui_mtls.mjs` (the container). *Manual* names the tests above.
 | ING-2 NetFlow ingest | `test_sources.py` (record pairing; a real nfcapd file through nfdump), `test_integration.py` (pcap and NetFlow in one case) | REAL-02 (a real exporter, against Zeek) |
 | ING-3 Directories of pcaps, rotated captures | `test_sources.py` | |
 | ING-4 Addresses, ports, times, protocol | `test_sources.py`, `test_case.py`, `test_backends.py` (Elasticsearch fields, configurable); flow lines in `ui_case.mjs`, `ui_actions.mjs` | REAL-01, REAL-02, SO-02 (field names on a live install) |
+| ING-5 FTP data connections, as Zeek names them | `test_sources.py` (control messages; active, passive and EPSV transfers; a non-FTP greeting, the wrong side, too late, used once; read in worker processes) | REAL-01 step 5, REAL-02 step 4 (a real FTP session against Zeek) |
 | ING-S2 Security Onion integration | `test_domains.py`, `test_backends.py` (Zeek DNS records); `test_soc.py` (Connect API against a stand-in); `ui_smoke.mjs` (PCAP links and download) | SO-03, SO-04, SO-05 |
 | GRA-1 Directed graph | `test_case.py`, `test_backends.py`; `ui_actions.mjs` | SO-02 |
 | GRA-2 Hosts and connections displayed | `ui_smoke.mjs`, `ui_case.mjs`, `ui_actions.mjs` (elements, labels, layout) | VIS-01 |
@@ -457,27 +480,43 @@ and `ui_mtls.mjs` (the container). *Manual* names the tests above.
 | Bottom N exact (README, *Peer selection*) | `test_backends.py` (the paged scan, the cap), `test_case.py`; `ui_smoke.mjs` (rarest and the cap warning in the status) | SO-02 steps 6, 7 |
 | ATK-1 Attack paths | `test_analysis.py` (against brute force), `test_case.py`; `ui_case.mjs`, `ui_actions.mjs` | VIS-02 |
 | ATK-3 Predecessors and successors | `test_case.py`; `ui_smoke.mjs`, `ui_actions.mjs` | |
-| ATK-4 Mark hosts compromised | `test_case.py`, `test_stores.py`; `ui_smoke.mjs`, `ui_case.mjs`, `ui_actions.mjs` | VIS-02 |
+| ATK-4 Mark hosts compromised | `test_case.py`, `test_stores.py`, `test_marks.py` (hosts marked through flows, reached times, attack paths); `ui_smoke.mjs`, `ui_case.mjs`, `ui_actions.mjs`, `ui_marks.mjs` | VIS-02 |
+| ATK-5 Mark a single flow | `test_marks.py` (store, API, locked in through filters); `ui_marks.mjs` (flow list, single-flow menu) | VIS-03 |
+| ATK-6 Marked while any mark holds it | `test_marks.py` (counts, cascade); `ui_marks.mjs` | |
+| ATK-7 Hide what isn't on a line through the marks | `test_analysis.py` (the user story's timeline; against brute force), `test_marks.py` (`/api/suspect`: parts, Window, time range, filters, sent marks); `ui_marks.mjs`, `ui_case.mjs` | VIS-02 step 2, VIS-03 |
+| ATK-8 Marks shared within 5 seconds | `test_marks.py` (versions); `ui_marks.mjs` (a second analyst's page, both ways) | SO-07 step 4 (two workstations through the deployment) |
+| ATK-9 Filters in threat lines and paths | `test_marks.py` (threat line, paths between hosts, attack paths, marked flows passing) | |
 | INT-1 Threat line on edge click | `test_analysis.py`, `test_case.py`; `ui_case.mjs`, `ui_actions.mjs` | VIS-02 |
 | INT-2 Earlier and later communications | `test_analysis.py`; `ui_case.mjs`, `ui_actions.mjs` | VIS-02 |
 | INT-3 Iterative refinement | `ui_case.mjs`, `ui_actions.mjs` | |
 | INT-4 Real-time update on new indicators | `test_case.py`; `ui_case.mjs`, `ui_actions.mjs` (redrawn on every change, answers out of order) | |
-| INT-S2 Save and restore sessions | `test_sessions.py`; `ui_actions.mjs` (shared and as a file), `ui_smoke.mjs` (the URL) | XB-01 (dialogs and files in other browsers), SO-07 (kept across a redeploy) |
+| INT-5 Clear resets only the preview | `ui_actions.mjs`, `ui_marks.mjs` | |
+| INT-6 Apply as filter | `ui_marks.mjs` | |
+| INT-7 Marked and suspect connections drawn; hidden count | `ui_marks.mjs` (classes, line styles, colours, legend, status), `ui_case.mjs` | VIS-02 step 2, VIS-03 |
+| INT-8 Mark and unmark flows | `ui_marks.mjs`, `ui_actions.mjs` (the single-flow menu) | VIS-03 step 3 |
+| INT-9 Confirmation before replacing the shared marks | `ui_marks.mjs` (Cancel, then OK) | XB-01 step 7b |
+| INT-10 Laid out again after re-querying | `ui_marks.mjs` | |
+| INT-S2 Save and restore sessions | `test_sessions.py`; `ui_actions.mjs` (shared and as a file; an opened map's own marks), `ui_marks.mjs` (filters, marks and queries saved; version 1 maps; Share), `ui_smoke.mjs` (the URL) | XB-01 (dialogs and files in other browsers), SO-07 (kept across a redeploy) |
+| INT-S3 Export (JSON maps, CSV) | `test_marks.py` (`/api/export`, its limit); `ui_marks.mjs` (two CSV files, quoting, no formulas); `ui_actions.mjs` (map files) | XB-01 step 7b |
 | FIL-1 IP exclude list | `test_api.py`, `test_query.py`; `ui_smoke.mjs`, `ui_actions.mjs` | SO-02 |
 | FIL-2 Domain names with DNS resolution | `test_domains.py`, `test_sources.py`; `ui_case.mjs`, `ui_smoke.mjs` (what each entry resolved to) | REAL-01 (real DNS answers), SO-03 |
 | FIL-3 Excluded traffic out of path calculations | `test_analysis.py`, `test_domains.py`; `ui_case.mjs`, `ui_actions.mjs` | |
 | FIL-S1 CIDR | `test_query.py`, `test_case.py`; `ui_smoke.mjs`, `ui_actions.mjs` | |
+| FIL-S5 Filter expressions | `test_filters.py` (grammar, errors, what they match; SQL and Elasticsearch against the Python test on random flows and expressions) | |
+| FIL-S6 Filter list; a refused filter | `test_marks.py` (`/api/filter`, limits); `ui_marks.mjs` | VIS-03 steps 4, 5 |
+| FIL-S7 Filters in every query; re-querying | `test_marks.py` (expansions, flow lists, connections, threat lines, paths; the filtered graph kept); `ui_marks.mjs` (replayed queries, skipped ones, marked hosts kept) | |
+| FIL-S8 Both modes | `test_marks.py` (Elasticsearch bodies, demo backend), `test_filters.py` (Elasticsearch clauses) | SO-02 step 9 |
 | FIL-S2 Exclude list kept and shared | `test_stores.py`, `test_integration.py`; `ui_actions.mjs` (seen by another analyst) | SO-07 (kept across a redeploy; a second workstation) |
 | PRF-1 1M flows | `test_perf.py` (CI performance job) | |
 | PRF-2 Built within 5 minutes under 100 MB | `test_perf.py` | |
-| PRF-3 Responsive during traversal | `test_perf.py` (server timings); `ui_actions.mjs`, `ui_smoke.mjs` (requests in the background, Cancel, answers out of order) | PRF-01 |
+| PRF-3 Responsive during traversal | `test_perf.py` (server timings, with filters and marks too); `ui_actions.mjs`, `ui_smoke.mjs` (requests in the background, Cancel, answers out of order) | PRF-01 |
 | PRF-S1 Parallel reading | `test_sources.py` (the same flows as one at a time), `test_case.py` | |
 | PRF-S3 Progress | `test_progress.py` (a simulated terminal, and the log); `ui_smoke.mjs`, `ui_actions.mjs` (busy indicator, Cancel) | TERM-01 (a real terminal) |
 | EXT-1 Security Onion workflows | `test_integration.py` (SOC actions open the map), `test_query.py` (pivots, configurable); `ui_smoke.mjs` | SO-01, SO-06 |
 | EXT-S2 API | `test_integration.py` (every endpoint documented), the API tests | |
 | Mutual TLS | `mtls_check.sh`, `ui_mtls.mjs` (CI Docker job) | TLS-01 (a browser's own certificate store); ENV-SO uses it |
 | D3 Edge left-click / right-click | `ui_smoke.mjs`, `ui_case.mjs`, `ui_actions.mjs` | XB-01 (other browsers) |
-| D14 Protocols, and the highlight | `test_sources.py` (payload signatures, ports, both readers), `test_case.py`, `test_backends.py`, `test_query.py` (Zeek's `network.protocol`); `ui_case.mjs`, `ui_actions.mjs`, `ui_smoke.mjs` (drop-down, highlight, saved maps) | VIS-01 step 5; REAL-01 step 4; REAL-02 step 2; SO-02 step 8 |
+| D14 Protocols, and the highlight | `test_sources.py` (payload signatures, ports, FTP data connections, both readers), `test_case.py`, `test_backends.py`, `test_query.py` (Zeek's `network.protocol`); `ui_case.mjs`, `ui_actions.mjs`, `ui_smoke.mjs` (drop-down, highlight, saved maps) | VIS-01 step 5; REAL-01 steps 4, 5; REAL-02 steps 2, 4; SO-02 step 8 |
 | D6, D7 Inputs, connection rules; refused connections left out | `test_sources.py`; `test_query.py`, `test_config.py` (Zeek's `REJ` in Elasticsearch) | REAL-01, REAL-02 (against Zeek); SO-02 step 5 |
 | D8 Time order, hop limit | `test_analysis.py`, `test_case.py` | |
 | D9 Capture DNS, then live DNS | `test_domains.py`; `ui_smoke.mjs` | SO-03 |
@@ -485,7 +524,12 @@ and `ui_mtls.mjs` (the container). *Manual* names the tests above.
 | D11 Paths between two hosts | `test_analysis.py`, `test_case.py`; `ui_case.mjs`, `ui_actions.mjs` | |
 | D12 PCAP from the sensors | `test_soc.py`, `test_backends.py`; `ui_smoke.mjs` | SO-04, SO-05 |
 | D13 Parallel reading, exact flows | `test_sources.py` | |
+| D15 Marks on hosts and flows | `test_marks.py`, `test_stores.py`; `ui_marks.mjs` | VIS-03, SO-07 step 4 |
+| D16 Suspect connections | `test_analysis.py`, `test_marks.py`; `ui_marks.mjs` | VIS-03 |
+| D17 Filter expressions | `test_filters.py`, `test_marks.py`; `ui_marks.mjs` | SO-02 step 9 |
+| D18 Hiding before dimming; Clear | `ui_marks.mjs` (hidden connections leave the drop-down; Clear), `ui_actions.mjs` | |
+| D19 Saved maps and the shared marks | `ui_marks.mjs`, `ui_actions.mjs` | XB-01 step 7 |
 
 Not built, so nothing to test: ING-S1 (out of scope), ING-S3, GRA-S1, ATK-2 and EXT-2
-(deferred, D5), ATK-S1–S3, INT-S1, INT-S3, FIL-S3, FIL-S4, PRF-S2, EXT-S1, EXT-S3
+(deferred, D5), ATK-S1–S3, INT-S1, FIL-S3, FIL-S4, PRF-S2, EXT-S1, EXT-S3, FTODO-1
 ([REQUIREMENTS.md](REQUIREMENTS.md)).

@@ -9,26 +9,35 @@ first, each {"start", "duration", "sport", "dport", "proto", "packets", "bytes",
 (duration in seconds; any but start and protocols may be None). Flows from Security Onion also have "id" (the connection
 log's Elasticsearch ID) and "soc_pcap" (SOC's link to the flow's packets).
 
+edge() returns one connection's {"source", "target", "count", "first_seen", "last_seen",
+"ports", "protocols"} (count 0 and no times when it has no flows).
+
 dns_answers([entry, ...]) (Security Onion) returns {entry: {ip: [first seen, last seen]}}:
 what each domain entry resolved to in the sensors' DNS records.
+
+Every query takes `scope`: None for every flow, or a Scope when the analyst applied filters.
 
 Times are ISO-8601 UTC strings.
 """
 import fcntl
 import hashlib
 import ipaddress
+import json
 import logging
 import os
 import random
 import sqlite3
 import tempfile
+import threading
 import time
+from collections import OrderedDict
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 import requests
 
-from . import analysis, protocols, sources
+from . import analysis, filters, protocols, sources
+from .compromised import flow_key, marked_hosts, reached
 from .graph import build_graph, count_between
 from .progress import Progress, counted
 from .query import (ValidationError, es_details_body, es_dns_body, es_flows_body, es_scan_body,
@@ -46,6 +55,83 @@ TIME_SLACK = 0.001
 
 class BackendError(RuntimeError):
     pass
+
+
+class Scope:
+    """What a query may use when the analyst applied filters (D17): the flows that pass
+    `filter` (a filters.Filter), plus the marked flows (compromised.parse_flow), which always
+    do."""
+
+    def __init__(self, filter, marked=()):
+        self.filter = filter
+        self.marked = list(marked)
+
+    def passes(self, flow, src, dst):
+        """Whether a flow (as matches() reads it, start in epoch seconds) between src and dst
+        passes: it matches the filter, or it is marked."""
+        if filters.matches(self.filter.core, flow):
+            return True
+        key = (src, dst, fmt_time(_utc(flow["start"])), flow.get("sport"), flow.get("dport"),
+               str(flow.get("proto")))
+        return any(flow_key(m) == key for m in self.marked)
+
+
+def _start(iso):
+    """A marked flow's start, epoch seconds."""
+    return parse_time(iso).timestamp()
+
+
+def es_scope(cfg, scope):
+    """The Elasticsearch clause a record must match in `scope`: the filter, or being a marked
+    flow."""
+    if scope is None:
+        return None
+    tests = [filters.to_es(scope.filter.core, cfg)]
+    for m in scope.marked:
+        ms = int(round(_start(m["start"]) * 1000))
+        tests.append({"bool": {"filter": [
+            {"term": {cfg.f_src: m["src"]}}, {"term": {cfg.f_dst: m["dst"]}},
+            {"term": {cfg.f_sport: m["sport"]}}, {"term": {cfg.f_dport: m["dport"]}},
+            {"term": {cfg.f_proto: m["proto"]}},
+            {"range": {cfg.f_ts: {"gte": ms, "lt": ms + 1, "format": "epoch_millis"}}}]}})
+    return tests[0] if len(tests) == 1 else {"bool": {"should": tests, "minimum_should_match": 1}}
+
+
+def host_rows(hosts, flows):
+    """The marked hosts for an export: ip, when reached, note, how marked, mark count."""
+    return [{"ip": h["ip"], "time": h["time"], "note": h["note"], "count": h["count"],
+             "marked": "both" if h["direct"] and h["count"] > 1 else "direct" if h["direct"] else "flows"}
+            for h in marked_hosts(hosts, flows)]
+
+
+def _flow_row(f, status):
+    """A case flow (model.Flow) as an export row."""
+    return {"start": fmt_time(_utc(f.start)), "end": fmt_time(_utc(f.end)), "src": f.src,
+            "sport": f.sport, "dst": f.dst, "dport": f.dport, "proto": f.proto,
+            "protocols": [f.service], "packets": f.packets, "bytes": f.bytes, "status": status}
+
+
+def marked_flow_rows(backend, edges, flows, limit):
+    """Export rows for the marked flows on drawn connections (`edges`: (src, dst, lo, hi)),
+    with their details when the backend can find them."""
+    drawn = {(src, dst) for src, dst, _, _ in edges}
+    rows = []
+    for m in flows:
+        if (m["src"], m["dst"]) not in drawn or len(rows) >= limit:
+            continue
+        t = _utc(_start(m["start"]))
+        row = {"start": m["start"], "end": None, "src": m["src"], "sport": m["sport"], "dst": m["dst"],
+               "dport": m["dport"], "proto": m["proto"], "protocols": [], "packets": None, "bytes": None,
+               "status": "marked"}
+        found = backend.flows(m["src"], m["dst"], t, t + timedelta(milliseconds=1), 0, 50)["flows"]
+        for f in found:
+            if (f["start"], f["sport"], f["dport"], str(f["proto"])) == (m["start"], m["sport"], m["dport"], m["proto"]):
+                end = (None if f.get("duration") is None
+                       else fmt_time(parse_time(f["start"]) + timedelta(seconds=f["duration"])))
+                row.update(end=end, protocols=f["protocols"], packets=f["packets"], bytes=f["bytes"])
+                break
+        rows.append(row)
+    return rows
 
 
 class ElasticBackend:
@@ -77,21 +163,22 @@ class ElasticBackend:
             raise BackendError("Elasticsearch's answer is not a JSON object")
         return body
 
-    def neighbors(self, ip, direction, start, end, limit, order, exclude):
+    def neighbors(self, ip, direction, start, end, limit, order, exclude, scope=None):
+        clause = es_scope(self.cfg, scope)
         if order == "top":
-            aggs = self._search(es_top_body(self.cfg, ip, direction, start, end, limit, exclude))
+            aggs = self._search(es_top_body(self.cfg, ip, direction, start, end, limit, exclude, clause))
             peers = [self._bucket(b) for b in aggs.get("peers", {}).get("buckets", [])]
             return {"peers": peers, "distinct_peers": aggs.get("distinct", {}).get("value"),
                     "truncated": False}
-        return self._rarest(ip, direction, start, end, limit, exclude)
+        return self._rarest(ip, direction, start, end, limit, exclude, clause)
 
-    def _rarest(self, ip, direction, start, end, limit, exclude):
+    def _rarest(self, ip, direction, start, end, limit, exclude, clause=None):
         """Exact bottom-N: count every distinct peer (up to the cap), sort ascending."""
         cap = self.cfg.rare_scan_cap
         counts, after, truncated = [], None, False
         while True:
             body = es_scan_body(self.cfg, ip, direction, start, end, exclude,
-                                min(SCAN_PAGE, cap - len(counts)), after)
+                                min(SCAN_PAGE, cap - len(counts)), after, clause)
             scan = self._search(body).get("scan", {})
             buckets = scan.get("buckets", [])
             counts.extend((b["key"]["peer"], b["doc_count"]) for b in buckets)
@@ -105,7 +192,7 @@ class ElasticBackend:
         chosen = [peer for peer, _ in counts[:limit]]
         peers = []
         if chosen:
-            aggs = self._search(es_details_body(self.cfg, ip, direction, start, end, chosen, exclude))
+            aggs = self._search(es_details_body(self.cfg, ip, direction, start, end, chosen, exclude, clause))
             peers = [self._bucket(b) for b in aggs.get("peers", {}).get("buckets", [])]
             peers.sort(key=lambda p: (p["count"], p["peer"]))
         return {"peers": peers, "distinct_peers": len(counts), "truncated": truncated}
@@ -129,13 +216,30 @@ class ElasticBackend:
                           else [protocols.UNKNOWN]),           # TB_FIELD_SERVICE= (empty)
         }
 
-    def flows(self, src, dst, start, end, offset, limit):
+    def flows(self, src, dst, start, end, offset, limit, scope=None, within=None):
         if offset + limit > ES_MAX_RESULTS:
             raise ValidationError(f"Security Onion lists only the first {ES_MAX_RESULTS} flows of "
                                   "a connection; narrow the time range to see later ones")
-        hits = self._post(es_flows_body(self.cfg, src, dst, start, end, offset, limit)).get("hits", {})
+        body = es_flows_body(self.cfg, src, dst, start, end, offset, limit, es_scope(self.cfg, scope))
+        hits = self._post(body).get("hits", {})
         flows = [self._flow(h) for h in hits.get("hits", [])]
         return {"total": hits.get("total", {}).get("value", 0), "flows": [f for f in flows if f]}
+
+    def edge(self, src, dst, start, end, scope=None):
+        aggs = self._search(es_details_body(self.cfg, src, "out", start, end, [dst], [],
+                                            es_scope(self.cfg, scope)))
+        buckets = aggs.get("peers", {}).get("buckets", [])
+        if not buckets:
+            return {"source": src, "target": dst, "count": 0, "first_seen": None, "last_seen": None,
+                    "ports": [], "protocols": []}
+        b = self._bucket(buckets[0])
+        return {"source": src, "target": dst, **{k: v for k, v in b.items() if k != "peer"}}
+
+    def export(self, edges, hosts, flows, limit, **_):
+        """Marked hosts, and the marked flows on drawn connections (no suspect flows: D16
+        needs the case backend)."""
+        rows = marked_flow_rows(self, edges, flows, limit)
+        return {"hosts": host_rows(hosts, flows), "flows": rows, "truncated": False}
 
     def _flow(self, hit):
         """One hit as a flow, or None if it has no time: better left out than shown at a
@@ -211,7 +315,7 @@ class DemoBackend:
         rng = self._rng(f"{src}>{dst}")
         return rng, rng.choice([1, 2, 3, rng.randint(4, 500)])
 
-    def neighbors(self, ip, direction, start, end, limit, order, exclude):
+    def neighbors(self, ip, direction, start, end, limit, order, exclude, scope=None):
         rng = self._rng(f"{ip}|{direction}")
         span = max((end - start).total_seconds(), 1)
         nets = [ipaddress.ip_network(e) for e in exclude]
@@ -233,13 +337,51 @@ class DemoBackend:
             seen[peer]["protocols"] = sorted({protocols.name("tcp", 0, p, 0) for p in seen[peer]["ports"]})
         peers = [p for p in seen.values()
                  if not any(ipaddress.ip_address(p["peer"]) in n for n in nets)]
+        if scope is not None:     # count only the flows that pass, as the other backends do
+            peers = [p for p in (self._scoped(ip, p, direction, scope) for p in peers) if p]
         if order == "top":
             peers.sort(key=lambda p: (-p["count"], p["peer"]))
         else:
             peers.sort(key=lambda p: (p["count"], p["peer"]))
         return {"peers": peers[:limit], "distinct_peers": len(peers), "truncated": False}
 
-    def flows(self, src, dst, start, end, offset, limit):
+    def _scoped(self, ip, peer, direction, scope):
+        """A peer as neighbors() reports it, counting only the flows that pass `scope`."""
+        src, dst = (peer["peer"], ip) if direction == "in" else (ip, peer["peer"])
+        rows = self._passing(src, dst, parse_time(peer["first_seen"]), parse_time(peer["last_seen"]), scope)
+        if not rows:
+            return None
+        ports = {}
+        for r in rows:
+            ports[r["dport"]] = ports.get(r["dport"], 0) + 1
+        return dict(peer, count=len(rows), first_seen=rows[0]["start"], last_seen=rows[-1]["start"],
+                    ports=_top_ports(ports), protocols=sorted({p for r in rows for p in r["protocols"]}))
+
+    def _passing(self, src, dst, start, end, scope):
+        rows = self._rows(src, dst, start, end)
+        if scope is None:
+            return rows
+        return [r for r in rows if scope.passes(dict(r, src=src, dst=dst, start=_start(r["start"])), src, dst)]
+
+    def flows(self, src, dst, start, end, offset, limit, scope=None, within=None):
+        rows = self._passing(src, dst, start, end, scope)
+        return {"total": len(rows), "flows": rows[offset:offset + limit]}
+
+    def edge(self, src, dst, start, end, scope=None):
+        rows = self._passing(src, dst, start, end, scope)
+        ports = {}
+        for r in rows:
+            ports[r["dport"]] = ports.get(r["dport"], 0) + 1
+        return {"source": src, "target": dst, "count": len(rows),
+                "first_seen": rows[0]["start"] if rows else None,
+                "last_seen": rows[-1]["start"] if rows else None, "ports": _top_ports(ports),
+                "protocols": sorted({p for r in rows for p in r["protocols"]})}
+
+    def export(self, edges, hosts, flows, limit, **_):
+        return {"hosts": host_rows(hosts, flows), "flows": marked_flow_rows(self, edges, flows, limit),
+                "truncated": False}
+
+    def _rows(self, src, dst, start, end):
         # As many flows as neighbors() reports for the pair, the first and last at the ends
         # of [start, end] (the connection's first and last seen).
         rng, count = self._pair(src, dst)
@@ -253,7 +395,7 @@ class DemoBackend:
             row["protocols"] = [protocols.name("tcp", 0, row["dport"], 0)]
             row["id"] = f"demo{hashlib.sha256(f'{src}>{dst}>{i}'.encode()).hexdigest()[:16]}"
             row["soc_pcap"] = soc_pcap_url(self.cfg, row["id"], row["start"])
-        return {"total": count, "flows": rows[offset:offset + limit]}
+        return rows
 
 
 def _utc(epoch):
@@ -274,8 +416,11 @@ class CaseBackend:
     the evidence files are unchanged; otherwise it lives in a temporary directory.
     """
 
+    GRAPHS_KEPT = 4   # filtered graphs kept for reuse (D17)
+
     def __init__(self, cfg, flows=None, dns=None, progress=None):
         self._tmp = None
+        self._graphs, self._graphs_lock = OrderedDict(), threading.Lock()
         path = cfg.case_db
         if not path:
             self._tmp = tempfile.TemporaryDirectory(prefix="threatbridge-")
@@ -330,13 +475,60 @@ class CaseBackend:
             "dns_names": len(self.dns),
         }
 
-    def neighbors(self, ip, direction, start, end, limit, order, exclude):
+    # ---- filters (D17): what a query may use ------------------------------------------------
+
+    def _marked(self, marked):
+        """{(src, dst): [(row id, start), ...]} of the marked flows found in the case."""
+        out = {}
+        for m in marked:
+            found = self.store.find(m["src"], m["dst"], _start(m["start"]), m["sport"], m["dport"], m["proto"])
+            if found:
+                out.setdefault((m["src"], m["dst"]), []).extend(found)
+        return out
+
+    def _where(self, scope):
+        """The store's condition for `scope` (store._where): the flows that pass the filter,
+        or are marked. None (every flow) without a scope."""
+        if scope is None:
+            return None
+        sql, params = filters.to_sql(scope.filter.core, "f.")
+        rows = sorted({r for found in self._marked(scope.marked).values() for r, _ in found})
+        if rows:
+            return f"({sql}) OR f.rowid IN (SELECT value FROM json_each(?))", [*params, json.dumps(rows)]  # nosec B608
+        return sql, params
+
+    def _view(self, scope):
+        """(graph, store condition) for a query: the whole case, or a graph of only the flows
+        `scope` lets through, built once and kept for the next queries with the same filters
+        and marked flows."""
+        if scope is None:
+            return self.graph, None
+        where = self._where(scope)
+        key = json.dumps(where)
+        with self._graphs_lock:
+            g = self._graphs.get(key)
+            if g is not None:
+                self._graphs.move_to_end(key)
+        if g is None:
+            t = time.monotonic()
+            g = build_graph(self.store.pairs(where))
+            log.info("graph for the filter %s: %d host pairs in %.1fs", scope.filter.text,
+                     g.number_of_edges(), time.monotonic() - t)
+            with self._graphs_lock:
+                self._graphs[key] = g
+                while len(self._graphs) > self.GRAPHS_KEPT:
+                    self._graphs.popitem(last=False)
+        return g, where
+
+    # ---- queries ------------------------------------------------------------------------
+
+    def neighbors(self, ip, direction, start, end, limit, order, exclude, scope=None):
         excluded = _Excluded(exclude)
         lo, hi = start.timestamp() - TIME_SLACK, end.timestamp() + TIME_SLACK
+        g, where = self._view(scope)
         # Counts and times come from the graph's per-pair start times; only the ports of
         # the peers shown need the flows themselves.
-        adjacency = {} if ip not in self.graph else (
-            self.graph.pred[ip] if direction == "in" else self.graph.succ[ip])
+        adjacency = {} if ip not in g else (g.pred[ip] if direction == "in" else g.succ[ip])
         peers = {}
         for peer, edge in adjacency.items():
             if peer != ip and peer not in excluded:
@@ -345,7 +537,7 @@ class CaseBackend:
                     peers[peer] = (n, first, last)
         sign = -1 if order == "top" else 1
         ranked = sorted(peers.items(), key=lambda kv: (sign * kv[1][0], kv[0]))[:limit]
-        details = self.store.details(ip, direction, [peer for peer, _ in ranked], lo, hi)
+        details = self.store.details(ip, direction, [peer for peer, _ in ranked], lo, hi, where)
         return {
             "peers": [{"peer": peer, "count": n, "first_seen": fmt_time(_utc(first)),
                        "last_seen": fmt_time(_utc(last)), "ports": _top_ports(details[peer][0]),
@@ -355,34 +547,49 @@ class CaseBackend:
             "truncated": False,
         }
 
-    def _edge(self, src, dst, intervals, role):
-        n, first, last, ports, found = self.store.edge(src, dst, intervals)
+    def _edge(self, src, dst, intervals, role, where=None):
+        n, first, last, ports, found = self.store.edge(src, dst, intervals, where)
         return {"source": src, "target": dst, "role": role, "count": n,
-                "first_seen": fmt_time(_utc(first)), "last_seen": fmt_time(_utc(last)),
+                "first_seen": fmt_time(_utc(first)) if n else None,
+                "last_seen": fmt_time(_utc(last)) if n else None,
                 "ports": _top_ports(ports), "protocols": found}
 
-    def flows(self, src, dst, start, end, offset, limit):
+    def edge(self, src, dst, start, end, scope=None):
         lo, hi = start.timestamp() - TIME_SLACK, end.timestamp() + TIME_SLACK
-        total = (count_between(self.graph[src][dst]["times"], lo, hi)[0]
-                 if self.graph.has_edge(src, dst) else 0)
-        page = self.store.flows(src, dst, lo, hi, offset, limit) if offset < total else []
+        e = self._edge(src, dst, [(lo, hi)], None, self._where(scope))
+        del e["role"]
+        return e
+
+    def flows(self, src, dst, start, end, offset, limit, scope=None, within=None):
+        """One page of the flows src -> dst that started in [start, end]; with `within`
+        ([(lo, hi)] in epoch seconds, from suspects()), only those within it."""
+        lo, hi = start.timestamp() - TIME_SLACK, end.timestamp() + TIME_SLACK
+        g, where = self._view(scope)
+        if within is not None:
+            within = [(a - TIME_SLACK, b + TIME_SLACK) for a, b in within]
+            clipped = [(max(a, lo), min(b, hi)) for a, b in within if max(a, lo) <= min(b, hi)]
+            total = self.store.count(src, dst, clipped, where) if clipped else 0
+        else:
+            total = count_between(g[src][dst]["times"], lo, hi)[0] if g.has_edge(src, dst) else 0
+        page = self.store.flows(src, dst, lo, hi, offset, limit, where, within) if offset < total else []
         return {"total": total, "flows": [{
             "start": fmt_time(_utc(f.start)), "duration": round(f.end - f.start, 6),
             "sport": f.sport, "dport": f.dport, "proto": f.proto, "packets": f.packets,
             "bytes": f.bytes, "protocols": [f.service]} for f in page]}
 
     def threat_line(self, a, b, first, last, window, max_hops, exclude, max_hosts,
-                    bounds=(None, None)):
+                    bounds=(None, None), scope=None):
         """Hosts and hops time-consistent with the conversation a -> b (see analysis.py),
         using only flows within the analyst's time range `bounds`."""
         first = first.timestamp() - TIME_SLACK
         last = last.timestamp() + TIME_SLACK
         window = window.total_seconds()
-        n, start, end = (count_between(self.graph[a][b]["times"], first, last)
-                         if self.graph.has_edge(a, b) else (0, None, None))
+        g, where = self._view(scope)
+        n, start, end = (count_between(g[a][b]["times"], first, last)
+                         if g.has_edge(a, b) else (0, None, None))
         if not n:
             raise ValidationError(f"no flows from {a} to {b} in that time range")
-        up, down = analysis.threat_line(self.graph, a, b, first, last, window, max_hops,
+        up, down = analysis.threat_line(g, a, b, first, last, window, max_hops,
                                         _Excluded(exclude), max_hosts, _epochs(bounds))
         # The conversation's own first and last flow, not the rounding slack around them.
         nodes = {a: {"id": a, "role": "selected", "time": fmt_time(_utc(end)), "hops": 0},
@@ -395,40 +602,105 @@ class CaseBackend:
                                  "time": fmt_time(_utc(reach.via[ip].start)), "hops": reach.hops[ip]}
                 elif node["role"] not in ("selected", role):
                     node["role"] = "both"
-        edges = [self._edge(a, b, [(first, last)], "selected")]
+        edges = [self._edge(a, b, [(first, last)], "selected", where)]
         for reach, role in ((up, "up"), (down, "down")):
-            edges += [self._edge(s, d, iv, role) for s, d, iv in analysis.tree_edges(reach)]
+            edges += [self._edge(s, d, iv, role, where) for s, d, iv in analysis.tree_edges(reach)]
         return {"nodes": list(nodes.values()), "edges": edges,
                 "truncated": up.truncated or down.truncated}
 
     def attack_paths(self, compromised, window, max_hops, exclude, bounds=(None, None),
-                     max_paths=None):
+                     max_paths=None, scope=None):
         """Time-respecting paths between each pair of compromised hosts ({ip: epoch or None};
         see analysis.attack_paths), using only flows within the time range `bounds`: up to
         max_paths per pair, shortest first."""
+        g, where = self._view(scope)
         found = analysis.attack_paths(
-            self.graph, compromised, window.total_seconds(), max_hops, _Excluded(exclude),
+            g, compromised, window.total_seconds(), max_hops, _Excluded(exclude),
             self._data_start(), TIME_SLACK, _epochs(bounds), max_paths)
         flows = {}
-        return {"pairs": [{"from": a, "to": b, "paths": self._paths(paths, flows), "truncated": cut}
+        return {"pairs": [{"from": a, "to": b, "paths": self._paths(paths, flows, where), "truncated": cut}
                           for a, b, paths, cut in found]}
 
     def paths_between(self, a, b, ta, tb, window, max_hops, exclude, bounds=(None, None),
-                      max_paths=None):
+                      max_paths=None, scope=None):
         """Every time-respecting path from a to b (see analysis.paths_between). ta, tb: when
         each was compromised, datetimes or None if unknown."""
+        g, where = self._view(scope)
         found, truncated = analysis.paths_between(
-            self.graph, a, b, _epoch(ta), _epoch(tb), window.total_seconds(), max_hops,
+            g, a, b, _epoch(ta), _epoch(tb), window.total_seconds(), max_hops,
             _Excluded(exclude), self._data_start(), TIME_SLACK, _epochs(bounds), max_paths)
-        return {"paths": self._paths(found, {}), "truncated": truncated}
+        return {"paths": self._paths(found, {}, where), "truncated": truncated}
+
+    # ---- marks: suspect flows (D16) and exports ------------------------------------------
+
+    def suspects(self, edges, hosts, flows, window, max_hops, exclude, bounds=(None, None),
+                 scope=None):
+        """What the marks keep of the drawn connections `edges` ([(src, dst, lo, hi)], each with
+        the span drawn, epoch seconds): one entry per connection, with "status" "kept" (and,
+        counting only its marked and suspect flows, "count", "first_seen", "last_seen",
+        "ports", "protocols", "marked", "suspect" and "within", the intervals to list them
+        by), "hidden", or "unaffected" (no marked host in its part of the map)."""
+        where = self._where(scope)
+        lo_b, hi_b = _epochs(bounds)
+        drawn = {(src, dst) for src, dst, _, _ in edges}
+        marked = {pair: found for pair, found in self._marked(flows).items() if pair in drawn}
+        points = set()
+        for src, dst, lo, hi in edges:
+            for t in self.store.times(src, dst, max(lo - TIME_SLACK, lo_b), min(hi + TIME_SLACK, hi_b), where):
+                points.add((src, dst, t))
+        points.update((src, dst, t) for (src, dst), found in marked.items() for _, t in found)
+        g = build_graph(points)
+        on_map = {h for e in edges for h in e[:2]}
+        marks = {h: t for h, t in reached(hosts, flows).items() if h in on_map}
+        found = analysis.suspects(g, marks, window.total_seconds(), max_hops, _Excluded(exclude),
+                                  (lo_b, hi_b), TIME_SLACK)
+        part = _parts(on_map, ((src, dst) for src, dst, _, _ in edges))
+        affected = {part[h] for h in marks}
+        out = []
+        for src, dst, _, _ in edges:
+            entry = {"source": src, "target": dst}
+            if part[src] not in affected:
+                out.append(dict(entry, status="unaffected"))
+                continue
+            locked = [t for _, t in marked.get((src, dst), [])]
+            intervals = analysis.merge(found.get((src, dst), []) + [(t, t) for t in locked])
+            e = self._edge(src, dst, intervals, None, where) if intervals else {"count": 0}
+            if not e["count"]:
+                out.append(dict(entry, status="hidden"))
+                continue
+            del e["role"]
+            out.append(dict(e, status="kept", marked=len(locked), suspect=e["count"] - len(locked),
+                            within=[[fmt_time(_utc(a)), fmt_time(_utc(b))] for a, b in intervals]))
+        return {"edges": out}
+
+    def export(self, edges, hosts, flows, limit, window=None, max_hops=None, exclude=(),
+               bounds=(None, None), scope=None):
+        """The marked hosts, and every marked or suspect flow on the drawn connections, up to
+        `limit` flows."""
+        kept = self.suspects(edges, hosts, flows, window, max_hops, exclude, bounds, scope)["edges"]
+        keys = {flow_key(m) for m in flows}
+        where, rows, truncated = self._where(scope), [], False
+        for e in kept:
+            if e["status"] != "kept":
+                continue
+            intervals = [(_start(a) - TIME_SLACK, _start(b) + TIME_SLACK) for a, b in e["within"]]
+            for f in self.store.edge_flows(e["source"], e["target"], intervals, where, limit - len(rows) + 1):
+                if len(rows) == limit:
+                    truncated = True
+                    break
+                row = _flow_row(f, "suspect")
+                if (f.src, f.dst, row["start"], f.sport, f.dport, f.proto) in keys:
+                    row["status"] = "marked"
+                rows.append(row)
+        return {"hosts": host_rows(hosts, flows), "flows": rows, "truncated": truncated}
 
     def _data_start(self):
         return self.span[0].timestamp() if self.span else None
 
-    def _paths(self, found, flows):
+    def _paths(self, found, flows, where=None):
         """[[Hop, ...], ...] -> JSON, each hop with its flow's details (`flows` caches them)."""
         for h in {h for hops in found for h in hops} - flows.keys():
-            flows[h] = self.store.flow_at(h.src, h.dst, h.start)
+            flows[h] = self.store.flow_at(h.src, h.dst, h.start, where)
         return [{"hops": [{"source": f.src, "target": f.dst, "start": fmt_time(_utc(f.start)),
                            "sport": f.sport, "dport": f.dport, "proto": f.proto,
                            "packets": f.packets, "bytes": f.bytes, "protocols": [f.service]}
@@ -467,6 +739,21 @@ class _Excluded:
             addr = ipaddress.ip_address(ip)
             hit = self.cache[ip] = any(addr in n for n in self.nets)
         return hit
+
+
+def _parts(hosts, pairs):
+    """{host: its part of the map}: hosts joined by connections, either way, share a part."""
+    parent = {h: h for h in hosts}
+
+    def root(h):
+        while parent[h] != h:
+            parent[h] = parent[parent[h]]
+            h = parent[h]
+        return h
+
+    for a, b in pairs:
+        parent[root(a)] = root(b)
+    return {h: root(h) for h in hosts}
 
 
 def _epoch(t):

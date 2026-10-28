@@ -105,3 +105,39 @@ def test_interactive_queries_stay_fast_on_a_busy_case():
     interactive = {k: v for k, v in timings.items() if k not in background}
     assert max(interactive.values()) < 3, interactive
     assert max(background.values()) < 10, background
+
+
+@pytest.mark.skipif(os.environ.get("TB_PERF") != "1", reason="set TB_PERF=1 to run")
+def test_filters_and_marks_stay_usable_on_a_busy_case():
+    # D16, D17 on PRF-3's week: the first query with a new filter builds a graph of the flows that
+    # pass it (the worst case: nearly all do); the next ones reuse it. Hiding by marks works on
+    # what is drawn: a map of 300 connections around the busiest hosts.
+    from threatbridge import filters
+    from threatbridge.backends import Scope
+    backend = CaseBackend(Config(backend="case"), flows=busy_week())
+    g = backend.graph
+    start, end = backend.span
+    day = timedelta(days=1)
+    busiest = max(g.nodes, key=g.degree)
+    scope = Scope(filters.parse("NOT dport 53"))
+    timings = {}
+
+    def timed(name, call):
+        t = time.monotonic()
+        result = call()
+        timings[name] = time.monotonic() - t
+        return result
+    timed("first query with a filter", lambda: backend.neighbors(busiest, "in", start, end, 50, "top", [], scope))
+    peers = timed("next query, same filter", lambda: backend.neighbors(busiest, "in", start, end, 50, "top", [], scope))
+    timed("narrow filter (SMB port)", lambda: backend.neighbors(busiest, "in", start, end, 50, "top", [],
+                                                                Scope(filters.parse("dport 445"))))
+    edges = sorted(g.edges, key=lambda e: -len(g.edges[e]["times"]))[:300]
+    drawn = [(a, b, g[a][b]["times"][0], g[a][b]["times"][-1]) for a, b in edges]
+    marks = [{"ip": h, "time": None, "note": ""} for h in sorted({e[1] for e in edges})[:3]]
+    kept = timed("suspect connections, 300 drawn", lambda: backend.suspects(drawn, marks, [], day, 6, []))
+    timed("suspect connections, 300 drawn, filtered", lambda: backend.suspects(drawn, marks, [], day, 6, [], scope=scope))
+    print("\n" + "  ".join(f"{k}: {v:.2f}s" for k, v in timings.items()))
+    assert peers["peers"] and any(e["status"] == "kept" for e in kept["edges"])
+    assert timings["first query with a filter"] < 30, timings
+    rest = {k: v for k, v in timings.items() if k != "first query with a filter"}
+    assert max(rest.values()) < 3, rest

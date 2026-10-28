@@ -143,7 +143,9 @@ def peer_fields(cfg, direction):
     return (cfg.f_dst, cfg.f_src) if direction == "in" else (cfg.f_src, cfg.f_dst)
 
 
-def es_filter(cfg, ip, direction, start, end, exclude, peers=None):
+def es_filter(cfg, ip, direction, start, end, exclude, peers=None, scope=None):
+    """The records a query counts. `scope`: a clause they must also match (the analyst's
+    filters, backends.es_scope), or None."""
     match_field, peer_field = peer_fields(cfg, direction)
     filters = [
         {"term": {match_field: ip}},
@@ -154,6 +156,8 @@ def es_filter(cfg, ip, direction, start, end, exclude, peers=None):
         filters.append({"terms": {cfg.f_dataset: cfg.datasets}})
     if peers is not None:
         filters.append({"terms": {peer_field: list(peers)}})
+    if scope is not None:
+        filters.append(scope)
     # term on an ip field accepts CIDR notation.
     must_not = [{"term": {peer_field: e}} for e in exclude]
     if cfg.f_conn_state:
@@ -177,13 +181,13 @@ def _detail_aggs(cfg):
     return aggs
 
 
-def es_top_body(cfg, ip, direction, start, end, limit, exclude):
+def es_top_body(cfg, ip, direction, start, end, limit, exclude, scope=None):
     """Most frequent peers, with details, plus approximate distinct-peer count."""
     _, peer_field = peer_fields(cfg, direction)
     return {
         "size": 0,
         "track_total_hits": False,
-        "query": es_filter(cfg, ip, direction, start, end, exclude),
+        "query": es_filter(cfg, ip, direction, start, end, exclude, scope=scope),
         "aggs": {
             "peers": {
                 "terms": {"field": peer_field, "size": limit, "order": {"_count": "desc"}},
@@ -194,7 +198,7 @@ def es_top_body(cfg, ip, direction, start, end, limit, exclude):
     }
 
 
-def es_scan_body(cfg, ip, direction, start, end, exclude, page_size, after=None):
+def es_scan_body(cfg, ip, direction, start, end, exclude, page_size, after=None, scope=None):
     """One page of an exact per-peer count scan (composite aggregation)."""
     _, peer_field = peer_fields(cfg, direction)
     comp = {"size": page_size, "sources": [{"peer": {"terms": {"field": peer_field}}}]}
@@ -203,24 +207,24 @@ def es_scan_body(cfg, ip, direction, start, end, exclude, page_size, after=None)
     return {
         "size": 0,
         "track_total_hits": False,
-        "query": es_filter(cfg, ip, direction, start, end, exclude),
+        "query": es_filter(cfg, ip, direction, start, end, exclude, scope=scope),
         "aggs": {"scan": {"composite": comp}},
     }
 
 
-def es_details_body(cfg, ip, direction, start, end, peers, exclude):
+def es_details_body(cfg, ip, direction, start, end, peers, exclude, scope=None):
     """Details (first/last seen, ports) for an explicit list of peers."""
     _, peer_field = peer_fields(cfg, direction)
     return {
         "size": 0,
         "track_total_hits": False,
-        "query": es_filter(cfg, ip, direction, start, end, exclude, peers=peers),
+        "query": es_filter(cfg, ip, direction, start, end, exclude, peers=peers, scope=scope),
         "aggs": {"peers": {"terms": {"field": peer_field, "size": max(len(peers), 1)},
                            "aggs": _detail_aggs(cfg)}},
     }
 
 
-def es_flows_body(cfg, src, dst, start, end, offset, size):
+def es_flows_body(cfg, src, dst, start, end, offset, size, scope=None):
     """One page of the flows src -> dst that started within [start, end], oldest first."""
     return {
         "from": offset,
@@ -231,7 +235,7 @@ def es_flows_body(cfg, src, dst, start, end, offset, size):
         "fields": [{"field": cfg.f_ts, "format": "strict_date_optional_time"}, cfg.f_sport,
                    cfg.f_dport, cfg.f_proto, cfg.f_duration, *cfg.f_packets, *cfg.f_bytes,
                    *([cfg.f_service] if cfg.f_service else [])],
-        "query": es_filter(cfg, src, "out", start, end, [], peers=[dst]),
+        "query": es_filter(cfg, src, "out", start, end, [], peers=[dst], scope=scope),
     }
 
 

@@ -42,7 +42,7 @@ class _Conn:
     it is settled when it closes (flows)."""
     __slots__ = ("orig", "oport", "resp", "rport", "proto", "start", "last", "packets",
                  "bytes", "source", "closing", "first_flags", "other_flags", "time_flip",
-                 "oall", "rall", "code")
+                 "oall", "rall", "code", "ftp")
 
     def __init__(self, orig, oport, resp, rport, proto, ts, source, flags):
         self.orig, self.oport, self.resp, self.rport = orig, oport, resp, rport
@@ -54,6 +54,7 @@ class _Conn:
         self.first_flags, self.other_flags, self.time_flip = flags, None, None
         self.oall = self.rall = 0          # all of each side's flags, ORed together
         self.code = 0                      # the protocol the first recognized payload showed
+        self.ftp = None                    # FTP control messages seen (see FlowTracker._ftp)
 
     def answer(self, ts, flags):
         """The other side's first packet, at `ts` with `flags`. If it came at another time than
@@ -76,12 +77,29 @@ class _Conn:
                         protocols.name(self.proto, self.code, server, client))
 
 
+def _ftp_port_side(conn):
+    """The side of `conn` on an FTP port (21, 2811), if exactly one is."""
+    o, r = conn.oport in protocols.FTP_PORTS, conn.rport in protocols.FTP_PORTS
+    if o == r:
+        return None
+    return (conn.orig, conn.oport) if o else (conn.resp, conn.rport)
+
+
+# Data connections FTP control connections may announce at once, as Zeek caps them
+# (FTP::max_expected_data_channels).
+MAX_EXPECTED = 100_000
+
+
 class FlowTracker:
     """Groups packets into connections, keyed by protocol and both endpoints.
 
     A connection ends after its idle timeout, on a TCP RST, or when a new SYN arrives after
     a FIN. Who started it is decided by time, then flags, then ports (see _Conn). Refused
     connections are counted, not kept.
+
+    FTP data connections are named FTP as Zeek names them: an FTP control connection
+    announces one (PORT/EPRT, or a 227/229 reply), and the first connection to the announced
+    address and port from the expected side within FTP_DATA_WAIT is it.
     """
 
     def __init__(self):
@@ -90,8 +108,9 @@ class FlowTracker:
         self.refused = 0
         self.now = 0.0
         self.next_sweep = 0.0
+        self.expected = {}   # (host, port) -> (who connects to it, until when): FTP data
 
-    def add(self, ts, src, dst, proto, sport, dport, nbytes, flags, source, code=0):
+    def add(self, ts, src, dst, proto, sport, dport, nbytes, flags, source, code=0, note=None):
         if ts > self.now:
             self.now = ts
         if self.now >= self.next_sweep:
@@ -106,7 +125,11 @@ class FlowTracker:
             conn = None
         if conn is None:
             conn = self.open[key] = _Conn(src, sport, dst, dport, proto, ts, source, flags)
-        if code and not conn.code:
+            if self.expected and proto == "tcp" and self._announced(ts, src, sport, dst, dport):
+                conn.code = protocols.FTP
+        if code >= protocols.FTP_GREETING:
+            self._ftp(conn, ts, src, sport, code, note)
+        elif code and not conn.code:
             conn.code = code
         if (src, sport) == (conn.orig, conn.oport):
             conn.oall |= flags
@@ -130,6 +153,47 @@ class FlowTracker:
         idle = [k for k, c in self.open.items() if self.now - c.last > idle_timeout(c.proto)]
         for key in idle:
             self._close(key)
+        for spot in [k for k, (_, until) in self.expected.items() if until < self.now]:
+            del self.expected[spot]
+
+    def _ftp(self, conn, ts, src, sport, code, note):
+        """An FTP control message from (src, sport) on `conn`. The control connection is one on
+        an FTP port, or one where a side greeted (120/220) and answered a login (230/331) and
+        the other sent USER (Zeek's signature). Its client's PORT/EPRT and its server's 227/229
+        announce a data connection."""
+        side = (src, sport)
+        state = conn.ftp = conn.ftp or {}
+        if code in (protocols.FTP_GREETING, protocols.FTP_LOGIN, protocols.FTP_USER):
+            state.setdefault(code, side)
+            server = state.get(protocols.FTP_GREETING)
+            if server and state.get(protocols.FTP_LOGIN) == server and \
+                    state.get(protocols.FTP_USER) not in (None, server):
+                state["server"] = server
+                conn.code = conn.code or protocols.FTP
+            return
+        server = state.get("server") or _ftp_port_side(conn)
+        if server is None:
+            return
+        client = (conn.resp, conn.rport) if server == (conn.orig, conn.oport) else (conn.orig, conn.oport)
+        host, port = note
+        if code == protocols.FTP_PORT and side == client:       # the server connects to it
+            self._expect(host, port, server[0], ts)
+        elif code == protocols.FTP_PASV and side == server:     # the client connects to it
+            self._expect(host or server[0], port, client[0], ts)
+
+    def _expect(self, host, port, by, ts):
+        if (host, port) in self.expected or len(self.expected) < MAX_EXPECTED:
+            self.expected[(host, port)] = (by, ts + protocols.FTP_DATA_WAIT)
+
+    def _announced(self, ts, src, sport, dst, dport):
+        """Whether a new connection is an announced FTP data connection, its first packet
+        seen either way; an announcement is used once."""
+        for spot, by in (((dst, dport), src), ((src, sport), dst)):
+            hit = self.expected.get(spot)
+            if hit and hit[0] == by and ts <= hit[1]:
+                del self.expected[spot]
+                return True
+        return False
 
     def _close(self, key):
         flows = self.open.pop(key).flows()
@@ -230,16 +294,18 @@ def record_dns(payload, ts, dns):
 REPORT_EVERY = 4096   # packets between progress reports
 
 
-def _decoded(path, dns, counts, report=None):
+def _decoded(path, dns, counts, report=None, notes=None):
     """The IP packets of one capture as (ts, IP version, IP protocol, src, dst, sport, dport,
-    IP-layer bytes, TCP flags), with the addresses as packed bytes. DNS answers over UDP go
-    into `dns` unless it is None. `report` is called with the bytes read since its last call."""
+    IP-layer bytes, TCP flags, protocol code), with the addresses as packed bytes. DNS answers
+    over UDP go into `dns` unless it is None. A data connection an FTP control message
+    announces goes into `notes` as {packet's index: (host, port)}. `report` is called with the
+    bytes read since its last call."""
     with open(path, "rb") as fh:
         reader = _open(fh, path)
         decode = _DECODERS.get(reader.datalink())
         if decode is None:
             raise SourceError(f"{path}: unsupported link type {reader.datalink()}")
-        offset = 0
+        offset, index = 0, 0
         for ts, buf in _packets(reader, counts):
             counts.packets += 1
             if report and not counts.packets % REPORT_EVERY:
@@ -266,6 +332,12 @@ def _decoded(path, dns, counts, report=None):
             if isinstance(t, dpkt.tcp.TCP):
                 sport, dport, flags = t.sport, t.dport, t.flags
                 code = protocols.from_payload(True, sport, dport, t.data)
+                if not code:
+                    signal = protocols.ftp_signal(t.data)
+                    if signal:
+                        code = signal[0]
+                        if signal[2] is not None and notes is not None:
+                            notes[index] = signal[1:]
             elif isinstance(t, dpkt.udp.UDP):
                 sport, dport, flags = t.sport, t.dport, 0
                 code = protocols.from_payload(False, sport, dport, t.data)
@@ -283,6 +355,7 @@ def _decoded(path, dns, counts, report=None):
             else:
                 sport = dport = flags = 0
             yield ts, version, ip.p, ip.src, ip.dst, sport, dport, nbytes, flags, code
+            index += 1
         if report:
             report(fh.tell() - offset)
 
@@ -302,10 +375,10 @@ class _Hosts:
         return name
 
 
-def _track(tracker, packets, path, hosts):
-    for ts, version, p, src, dst, sport, dport, nbytes, flags, code in packets:
+def _track(tracker, packets, path, hosts, notes):
+    for i, (ts, version, p, src, dst, sport, dport, nbytes, flags, code) in enumerate(packets):
         tracker.add(ts, hosts(version, src), hosts(version, dst), proto_name(p), sport, dport,
-                    nbytes, flags, path, code)
+                    nbytes, flags, path, code, notes.get(i) if notes else None)
 
 
 def _logged(path, counts):
@@ -315,18 +388,20 @@ def _logged(path, counts):
 
 
 # A decoded packet as worker processes pass it back (see _decoded): addresses in 16 bytes,
-# an IPv4 address in the first 4; the last byte is the payload's protocol code.
+# an IPv4 address in the first 4; the last byte is the payload's protocol code, or what an
+# FTP control message says (its announcement, if any, is kept apart: _decode_file's notes).
 _PACKED = struct.Struct("<dBB16s16sHHIBB")
 
 
 def _decode_file(path, want_dns):
-    """In a worker process: one capture's packets, packed, with its DNS answers and counts."""
+    """In a worker process: one capture's packets, packed, with its DNS answers, the FTP data
+    connections announced in it, and counts."""
     dns = {} if want_dns else None
-    counts = _Counts()
+    counts, notes = _Counts(), {}
     packed = bytearray()
-    for packet in _decoded(path, dns, counts):
+    for packet in _decoded(path, dns, counts, notes=notes):
         packed += _PACKED.pack(*packet)
-    return packed, dns, counts
+    return packed, dns, counts, notes
 
 
 def _merge_dns(dns, more):
@@ -354,22 +429,24 @@ def read_pcaps(paths, dns=None, workers=1, stage=None):
     packets = 0
     if workers <= 1 or len(files) <= 1:
         for i, path in enumerate(files, 1):
-            counts = _Counts()
+            counts, notes = _Counts(), {}
             note = f"file {i} of {len(files)}"
             _track(tracker, _decoded(path, dns, counts,
-                                     lambda n: stage(n, f"{note}, {packets + counts.packets:,} packets")),
-                   path, hosts)
+                                     lambda n: stage(n, f"{note}, {packets + counts.packets:,} packets"),
+                                     notes),
+                   path, hosts, notes)
             packets += counts.packets
             _logged(path, counts)
         return tracker.finish()
     decoded = in_order(_decode_file, files, workers, dns is not None)
-    for i, (path, (packed, file_dns, counts)) in enumerate(decoded, 1):
+    for i, (path, (packed, file_dns, counts, notes)) in enumerate(decoded, 1):
         if dns is not None:
             _merge_dns(dns, file_dns)
         size, n = os.path.getsize(path), len(packed) // _PACKED.size
         note = f"file {i} of {len(files)}, {packets + counts.packets:,} packets"
         progress = (lambda k: stage(size * k / n, note)) if n else (lambda k: None)
-        _track(tracker, counted(_PACKED.iter_unpack(packed), progress, REPORT_EVERY), path, hosts)
+        _track(tracker, counted(_PACKED.iter_unpack(packed), progress, REPORT_EVERY), path, hosts,
+               notes)
         if not n:
             stage(size, note)
         packets += counts.packets

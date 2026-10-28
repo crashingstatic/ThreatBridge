@@ -68,7 +68,7 @@ try {
   await page.mouse.click(root.x, root.y, { button: "right" });
   await menuClick("Expand inbound: who connected to it (past)");
   await page.waitForFunction(() => document.querySelectorAll("#protocol option").length === 4);
-  assert.deepEqual(await protocolOptions(), [["", "All"], ["dce_rpc", "DCE/RPC"], ["http", "HTTP"], ["smb", "SMB"]]);
+  assert.deepEqual(await protocolOptions(), [["", "All"], ["dce_rpc", "DCE-RPC"], ["http", "HTTP"], ["smb", "SMB"]]);
   assert.equal(await page.inputValue("#protocol"), "smb");
   await remap();                                                    // mapping again keeps the choice
   assert.equal(await page.inputValue("#protocol"), "smb");
@@ -78,7 +78,7 @@ try {
   await page.unroute("**/api/neighbors?*");
   await remap();
   await page.waitForFunction(() => document.querySelector("#protocol option[value=dce_rpc]")?.textContent ===
-                                   "DCE/RPC (not on the map)");
+                                   "DCE-RPC (not on the map)");
   assert.equal(await page.inputValue("#protocol"), "dce_rpc");
   assert.equal(await cyEval(() => window.threatbridge.cy.edges().not(".proto-dim").length), 0);
   await page.selectOption("#protocol", "smb");

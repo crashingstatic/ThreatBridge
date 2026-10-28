@@ -504,3 +504,92 @@ def test_matches_brute_force(seed):
                          (-bounds[1], -bounds[0]))
     del expect[b]
     assert {h: r.hops[h] for h in r.via} == expect
+
+
+# ---- suspect flows (D16): the lines into and out of marked hosts --------------------------
+
+M = 60.0   # a minute
+
+
+def suspect_set(flows, marks, window=W, max_hops=6, blocked=frozenset(), bounds=(-INF, INF)):
+    """The suspect flows, as (src, dst, start)."""
+    found = analysis.suspects(build_graph(flows), marks, window, max_hops, blocked, bounds)
+    return {(x.src, x.dst, x.start) for x in flows
+            if any(lo <= x.start <= hi for lo, hi in found.get((x.src, x.dst), []))}
+
+
+T0 = 10 * H
+# The user story's timeline: E -> A -> X -> B, X -> C, then B -> F and A -> Y.
+STORY = [f("E", "A", T0), f("A", "X", T0 + 5 * M), f("X", "B", T0 + 10 * M), f("X", "C", T0 + 15 * M),
+         f("B", "F", T0 + 20 * M), f("A", "Y", T0 + 30 * M)]
+
+
+def flows_named(*names):
+    return {(x.src, x.dst, x.start) for x in STORY if f"{x.src}{x.dst}" in names}
+
+
+def test_marks_keep_every_flow_after_the_attacker_reached_them():
+    # Marks A and B: how the attacker got to each, and every flow after it reached them (option c).
+    assert suspect_set(STORY, {"A": None, "B": None}) == flows_named("EA", "AX", "XB", "XC", "BF", "AY")
+    # Marks B and C: both lines in, and where B and C went next.
+    assert suspect_set(STORY, {"B": None, "C": None}) == flows_named("EA", "AX", "XB", "XC", "BF")
+    # B alone, reached at 10:10: the line in, and B's flow 10 minutes later.
+    assert suspect_set(STORY, {"B": T0 + 10 * M}) == flows_named("EA", "AX", "XB", "BF")
+
+
+def test_a_reached_time_bounds_both_lines():
+    # A reached at 10:00: the line in must arrive by then, the line out leave within the Window.
+    assert suspect_set(STORY, {"A": T0}) == flows_named("EA", "AX", "XB", "XC", "BF", "AY")
+    assert suspect_set(STORY, {"A": T0 - 1}) == flows_named("AX", "XB", "XC", "BF", "AY")   # E -> A came after
+    assert suspect_set(STORY, {"A": T0}, window=20 * M) == flows_named("EA", "AX", "XB", "XC", "BF")
+    # The Window between hops: X -> C 10 minutes after A -> X breaks a 4-minute window.
+    assert suspect_set(STORY, {"C": None}, window=4 * M) == flows_named("XC")
+
+
+def test_hop_limit_excludes_and_time_range():
+    chain = [f(f"h{i}", f"h{i + 1}", T0 + i * M) for i in range(8)]
+    assert suspect_set(chain, {"h8": None}, max_hops=6) == {(x.src, x.dst, x.start) for x in chain[2:]}
+    assert suspect_set(chain, {"h0": None}, max_hops=3) == {(x.src, x.dst, x.start) for x in chain[:3]}
+    # An excluded host is never reached, so nothing beyond it, nor its own flows, count.
+    assert suspect_set(chain, {"h8": None}, blocked={"h5"}) == {(x.src, x.dst, x.start) for x in chain[6:]}
+    assert suspect_set(chain, {"h5": None}, blocked={"h5"}) == set()
+    assert suspect_set(chain, {"h8": None}, bounds=(T0 + 4 * M, INF)) == {(x.src, x.dst, x.start) for x in chain[4:]}
+    assert suspect_set(chain, {"nowhere": None}) == set()
+
+
+def brute_force_suspects(flows, marks, window, max_hops):
+    """Every hop of every time-ordered chain (each hop no earlier than the one before, and
+    within `window` of it) of at most max_hops hops that ends at a marked host by its time,
+    or starts at one within `window` after its time."""
+    out = set()
+
+    def extend(chain):
+        if chain:
+            first, last = chain[0], chain[-1]
+            t = marks.get(last.dst, "-")
+            if t != "-" and (t is None or last.start <= t):
+                out.update((x.src, x.dst, x.start) for x in chain)
+            t = marks.get(first.src, "-")
+            if t != "-" and (t is None or t <= first.start <= t + window):
+                out.update((x.src, x.dst, x.start) for x in chain)
+        if len(chain) == max_hops:
+            return
+        for x in flows:
+            if x.src == x.dst:
+                continue
+            if not chain or (x.src == chain[-1].dst and chain[-1].start <= x.start <= chain[-1].start + window):
+                extend(chain + [x])
+
+    extend([])
+    return out
+
+
+@pytest.mark.parametrize("seed", range(200))
+def test_suspects_against_brute_force(seed):
+    rng = random.Random(seed)
+    names = [f"h{i}" for i in range(6)]
+    flows = list({(a, b, t): f(a, b, t) for a, b, t in
+                  ((rng.choice(names), rng.choice(names), float(rng.randint(0, 40))) for _ in range(rng.randint(3, 14)))}.values())
+    marks = {h: rng.choice([None, float(rng.randint(0, 40))]) for h in rng.sample(names, rng.randint(1, 3))}
+    window, hops = float(rng.choice([3, 8, 20])), rng.choice([1, 2, 3])
+    assert suspect_set(flows, marks, window, hops) == brute_force_suspects(flows, marks, window, hops)
