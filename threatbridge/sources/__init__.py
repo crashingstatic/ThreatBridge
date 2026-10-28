@@ -32,6 +32,15 @@ def _being_written(path):
     return os.path.basename(path).startswith("nfcapd.current.")  # by a running nfcapd
 
 
+def _problem(path, kind):
+    """Why a file of this kind can't be read as evidence, or None if it can."""
+    if not kind:
+        return "not a pcap or nfcapd file"
+    if kind == "nfcapd" and _being_written(path):
+        return "nfcapd is still being written to; use the files it has already rotated"
+    return None
+
+
 def _files(paths):
     """(path, named_explicitly) for each file, walking directories recursively (hidden files
     and directories left out)."""
@@ -59,17 +68,13 @@ def find(paths):
             continue
         seen.add(real)
         k = _kind(path)
-        if k == "nfcapd" and _being_written(path):
-            if explicit:
-                raise SourceError(f"{path}: nfcapd is still being written to; "
-                                  "use the files it has already rotated")
-            log.info("skipping %s: nfcapd is still writing it", path)
-        elif k:
+        problem = _problem(path, k)
+        if not problem:
             found[k].append(path)
         elif explicit:
-            raise SourceError(f"{path}: not a pcap or nfcapd file")
+            raise SourceError(f"{path}: {problem}")
         else:
-            log.info("skipping %s: not a pcap or nfcapd file", path)
+            log.info("skipping %s: %s", path, problem)
     if not found["pcap"] and not found["nfcapd"]:
         raise SourceError("no pcap or nfcapd files found in: " + ", ".join(paths))
     return found

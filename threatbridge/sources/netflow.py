@@ -94,6 +94,19 @@ class _Conn:
         self.reverse_seen = self.tie = False
         self.oflags = self.rflags = 0      # each half's TCP flags, ORed together (0: not seen)
 
+    def see(self, record):
+        """Count one of its records, from either side."""
+        start, end, _, src, sport, _, _, packets, nbytes, flags = record[:10]
+        if (src, sport) == (self.orig, self.oport):
+            self.oflags |= flags
+        else:
+            self.tie = self.tie or (not self.reverse_seen and start == self.start)
+            self.reverse_seen = True
+            self.rflags |= flags
+        self.packets += packets
+        self.bytes += nbytes
+        self.last = max(self.last, end)
+
     def flows(self):
         """As flows (see model.oriented); none if it was refused. Time decides who started the
         connection when both halves were recorded and one started first: records are taken in
@@ -122,7 +135,7 @@ def pair_records(records):
         left_out += not out             # refused
 
     for rec in sorted(records, key=lambda r: r[0]):
-        start, end, proto, src, sport, dst, dport, packets, nbytes, flags, source = rec
+        start, _, proto, src, sport, dst, dport, *_, source = rec
         key = (proto, src, sport, dst, dport) if (src, sport) <= (dst, dport) \
             else (proto, dst, dport, src, sport)
         conn = open_.get(key)
@@ -131,17 +144,7 @@ def pair_records(records):
             conn = None
         if conn is None:
             conn = open_[key] = _Conn(rec, source)
-        if (src, sport) == (conn.orig, conn.oport):
-            conn.oflags |= flags
-        else:
-            if not conn.reverse_seen and start == conn.start:
-                conn.tie = True
-            conn.reverse_seen = True
-            conn.rflags |= flags
-        conn.packets += packets
-        conn.bytes += nbytes
-        if end > conn.last:
-            conn.last = end
+        conn.see(rec)
     for c in open_.values():
         close(c)
     if left_out:

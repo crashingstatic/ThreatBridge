@@ -353,22 +353,20 @@ def parse(text):
 
 def combine(texts):
     """The analyst's filters, all of which a flow must pass: a Filter, or None for none."""
-    if texts is None:
-        return None
-    if not isinstance(texts, list) or not all(isinstance(t, str) for t in texts):
+    if texts is not None and (not isinstance(texts, list) or not all(isinstance(t, str) for t in texts)):
         raise FilterError("filters are a list of expressions")
+    if not texts:
+        return None
     if len(texts) > MAX_FILTERS:
         raise FilterError(f"at most {MAX_FILTERS} filters at once")
+    if len(texts) == 1:
+        return parse(texts[0])
     found = []
-    for i, text in enumerate(texts, 1):
+    for i, text in enumerate(texts, 1):        # which one is wrong, when there are several
         try:
             found.append(parse(text))
         except FilterError as e:
-            raise FilterError(f"filter {i} ({text.strip()[:60]!r}) {e}" if len(texts) > 1 else str(e))
-    if not found:
-        return None
-    if len(found) == 1:
-        return found[0]
+            raise FilterError(f"filter {i} ({text.strip()[:60]!r}) {e}")
     return Filter(" AND ".join(f"({f.text})" for f in found), ("and", [f.core for f in found]))
 
 

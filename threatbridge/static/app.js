@@ -329,13 +329,16 @@
     if (!say) return res;
     relayout();
     hidingDue();
-    const which = res.order === "top" ? "top" : "rarest";
-    let msg = `${res.ip}: showing ${which} ${res.peers.length}`;
+    setStatus(expansionText(res), false, res.truncated);
+    return res;
+  }
+
+  function expansionText(res) {
+    let msg = `${res.ip}: showing ${res.order === "top" ? "top" : "rarest"} ${res.peers.length}`;
     if (res.distinct_peers != null) msg += ` of ${res.distinct_peers} distinct peer(s)`;
     msg += res.start <= res.end ? `, ${res.start} → ${res.end}` : " — the window is outside the time range";
     if (res.truncated) msg += " — WARNING: scan hit the peer cap; rarest list may be incomplete";
-    setStatus(msg, false, res.truncated);
-    return res;
+    return msg;
   }
 
   // Map: a fresh map, with the shared marks again (D19) and the filters still applied.
@@ -684,7 +687,7 @@
       throw err;
     });
     if (!filters.includes(r.filter)) {
-      if (filters.length >= (cfg.max_filters || 20)) throw new Error(`At most ${cfg.max_filters || 20} filters at once`);
+      if (filters.length >= maxFilters()) throw new Error(`At most ${maxFilters()} filters at once`);
       filters.push(r.filter);
       renderFilters();
       await requery();
@@ -1016,25 +1019,33 @@
     cy.batch(() => {
       cy.elements().removeClass("mark-hidden suspect");
       for (const e of cy.edges()) if (e.data("kept")) { e.removeData("kept"); e.data(shown(e.data("full"))); }
-      if (!entries) return;
-      const affected = new Set();
-      for (const x of entries) {
-        const e = cy.getElementById(`${x.source}->${x.target}`);
-        if (e.empty() || x.status === "unaffected") continue;
-        affected.add(x.source); affected.add(x.target);
-        if (x.status === "hidden") { e.addClass("mark-hidden"); continue; }
-        e.data(Object.assign(shown(x), { kept: { marked: x.marked, suspect: x.suspect, within: x.within } }));
-        if (!x.marked) e.addClass("suspect");
-      }
-      for (const n of cy.nodes()) {
-        if (affected.has(n.id()) && !compromised.has(n.id()) && !n.data("root") &&
-            n.connectedEdges().not(".mark-hidden").empty()) n.addClass("mark-hidden");
-      }
+      if (entries) hideStranded(hideEdges(entries));
     });
     const hidden = cy.edges(".mark-hidden").length;
     $("hidden-note").textContent = hidden ? `${hidden} connection(s) hidden by marks` : "";
     if (hiddenNow() !== before) relayout();
     refreshProtocols();
+  }
+
+  // Hide or narrow each connection the marks affect; the hosts at their ends.
+  function hideEdges(entries) {
+    const affected = new Set();
+    for (const x of entries) {
+      const e = cy.getElementById(`${x.source}->${x.target}`);
+      if (e.empty() || x.status === "unaffected") continue;
+      affected.add(x.source); affected.add(x.target);
+      if (x.status === "hidden") { e.addClass("mark-hidden"); continue; }
+      e.data(Object.assign(shown(x), { kept: { marked: x.marked, suspect: x.suspect, within: x.within } }));
+      if (!x.marked) e.addClass("suspect");
+    }
+    return affected;
+  }
+
+  function hideStranded(affected) {
+    for (const n of cy.nodes()) {
+      if (affected.has(n.id()) && !compromised.has(n.id()) && !n.data("root") &&
+          n.connectedEdges().not(".mark-hidden").empty()) n.addClass("mark-hidden");
+    }
   }
 
   // ---- attack paths between marked hosts -------------------------------------------------
@@ -1241,20 +1252,20 @@
   }
 
   const isText = (v) => typeof v === "string";
+  const isMap = (doc) => doc && (doc.version === 1 || doc.version === MAP_VERSION) &&
+    Array.isArray(doc.nodes) && Array.isArray(doc.edges);
+  const maxFilters = () => cfg.max_filters || 20;     // 20: the server's, if /api/config failed
 
   // Open a map document: draw it as saved, with its toolbar, filters and queries, and its own
   // marks, shown until shared (D19).
   async function openMap(doc, what) {
-    if (!doc || (doc.version !== 1 && doc.version !== MAP_VERSION) || !Array.isArray(doc.nodes) ||
-        !Array.isArray(doc.edges)) {
-      throw new Error(`${what} is not a ThreatBridge map`);
-    }
+    if (!isMap(doc)) throw new Error(`${what} is not a ThreatBridge map`);
     cy.elements().remove();
     const settings = doc.settings || {};
     for (const id of SETTINGS) if (isText(settings[id])) $(id).value = settings[id];
     iocTime = isText(doc.iocTime) ? doc.iocTime : null;
     drawSaved(doc);
-    filters = doc.version !== 1 && Array.isArray(doc.filters) ? doc.filters.filter(isText).slice(0, cfg.max_filters || 20) : [];
+    filters = doc.version !== 1 && Array.isArray(doc.filters) ? doc.filters.filter(isText).slice(0, maxFilters()) : [];
     renderFilters();
     queries = savedQueries(doc);
     localMap = what;
@@ -1271,20 +1282,19 @@
   // A saved map's hosts, where they were, and its connections, with their highlights; what
   // isn't well formed is left out.
   function drawSaved(doc) {
+    const onMap = (id) => isText(id) && cy.getElementById(id).nonempty();
     cy.batch(() => {
-      for (const n of doc.nodes) {
-        if (!isText(n.id) || !n.id || cy.getElementById(n.id).nonempty()) continue;
-        const data = pick(n, NODE_FIELDS);
-        const p = n.position || {};
-        const node = addNode(n.id, data.anchor || null, data);
-        node.position(Number.isFinite(p.x) && Number.isFinite(p.y) ? { x: p.x, y: p.y } : { x: 0, y: 0 });
-        highlight(node, n.classes);
-      }
-      for (const e of doc.edges) {
-        if (isText(e.source) && isText(e.target) && cy.getElementById(e.source).nonempty() &&
-            cy.getElementById(e.target).nonempty()) highlight(savedEdge(e), e.classes);
-      }
+      for (const n of doc.nodes) if (isText(n.id) && n.id && !onMap(n.id)) savedHost(n);
+      for (const e of doc.edges) if (onMap(e.source) && onMap(e.target)) highlight(savedEdge(e), e.classes);
     });
+  }
+
+  function savedHost(n) {
+    const data = pick(n, NODE_FIELDS);
+    const p = n.position || {};
+    const node = addNode(n.id, data.anchor || null, data);
+    node.position(Number.isFinite(p.x) && Number.isFinite(p.y) ? { x: p.x, y: p.y } : { x: 0, y: 0 });
+    highlight(node, n.classes);
   }
 
   function savedEdge(e) {
@@ -1394,25 +1404,29 @@
 
   // ---- bootstrap from URL (Security Onion action link) ----------------------
   (async function init() {
-    try {
-      cfg = await getJSON("/api/config");
-      $("window").value = cfg.default_window;
-      $("limit").value = cfg.default_limit;
-      if (cfg.case) {
-        $("ts").placeholder = "blank = end of data (inbound) / start (outbound)";
-        $("range-from").placeholder = "blank = start of data";
-        $("range-to").placeholder = "blank = end of data";
-        setStatus(`Case: ${cfg.case.flows} flows between ${cfg.case.hosts} hosts, ` +
-                  `${cfg.case.start} → ${cfg.case.end}`);
-      }
-    } catch (_) { /* keep HTML defaults */ }
+    try { applyConfig(await getJSON("/api/config")); } catch (_) { /* keep HTML defaults */ }
     getJSON("/api/excludes").then(renderExcludes).catch(() => {});
     $("paths").hidden = !cfg.analysis;
     $("routes").hidden = !cfg.analysis;
     try { showShared(await getJSON("/api/compromised"), true); } catch (_) { /* none */ }
     setInterval(pollMarks, (cfg.marks_poll || 5) * 1000);
     getJSON("/api/sessions").then((r) => renderSessions(r.sessions)).catch(() => {});
-    // The map a link names (rememberInUrl): its fields, and a choice only if it is one.
+    openLinked();
+  })();
+
+  function applyConfig(config) {
+    cfg = config;
+    $("window").value = cfg.default_window;
+    $("limit").value = cfg.default_limit;
+    if (!cfg.case) return;
+    $("ts").placeholder = "blank = end of data (inbound) / start (outbound)";
+    $("range-from").placeholder = "blank = start of data";
+    $("range-to").placeholder = "blank = end of data";
+    setStatus(`Case: ${cfg.case.flows} flows between ${cfg.case.hosts} hosts, ${cfg.case.start} → ${cfg.case.end}`);
+  }
+
+  // The map a link names (rememberInUrl): its fields, and a choice only if it is one.
+  function openLinked() {
     const q = new URLSearchParams(location.search);
     const fields = { ip: "ip", ts: "ts", window: "window", range_from: "range-from", range_to: "range-to" };
     for (const [param, id] of Object.entries(fields)) if (q.get(param)) $(id).value = q.get(param);
@@ -1420,5 +1434,5 @@
     if (["top", "bottom"].includes(q.get("order"))) $("order").value = q.get("order");
     if (q.get("ip")) start();
     else refreshPaths(true).catch((e) => fail(e));
-  })();
+  }
 })();

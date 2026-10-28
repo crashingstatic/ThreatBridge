@@ -117,38 +117,47 @@ _FTP_EPRT = re.compile(rb" *EPRT +([!-~])([12])\1([0-9A-Fa-f.:]+)\1(\d{1,5})\1",
 _FTP_229 = re.compile(rb" *229[ -][^\r\n]*?\(([!-~])\1\1(\d{1,5})\1\)")
 
 
+def _six_numbers(code):
+    """A reader for PORT and 227: an address and port as six numbers, each 0 to 255."""
+    def read(m):
+        *octets, p1, p2 = (int(x) for x in m.groups())
+        port = p1 * 256 + p2
+        return (code, ".".join(map(str, octets)), port) if max(*octets, p1, p2) <= 255 and port else None
+    return read
+
+
+def _eprt(m):
+    family = socket.AF_INET if m.group(2) == b"1" else socket.AF_INET6
+    try:
+        host = socket.inet_ntop(family, socket.inet_pton(family, m.group(3).decode()))
+    except (OSError, ValueError):
+        return None
+    port = int(m.group(4))
+    return (FTP_PORT, host, port) if 0 < port < 65536 else None
+
+
+def _epsv(m):
+    port = int(m.group(2))
+    return (FTP_PASV, None, port) if 0 < port < 65536 else None
+
+
+# Each FTP control message ftp_signal knows, tried in turn, with what reads it.
+_FTP_MESSAGES = ((_FTP_PORT, _six_numbers(FTP_PORT)), (_FTP_227, _six_numbers(FTP_PASV)), (_FTP_EPRT, _eprt),
+                 (_FTP_229, _epsv), (_FTP_GREETING, lambda m: (FTP_GREETING, None, None)),
+                 (_FTP_LOGIN, lambda m: (FTP_LOGIN, None, None)), (_FTP_USER, lambda m: (FTP_USER, None, None)))
+
+
 def ftp_signal(data):
     """What a TCP payload says if it is an FTP control message: (code, host, port), with a
     code from FTP_GREETING to FTP_PASV and, for a data connection announced (FTP_PORT,
-    FTP_PASV), its address (None: the control connection's server) and port; or None.
-
-    Tried in turn: PORT and 227 (an address and port as six numbers), EPRT, 229 (a port
-    only), then the greeting, the answer to a login, and USER."""
+    FTP_PASV), its address (None: the control connection's server) and port; or None. The
+    first message that matches decides, even if its numbers are out of range."""
     if not data or data[0] not in _FTP_FIRST:       # a quick no for most payloads
         return None
-    m = _FTP_PORT.match(data) or _FTP_227.match(data)
-    if m:
-        h1, h2, h3, h4, p1, p2 = (int(x) for x in m.groups())
-        if max(h1, h2, h3, h4, p1, p2) > 255 or not (p1 or p2):
-            return None
-        code = FTP_PORT if m.re is _FTP_PORT else FTP_PASV
-        return code, f"{h1}.{h2}.{h3}.{h4}", p1 * 256 + p2
-    m = _FTP_EPRT.match(data)
-    if m:
-        family = socket.AF_INET if m.group(2) == b"1" else socket.AF_INET6
-        try:
-            host = socket.inet_ntop(family, socket.inet_pton(family, m.group(3).decode()))
-        except (OSError, ValueError):
-            return None
-        port = int(m.group(4))
-        return (FTP_PORT, host, port) if 0 < port < 65536 else None
-    m = _FTP_229.match(data)
-    if m:
-        port = int(m.group(2))
-        return (FTP_PASV, None, port) if 0 < port < 65536 else None
-    for code, pattern in ((FTP_GREETING, _FTP_GREETING), (FTP_LOGIN, _FTP_LOGIN), (FTP_USER, _FTP_USER)):
-        if pattern.match(data):
-            return code, None, None
+    for pattern, read in _FTP_MESSAGES:
+        m = pattern.match(data)
+        if m:
+            return read(m)
     return None
 
 

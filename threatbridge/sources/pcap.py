@@ -56,6 +56,21 @@ class _Conn:
         self.code = 0                      # the protocol the first recognized payload showed
         self.ftp = None                    # FTP control messages seen (see FlowTracker._ftp)
 
+    def see(self, ts, side, flags, nbytes):
+        """A packet from `side` ((address, port)) at `ts`, with its TCP `flags` and size."""
+        if side == (self.orig, self.oport):
+            self.oall |= flags
+        else:
+            self.rall |= flags
+            if self.other_flags is None:
+                self.answer(ts, flags)
+        self.packets += 1
+        self.bytes += nbytes
+        if ts < self.start:             # comparisons: cheaper than min() and max() per packet
+            self.start = ts
+        elif ts > self.last:
+            self.last = ts
+
     def answer(self, ts, flags):
         """The other side's first packet, at `ts` with `flags`. If it came at another time than
         the first side's, time tells who started the connection: the side seen first."""
@@ -74,6 +89,16 @@ class _Conn:
         return oriented(flip, self.orig, self.oport, self.resp, self.rport, self.proto,
                         self.start, self.last, self.packets, self.bytes, self.source,
                         protocols.name(self.proto, self.code, server, client))
+
+
+def _ftp_signature(conn, state, code, side):
+    """Zeek's FTP signature: one side greeted and answered a login, and the other sent USER.
+    Once seen, `conn` is FTP and that side its server."""
+    state.setdefault(code, side)
+    server = state.get(protocols.FTP_GREETING)
+    if server and state.get(protocols.FTP_LOGIN) == server and state.get(protocols.FTP_USER) not in (None, server):
+        state["server"] = server
+        conn.code = conn.code or protocols.FTP
 
 
 def _ftp_port_side(conn):
@@ -119,6 +144,23 @@ class FlowTracker:
             self.next_sweep = self.now + SWEEP_EVERY
         key = (proto, src, sport, dst, dport) if (src, sport) <= (dst, dport) \
             else (proto, dst, dport, src, sport)
+        conn = self._conn(key, ts, src, sport, dst, dport, proto, flags, source)
+        if code >= protocols.FTP_GREETING:
+            self._ftp(conn, ts, src, sport, code, note)
+        elif code and not conn.code:
+            conn.code = code
+        conn.see(ts, (src, sport), flags, nbytes)
+        if proto != "tcp":
+            return
+        if flags & _RST:
+            self._close(key)
+        elif flags & _FIN:
+            conn.closing = True
+
+    def _conn(self, key, ts, src, sport, dst, dport, proto, flags, source):
+        """The connection a packet belongs to: the open one, unless it has been idle past its
+        timeout or this is a new SYN after a FIN; then a new one, an announced FTP data
+        connection if it is one."""
         conn = self.open.get(key)
         new_syn = proto == "tcp" and flags & _SYN and not flags & _ACK
         if conn is not None and (ts - conn.last > idle_timeout(proto) or (new_syn and conn.closing)):
@@ -128,27 +170,7 @@ class FlowTracker:
             conn = self.open[key] = _Conn(src, sport, dst, dport, proto, ts, source, flags)
             if self.expected and proto == "tcp" and self._announced(ts, src, sport, dst, dport):
                 conn.code = protocols.FTP
-        if code >= protocols.FTP_GREETING:
-            self._ftp(conn, ts, src, sport, code, note)
-        elif code and not conn.code:
-            conn.code = code
-        if (src, sport) == (conn.orig, conn.oport):
-            conn.oall |= flags
-        else:
-            conn.rall |= flags
-            if conn.other_flags is None:
-                conn.answer(ts, flags)
-        conn.packets += 1
-        conn.bytes += nbytes
-        if ts < conn.start:
-            conn.start = ts
-        if ts > conn.last:
-            conn.last = ts
-        if proto == "tcp":
-            if flags & _RST:
-                self._close(key)
-            elif flags & _FIN:
-                conn.closing = True
+        return conn
 
     def _sweep(self):
         """Close the idle connections, and forget the FTP announcements past their time."""
@@ -163,24 +185,23 @@ class FlowTracker:
         an FTP port, or one where a side greeted (120/220) and answered a login (230/331) and
         the other sent USER (Zeek's signature). Its client's PORT/EPRT and its server's 227/229
         announce a data connection."""
-        side = (src, sport)
         state = conn.ftp = conn.ftp or {}
         if code in (protocols.FTP_GREETING, protocols.FTP_LOGIN, protocols.FTP_USER):
-            state.setdefault(code, side)
-            server = state.get(protocols.FTP_GREETING)
-            if server and state.get(protocols.FTP_LOGIN) == server and \
-                    state.get(protocols.FTP_USER) not in (None, server):
-                state["server"] = server
-                conn.code = conn.code or protocols.FTP
-            return
+            _ftp_signature(conn, state, code, (src, sport))
+        else:
+            self._ftp_announcement(conn, state, code, (src, sport), note, ts)
+
+    def _ftp_announcement(self, conn, state, code, side, note, ts):
+        """A data connection a control connection's client (PORT/EPRT: the server will connect)
+        or server (227/229: the client will) announced at (host, port) `note`."""
         server = state.get("server") or _ftp_port_side(conn)
         if server is None:
             return
         client = (conn.resp, conn.rport) if server == (conn.orig, conn.oport) else (conn.orig, conn.oport)
         host, port = note
-        if code == protocols.FTP_PORT and side == client:       # the server connects to it
+        if code == protocols.FTP_PORT and side == client:
             self._expect(host, port, server[0], ts)
-        elif code == protocols.FTP_PASV and side == server:     # the client connects to it
+        elif code == protocols.FTP_PASV and side == server:
             self._expect(host or server[0], port, client[0], ts)
 
     def _expect(self, host, port, by, ts):
@@ -252,6 +273,27 @@ def _name(n):
     return n.rstrip(".").lower()
 
 
+def _follow_cnames(names, answers):
+    """Add to `names` every name a CNAME chain from them reaches, whatever order the answer
+    records come in."""
+    chained = True
+    while chained:
+        chained = False
+        for owner, rr in answers:
+            if rr.type == dpkt.dns.DNS_CNAME and owner in names and _name(rr.cname) not in names:
+                names.add(_name(rr.cname))
+                chained = True
+
+
+def _address(rr):
+    """An A or AAAA record's address, or None for any other record."""
+    if rr.type == dpkt.dns.DNS_A and len(rr.rdata) == 4:
+        return socket.inet_ntop(socket.AF_INET, rr.rdata)
+    if rr.type == dpkt.dns.DNS_AAAA and len(rr.rdata) == 16:
+        return socket.inet_ntop(socket.AF_INET6, rr.rdata)
+    return None
+
+
 def record_dns(payload, ts, dns):
     """Add the A/AAAA answers of a DNS response to `dns`: {name: {ip: [first, last]}}.
 
@@ -267,21 +309,8 @@ def record_dns(payload, ts, dns):
         return
     names = {_name(q.name) for q in msg.qd}
     answers = [(_name(rr.name), rr) for rr in msg.an]
-    chained = True
-    while chained:              # follow CNAMEs from the question, in any order they come
-        chained = False
-        for owner, rr in answers:
-            if rr.type == dpkt.dns.DNS_CNAME and owner in names and _name(rr.cname) not in names:
-                names.add(_name(rr.cname))
-                chained = True
-    ips = set()
-    for owner, rr in answers:
-        if owner not in names:
-            continue
-        if rr.type == dpkt.dns.DNS_A and len(rr.rdata) == 4:
-            ips.add(socket.inet_ntop(socket.AF_INET, rr.rdata))
-        elif rr.type == dpkt.dns.DNS_AAAA and len(rr.rdata) == 16:
-            ips.add(socket.inet_ntop(socket.AF_INET6, rr.rdata))
+    _follow_cnames(names, answers)
+    ips = {_address(rr) for owner, rr in answers if owner in names} - {None}
     names.discard("")
     _merge_dns(dns, {name: {ip: (ts, ts) for ip in ips} for name in names})
 

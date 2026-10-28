@@ -60,11 +60,8 @@ class SocClient:
         deleted, says something unexpected, or is still pending after `timeout` seconds."""
         deadline = self.clock() + self.timeout
         while True:
-            try:
-                job = self._call("get", f"/connect/job/{job_id}").json()
-            except ValueError:
-                job = None
-            status = job.get("status") if isinstance(job, dict) else None
+            job = self._job(job_id)
+            status = job.get("status")
             if status == COMPLETED:
                 return
             if status in (INCOMPLETE, DELETED):
@@ -77,6 +74,14 @@ class SocClient:
                 raise SocError(f"the sensor has not finished after {self.timeout} s; the job may "
                                f"still complete in SOC: {self.job_url(job_id)}")
             self.sleep(POLL_EVERY)
+
+    def _job(self, job_id):
+        """The job as SOC describes it; {} if the answer is not a JSON object."""
+        try:
+            job = self._call("get", f"/connect/job/{job_id}").json()
+        except ValueError:
+            return {}
+        return job if isinstance(job, dict) else {}
 
     # ---- talking to SOC -------------------------------------------------------------------
 

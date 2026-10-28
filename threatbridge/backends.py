@@ -334,31 +334,29 @@ class DemoBackend:
         return rng, rng.choice([1, 2, 3, rng.randint(4, 500)])
 
     def neighbors(self, ip, direction, start, end, limit, order, exclude, scope=None):
+        """Made-up peers, 3 to 12 for each host and direction, the same every time."""
         rng = self._rng(f"{ip}|{direction}")
         span = max((end - start).total_seconds(), 1)
-        nets = [ipaddress.ip_network(e) for e in exclude]
         seen = {}
         for _ in range(rng.randint(3, 12)):
             peer = f"10.{rng.randint(0, 3)}.{rng.randint(0, 9)}.{rng.randint(2, 30)}"
-            if peer == ip or peer in seen:
-                continue
-            _, count = self._pair(*((peer, ip) if direction == "in" else (ip, peer)))
-            a = start + timedelta(seconds=rng.uniform(0, span))
-            b = a if count == 1 else start + timedelta(seconds=rng.uniform(0, span))
-            seen[peer] = {
-                "peer": peer,
-                "count": count,
-                "first_seen": fmt_time(min(a, b)),
-                "last_seen": fmt_time(max(a, b)),
-                "ports": sorted(rng.sample(self.PORTS, rng.randint(1, 3))),
-            }
-            seen[peer]["protocols"] = sorted({protocols.name("tcp", 0, p, 0) for p in seen[peer]["ports"]})
-        peers = [p for p in seen.values()
-                 if not any(ipaddress.ip_address(p["peer"]) in n for n in nets)]
+            if peer != ip and peer not in seen:
+                seen[peer] = self._made_up(rng, ip, peer, direction, start, span)
+        excluded = _Excluded(exclude)
+        peers = [p for p in seen.values() if p["peer"] not in excluded]
         if scope is not None:     # count only the flows that pass, as the other backends do
             peers = [p for p in (self._scoped(ip, p, direction, scope) for p in peers) if p]
         peers.sort(key=lambda p: (-p["count"] if order == "top" else p["count"], p["peer"]))
         return {"peers": peers[:limit], "distinct_peers": len(peers), "truncated": False}
+
+    def _made_up(self, rng, ip, peer, direction, start, span):
+        """A peer as neighbors() reports it, with as many flows as _pair says."""
+        _, count = self._pair(*((peer, ip) if direction == "in" else (ip, peer)))
+        a = start + timedelta(seconds=rng.uniform(0, span))
+        b = a if count == 1 else start + timedelta(seconds=rng.uniform(0, span))
+        ports = sorted(rng.sample(self.PORTS, rng.randint(1, 3)))
+        return {"peer": peer, "count": count, "first_seen": fmt_time(min(a, b)), "last_seen": fmt_time(max(a, b)),
+                "ports": ports, "protocols": sorted({protocols.name("tcp", 0, p, 0) for p in ports})}
 
     def _scoped(self, ip, peer, direction, scope):
         """A peer as neighbors() reports it, counting only the flows that pass `scope`."""
@@ -416,6 +414,20 @@ def _summary(rows):
             "last_seen": rows[-1]["start"] if rows else None,
             "ports": _top_ports(Counter(r["dport"] for r in rows)),
             "protocols": sorted({p for r in rows for p in r["protocols"]})}
+
+
+def _line_nodes(a, b, start, end, up, down):
+    """A threat line's hosts: the conversation's own ("selected", at its own first and last flow,
+    not the rounding slack around them), then those up and down the line; one on both is "both"."""
+    nodes = {a: {"id": a, "role": "selected", "time": fmt_time(_utc(end)), "hops": 0},
+             b: {"id": b, "role": "selected", "time": fmt_time(_utc(start)), "hops": 0}}
+    for reach, role in ((up, "up"), (down, "down")):
+        for ip, hop in reach.via.items():
+            node = nodes.setdefault(ip, {"id": ip, "role": role, "time": fmt_time(_utc(hop.start)),
+                                         "hops": reach.hops[ip]})
+            if node["role"] not in ("selected", role):
+                node["role"] = "both"
+    return list(nodes.values())
 
 
 def _utc(epoch):
@@ -614,21 +626,10 @@ class CaseBackend:
             raise ValidationError(f"no flows from {a} to {b} in that time range")
         up, down = analysis.threat_line(g, a, b, first, last, window, max_hops,
                                         _Excluded(exclude), max_hosts, _epochs(bounds))
-        # The conversation's own first and last flow, not the rounding slack around them.
-        nodes = {a: {"id": a, "role": "selected", "time": fmt_time(_utc(end)), "hops": 0},
-                 b: {"id": b, "role": "selected", "time": fmt_time(_utc(start)), "hops": 0}}
-        for reach, role in ((up, "up"), (down, "down")):     # on both lines: "both"
-            for ip in reach.via:
-                node = nodes.get(ip)
-                if node is None:
-                    nodes[ip] = {"id": ip, "role": role,
-                                 "time": fmt_time(_utc(reach.via[ip].start)), "hops": reach.hops[ip]}
-                elif node["role"] not in ("selected", role):
-                    node["role"] = "both"
         edges = [dict(self._edge(a, b, [(first, last)], where), role="selected")]
         for reach, role in ((up, "up"), (down, "down")):
             edges += [dict(self._edge(s, d, iv, where), role=role) for s, d, iv in analysis.tree_edges(reach)]
-        return {"nodes": list(nodes.values()), "edges": edges,
+        return {"nodes": _line_nodes(a, b, start, end, up, down), "edges": edges,
                 "truncated": up.truncated or down.truncated}
 
     def attack_paths(self, compromised, window, max_hops, exclude, bounds=(None, None),
