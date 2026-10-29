@@ -1,0 +1,162 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: Unit tests (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: Install nfdump (nfcapd integration test)
+        run: sudo apt-get update -q && sudo apt-get install -y -q nfdump
+      - run: pip install -r requirements.txt -r requirements-test.txt
+      - run: python -m pytest -q
+
+  perf:
+    name: Performance (PRF-1/2/3)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt -r requirements-test.txt
+      - run: TB_PERF=1 python -m pytest -q -s tests/test_perf.py
+
+  shellcheck:
+    name: Shellcheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: shellcheck scripts/*.sh deploy/*.sh tests/*.sh
+
+  security:
+    name: Security scan (pip-audit, bandit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pip-audit bandit
+      - name: Known-vulnerable dependencies
+        run: pip-audit -r requirements.txt
+      - name: Python security lint (medium+ severity)
+        run: bandit -r threatbridge -ll
+
+  docker:
+    name: Docker build + mTLS
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      P12_PASS: ci-only-throwaway
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate throwaway PKI
+        run: |
+          scripts/make-certs.sh ca
+          scripts/make-certs.sh server localhost 127.0.0.1
+          scripts/make-certs.sh client ci-analyst
+      - name: Demo-backend config
+        run: printf 'TB_BACKEND=demo\nTB_SOC_URL=https://so.example\n' > deploy/threatbridge.env
+      - name: Build and start with deploy/run.sh
+        run: sudo SO_CA="$PWD/certs/ca.crt" deploy/run.sh
+      - name: Mutual TLS and CSRF checks
+        run: tests/mtls_check.sh https://localhost:5443 certs ci-analyst
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install --no-save playwright@1
+      - run: npx playwright install --with-deps chromium
+      - name: The map in a browser through mutual TLS
+        run: TB_URL=https://localhost:5443 node tests/ui_mtls.mjs certs ci-analyst
+      - name: Container logs
+        if: always()
+        run: sudo docker logs threatbridge || true
+
+  ui:
+    name: UI tests (headless Chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: pip install -r requirements.txt
+      - run: npm install --no-save playwright@1
+      - run: npx playwright install --with-deps chromium
+      - name: Start demo server
+        run: |
+          TB_BACKEND=demo TB_SOC_URL=https://so.example \
+          TB_EXCLUDE_FILE="$RUNNER_TEMP/exclude.json" TB_COMPROMISED_FILE="$RUNNER_TEMP/compromised.json" \
+          TB_SESSIONS_DIR="$RUNNER_TEMP/sessions" \
+            nohup python -m threatbridge --port 5055 > "$RUNNER_TEMP/server.log" 2>&1 &
+          for _ in $(seq 1 30); do curl -sf http://127.0.0.1:5055/healthz && exit 0; sleep 1; done
+          cat "$RUNNER_TEMP/server.log"; exit 1
+      - run: mkdir -p "$RUNNER_TEMP/shots" && node tests/ui_smoke.mjs "$RUNNER_TEMP/shots"
+        env:
+          JS_COVERAGE: ${{ runner.temp }}/js-coverage
+      - name: Start case-mode server (generated attack-chain pcap)
+        run: |
+          python tests/make_case.py "$RUNNER_TEMP/case"
+          TB_LIVE_DNS=false TB_MAX_PATHS=11 TB_EXCLUDE_FILE="$RUNNER_TEMP/case-exclude.json" \
+          TB_COMPROMISED_FILE="$RUNNER_TEMP/case-compromised.json" TB_SESSIONS_DIR="$RUNNER_TEMP/case-sessions" \
+            nohup python -m threatbridge --port 5056 --case "$RUNNER_TEMP/case" > "$RUNNER_TEMP/case-server.log" 2>&1 &
+          for _ in $(seq 1 30); do curl -sf http://127.0.0.1:5056/healthz && exit 0; sleep 1; done
+          cat "$RUNNER_TEMP/case-server.log"; exit 1
+      - run: TB_URL=http://127.0.0.1:5056 node tests/ui_case.mjs "$RUNNER_TEMP/shots"
+        env:
+          JS_COVERAGE: ${{ runner.temp }}/js-coverage
+      - run: TB_URL=http://127.0.0.1:5056 node tests/ui_actions.mjs "$RUNNER_TEMP/shots"
+        env:
+          JS_COVERAGE: ${{ runner.temp }}/js-coverage
+          TB_SAVED_MAPS: ${{ runner.temp }}/saved-maps
+      - run: TB_URL=http://127.0.0.1:5056 node tests/ui_marks.mjs "$RUNNER_TEMP/shots"
+        env:
+          JS_COVERAGE: ${{ runner.temp }}/js-coverage
+          TB_SAVED_MAPS: ${{ runner.temp }}/saved-maps
+      - name: The maps the browser tests saved match the map document format (D22)
+        run: |
+          pip install -r requirements-test.txt
+          TB_SAVED_MAPS="$RUNNER_TEMP/saved-maps" python -m pytest -q tests/test_openapi.py -k browser_tests_saved
+      - name: JavaScript coverage (what the browser tests ran of app.js)
+        run: node tests/js_coverage.mjs "$RUNNER_TEMP/js-coverage"
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-screenshots
+          path: ${{ runner.temp }}/shots
+          if-no-files-found: ignore
+      - name: Server logs
+        if: failure()
+        run: cat "$RUNNER_TEMP/server.log" "$RUNNER_TEMP/case-server.log" || true

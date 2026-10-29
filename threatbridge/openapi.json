@@ -1,0 +1,4827 @@
+{
+ "openapi": "3.1.0",
+ "info": {
+  "title": "ThreatBridge",
+  "version": "1",
+  "description": "The HTTP API of ThreatBridge's map. docs/API.md has the conventions (times, windows, the time range, filters, queries as POST, writes, errors), the filter grammar and what marks mean. Every response here lists every field it has."
+ },
+ "security": [
+  {
+   "mutualTLS": []
+  }
+ ],
+ "paths": {
+  "/api/compromised": {
+   "delete": {
+    "summary": "Unmark a host, with the marked flows it is an end of",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/write"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/HostToUnmark"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/MarksView"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/E400"
+     },
+     "403": {
+      "$ref": "#/components/responses/E403"
+     },
+     "500": {
+      "$ref": "#/components/responses/E500"
+     }
+    }
+   },
+   "get": {
+    "summary": "The shared marks (D15)",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/MarksView"
+        }
+       }
+      }
+     },
+     "500": {
+      "$ref": "#/components/responses/E500"
+     }
+    }
+   },
+   "post": {
+    "summary": "Mark a host compromised",
+    "description": "Marking a host again replaces its own mark.",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/write"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/HostMarkIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/MarksView"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/E400"
+     },
+     "403": {
+      "$ref": "#/components/responses/E403"
+     },
+     "500": {
+      "$ref": "#/components/responses/E500"
+     }
+    }
+   },
+   "put": {
+    "summary": "Replace every shared mark (Share)",
+    "description": "Any invalid mark is a 400 and nothing changes. The map does it to share an opened map's marks, after asking.",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/write"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/Marks"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/MarksView"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/E400"
+     },
+     "403": {
+      "$ref": "#/components/responses/E403"
+     },
+     "500": {
+      "$ref": "#/components/responses/E500"
+     }
+    }
+   }
+  },
+  "/api/compromised/flows": {
+   "delete": {
+    "summary": "Unmark a flow",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/write"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/FlowMarkIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/MarksView"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/E400"
+     },
+     "403": {
+      "$ref": "#/components/responses/E403"
+     },
+     "500": {
+      "$ref": "#/components/responses/E500"
+     }
+    }
+   },
+   "post": {
+    "summary": "Mark a flow compromised",
+    "description": "Marking it again replaces its note.",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/write"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/FlowMarkIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/MarksView"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/E400"
+     },
+     "403": {
+      "$ref": "#/components/responses/E403"
+     },
+     "500": {
+      "$ref": "#/components/responses/E500"
+     }
+    }
+   }
+  },
+  "/api/excludes": {
+   "delete": {
+    "summary": "Remove one",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/write"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ExcludeEntry"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Excludes"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/E400"
+     },
+     "403": {
+      "$ref": "#/components/responses/E403"
+     },
+     "500": {
+      "$ref": "#/components/responses/E500"
+     }
+    }
+   },
+   "get": {
+    "summary": "The shared exclude list",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Excludes"
+        }
+       }
+      }
+     },
+     "500": {
+      "$ref": "#/components/responses/E500"
+     }
+    }
+   },
+   "post": {
+    "summary": "Add an IP, CIDR or domain name",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/write"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ExcludeEntry"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Excludes"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/E400"
+     },
+     "403": {
+      "$ref": "#/components/responses/E403"
+     },
+     "500": {
+      "$ref": "#/components/responses/E500"
+     }
+    }
+   }
+  },
+  "/api/sessions": {
+   "delete": {
+    "summary": "Delete a saved map",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/write"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/MapName"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Sessions"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/E400"
+     },
+     "403": {
+      "$ref": "#/components/responses/E403"
+     },
+     "404": {
+      "$ref": "#/components/responses/E404"
+     },
+     "500": {
+      "$ref": "#/components/responses/E500"
+     }
+    }
+   },
+   "get": {
+    "summary": "The saved maps, or with name the one saved under it",
+    "parameters": [
+     {
+      "name": "name",
+      "in": "query",
+      "description": "a saved map's name: that map",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "anyOf": [
+          {
+           "$ref": "#/components/schemas/Sessions"
+          },
+          {
+           "$ref": "#/components/schemas/SavedMap"
+          }
+         ]
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/E400"
+     },
+     "404": {
+      "$ref": "#/components/responses/E404"
+     },
+     "500": {
+      "$ref": "#/components/responses/E500"
+     }
+    }
+   },
+   "post": {
+    "summary": "Save a map for every analyst",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/write"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/MapToSave"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SaveResult"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/E400"
+     },
+     "403": {
+      "$ref": "#/components/responses/E403"
+     },
+     "409": {
+      "$ref": "#/components/responses/E409"
+     },
+     "500": {
+      "$ref": "#/components/responses/E500"
+     }
+    }
+   }
+  },
+  "/api/config": {
+   "get": {
+    "summary": "What a client needs to know about this server (D20)",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Config"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/edge": {
+   "get": {
+    "summary": "One connection, as it would be drawn",
+    "description": "The count, times, ports and protocols of the flows src -> dst that started in [from, to] and pass the filters. With none, count is 0 and the times null.",
+    "parameters": [
+     {
+      "name": "src",
+      "in": "query",
+      "description": "the initiator",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "dst",
+      "in": "query",
+      "description": "the responder",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "from",
+      "in": "query",
+      "description": "the start of the first flow wanted",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "to",
+      "in": "query",
+      "description": "the start of the last; default from",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "range_from",
+      "in": "query",
+      "description": "the start of the analyst's time range: only flows that started in it count",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "range_to",
+      "in": "query",
+      "description": "the end of the analyst's time range",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "filter",
+      "in": "query",
+      "description": "a filter expression (D17); repeat for several, combined with AND",
+      "schema": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "style": "form",
+      "explode": true
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Edge"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/E400"
+     },
+     "500": {
+      "$ref": "#/components/responses/E500"
+     },
+     "502": {
+      "$ref": "#/components/responses/E502"
+     }
+    }
+   },
+   "post": {
+    "summary": "One connection, as it would be drawn",
+    "description": "The count, times, ports and protocols of the flows src -> dst that started in [from, to] and pass the filters. With none, count is 0 and the times null.",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/write"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/EdgeQueryBody"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Edge"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/E400"
+     },
+     "403": {
+      "$ref": "#/components/responses/E403"
+     },
+     "500": {
+      "$ref": "#/components/responses/E500"
+     },
+     "502": {
+      "$ref": "#/components/responses/E502"
+     }
+    }
+   }
+  },
+  "/api/filter": {
+   "get": {
+    "summary": "Check one filter expression",
+    "description": "Its canonical form, or a 400 saying what is wrong and where, e.g. \"at character 1: protocol names are case-sensitive: write SMB\". GET /api/config's filter gives the vocabulary and grammar.",
+    "parameters": [
+     {
+      "name": "filter",
+      "in": "query",
+      "description": "the expression",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/CheckedFilter"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/E400"
+     }
+    }
+   }
+  },
+  "/api/flows": {
+   "get": {
+    "summary": "One page of a connection's flows, oldest first",
+    "description": "The flows src -> dst that started in [from, to]. Security Onion lists at most the first limits.connection_flows of a connection (offset + limit past that is a 400); narrow the time range for later ones.",
+    "parameters": [
+     {
+      "name": "src",
+      "in": "query",
+      "description": "the initiator",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "dst",
+      "in": "query",
+      "description": "the responder",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "from",
+      "in": "query",
+      "description": "the start of the first flow wanted",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "to",
+      "in": "query",
+      "description": "the start of the last; default from",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "offset",
+      "in": "query",
+      "description": "default 0",
+      "schema": {
+       "type": "integer"
+      }
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "description": "1 to limits.flow_page, default 50",
+      "schema": {
+       "type": "integer"
+      }
+     },
+     {
+      "name": "range_from",
+      "in": "query",
+      "description": "the start of the analyst's time range: only flows that started in it count",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "range_to",
+      "in": "query",
+      "description": "the end of the analyst's time range",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "filter",
+      "in": "query",
+      "description": "a filter expression (D17); repeat for several, combined with AND",
+      "schema": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "style": "form",
+      "explode": true
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Flows"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/E400"
+     },
+     "500": {
+      "$ref": "#/components/responses/E500"
+     },
+     "502": {
+      "$ref": "#/components/responses/E502"
+     }
+    }
+   },
+   "post": {
+    "summary": "One page of a connection's flows, oldest first",
+    "description": "The flows src -> dst that started in [from, to]. Security Onion lists at most the first limits.connection_flows of a connection (offset + limit past that is a 400); narrow the time range for later ones.",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/write"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/FlowsQueryBody"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Flows"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/E400"
+     },
+     "403": {
+      "$ref": "#/components/responses/E403"
+     },
+     "500": {
+      "$ref": "#/components/responses/E500"
+     },
+     "502": {
+      "$ref": "#/components/responses/E502"
+     }
+    }
+   }
+  },
+  "/api/neighbors": {
+   "get": {
+    "summary": "One hop: who connected to a host before the anchor, or who it connected to after",
+    "description": "Who connected to ip in the window before the anchor (in), or who it connected to in the window after it (out). Hosts on the exclude list are left out. When the window and the time range don't overlap, start is after end and peers is empty. With filters, counts, times, ports and protocols are those of the flows that pass.",
+    "parameters": [
+     {
+      "name": "ip",
+      "in": "query",
+      "description": "the host",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "direction",
+      "in": "query",
+      "description": "in (the default): who connected to it before the anchor; out: who it connected to after",
+      "schema": {
+       "enum": [
+        "in",
+        "out"
+       ],
+       "type": "string"
+      }
+     },
+     {
+      "name": "ts",
+      "in": "query",
+      "description": "the anchor; blank: now",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "window",
+      "in": "query",
+      "description": "per hop: a number and a unit (s, m, h, d, w), at most max_window; default default_window",
+      "schema": {
+       "pattern": "^\\s*\\d+\\s*[smhdwSMHDW]\\s*$",
+       "type": "string"
+      }
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "description": "peers to return, 1 to max_limit (larger values are capped); default default_limit",
+      "schema": {
+       "type": "integer"
+      }
+     },
+     {
+      "name": "order",
+      "in": "query",
+      "description": "top (most connections, the default) or bottom (rarest)",
+      "schema": {
+       "enum": [
+        "top",
+        "bottom"
+       ],
+       "type": "string"
+      }
+     },
+     {
+      "name": "range_from",
+      "in": "query",
+      "description": "the start of the analyst's time range: only flows that started in it count",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "range_to",
+      "in": "query",
+      "description": "the end of the analyst's time range",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "filter",
+      "in": "query",
+      "description": "a filter expression (D17); repeat for several, combined with AND",
+      "schema": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "style": "form",
+      "explode": true
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Neighbors"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/E400"
+     },
+     "500": {
+      "$ref": "#/components/responses/E500"
+     },
+     "502": {
+      "$ref": "#/components/responses/E502"
+     }
+    }
+   },
+   "post": {
+    "summary": "One hop: who connected to a host before the anchor, or who it connected to after",
+    "description": "Who connected to ip in the window before the anchor (in), or who it connected to in the window after it (out). Hosts on the exclude list are left out. When the window and the time range don't overlap, start is after end and peers is empty. With filters, counts, times, ports and protocols are those of the flows that pass.",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/write"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/NeighborsQueryBody"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Neighbors"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/E400"
+     },
+     "403": {
+      "$ref": "#/components/responses/E403"
+     },
+     "500": {
+      "$ref": "#/components/responses/E500"
+     },
+     "502": {
+      "$ref": "#/components/responses/E502"
+     }
+    }
+   }
+  },
+  "/api/openapi.json": {
+   "get": {
+    "summary": "This document",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/paths": {
+   "get": {
+    "summary": "Every time-respecting path between two hosts, or between the marked hosts (case backend)",
+    "description": "With src and dst: every path from src to dst, up to limits.paths. With neither: the paths between each pair of marked hosts, each reached when GET /api/compromised says (in a POST, those of its marks), the first limits.paths_per_pair per pair.",
+    "parameters": [
+     {
+      "name": "src",
+      "in": "query",
+      "description": "from this host; with neither src nor dst, the paths between the marked hosts",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "dst",
+      "in": "query",
+      "description": "to this host",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "src_time",
+      "in": "query",
+      "description": "src's IOC time: the first hop leaves src within the window after it",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "dst_time",
+      "in": "query",
+      "description": "dst's IOC time: the path reaches dst by then",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "window",
+      "in": "query",
+      "description": "per hop: a number and a unit (s, m, h, d, w), at most max_window; default default_window",
+      "schema": {
+       "pattern": "^\\s*\\d+\\s*[smhdwSMHDW]\\s*$",
+       "type": "string"
+      }
+     },
+     {
+      "name": "hops",
+      "in": "query",
+      "description": "the hop limit, 1 to limits.hops; default threat_hops",
+      "schema": {
+       "type": "integer"
+      }
+     },
+     {
+      "name": "range_from",
+      "in": "query",
+      "description": "the start of the analyst's time range: only flows that started in it count",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "range_to",
+      "in": "query",
+      "description": "the end of the analyst's time range",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "filter",
+      "in": "query",
+      "description": "a filter expression (D17); repeat for several, combined with AND",
+      "schema": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "style": "form",
+      "explode": true
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "anyOf": [
+          {
+           "$ref": "#/components/schemas/PathsBetween"
+          },
+          {
+           "$ref": "#/components/schemas/AttackPaths"
+          }
+         ]
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/E400"
+     },
+     "500": {
+      "$ref": "#/components/responses/E500"
+     },
+     "501": {
+      "$ref": "#/components/responses/E501"
+     }
+    }
+   },
+   "post": {
+    "summary": "Every time-respecting path between two hosts, or between the marked hosts (case backend)",
+    "description": "With src and dst: every path from src to dst, up to limits.paths. With neither: the paths between each pair of marked hosts, each reached when GET /api/compromised says (in a POST, those of its marks), the first limits.paths_per_pair per pair.",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/write"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/PathsQueryBody"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "anyOf": [
+          {
+           "$ref": "#/components/schemas/PathsBetween"
+          },
+          {
+           "$ref": "#/components/schemas/AttackPaths"
+          }
+         ]
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/E400"
+     },
+     "403": {
+      "$ref": "#/components/responses/E403"
+     },
+     "500": {
+      "$ref": "#/components/responses/E500"
+     },
+     "501": {
+      "$ref": "#/components/responses/E501"
+     }
+    }
+   }
+  },
+  "/api/pivot": {
+   "get": {
+    "summary": "A Security Onion Dashboards query and link",
+    "description": "With b: every conversation between a and b, either direction, up to until; without: everything to or from a. The time clause is left out with TB_PIVOT_TIME_CLAUSE=false.",
+    "parameters": [
+     {
+      "name": "a",
+      "in": "query",
+      "description": "a host",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "b",
+      "in": "query",
+      "description": "the other host: every conversation between the two, either direction",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "until",
+      "in": "query",
+      "description": "with b: the IOC time; the query ends there",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "range_from",
+      "in": "query",
+      "description": "the start of the analyst's time range: only flows that started in it count",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "range_to",
+      "in": "query",
+      "description": "the end of the analyst's time range",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Pivot"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/E400"
+     }
+    }
+   }
+  },
+  "/api/protocols": {
+   "get": {
+    "summary": "How many flows carry each protocol in a time range (D20)",
+    "description": "Of the flows that started in the time range and pass the filters. Without a time range: a case's whole span; Security Onion's last max_window. A Security Onion record naming several protocols counts for each.",
+    "parameters": [
+     {
+      "name": "range_from",
+      "in": "query",
+      "description": "the start of the analyst's time range: only flows that started in it count",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "range_to",
+      "in": "query",
+      "description": "the end of the analyst's time range",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "filter",
+      "in": "query",
+      "description": "a filter expression (D17); repeat for several, combined with AND",
+      "schema": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "style": "form",
+      "explode": true
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ProtocolCounts"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/E400"
+     },
+     "500": {
+      "$ref": "#/components/responses/E500"
+     },
+     "502": {
+      "$ref": "#/components/responses/E502"
+     }
+    }
+   },
+   "post": {
+    "summary": "How many flows carry each protocol in a time range (D20)",
+    "description": "Of the flows that started in the time range and pass the filters. Without a time range: a case's whole span; Security Onion's last max_window. A Security Onion record naming several protocols counts for each.",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/write"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ProtocolsQueryBody"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ProtocolCounts"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/E400"
+     },
+     "403": {
+      "$ref": "#/components/responses/E403"
+     },
+     "500": {
+      "$ref": "#/components/responses/E500"
+     },
+     "502": {
+      "$ref": "#/components/responses/E502"
+     }
+    }
+   }
+  },
+  "/api/resolve": {
+   "get": {
+    "summary": "Check an IP and settle the anchor time a map starts from",
+    "parameters": [
+     {
+      "name": "ip",
+      "in": "query",
+      "description": "an IP address",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "ts",
+      "in": "query",
+      "description": "the IOC time; blank: see direction",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "direction",
+      "in": "query",
+      "description": "with no ts, in (the default) looks back from the end of what can be shown and out forward from its start: the time range, then the case's data, else now",
+      "schema": {
+       "enum": [
+        "in",
+        "out"
+       ],
+       "type": "string"
+      }
+     },
+     {
+      "name": "range_from",
+      "in": "query",
+      "description": "the start of the analyst's time range: only flows that started in it count",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "range_to",
+      "in": "query",
+      "description": "the end of the analyst's time range",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Resolved"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/E400"
+     }
+    }
+   }
+  },
+  "/api/threatline": {
+   "get": {
+    "summary": "Hosts and hops time-consistent with a conversation (case backend)",
+    "description": "Who could have reached a before the conversation a -> b, and where b could have gone after it. A 400 says when there are no flows from a to b in that time.",
+    "parameters": [
+     {
+      "name": "a",
+      "in": "query",
+      "description": "the conversation's initiator",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "b",
+      "in": "query",
+      "description": "its responder",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "from",
+      "in": "query",
+      "description": "the conversation's first flow",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "to",
+      "in": "query",
+      "description": "its last flow; default from",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "window",
+      "in": "query",
+      "description": "per hop: a number and a unit (s, m, h, d, w), at most max_window; default default_window",
+      "schema": {
+       "pattern": "^\\s*\\d+\\s*[smhdwSMHDW]\\s*$",
+       "type": "string"
+      }
+     },
+     {
+      "name": "hops",
+      "in": "query",
+      "description": "the hop limit, 1 to limits.hops; default threat_hops",
+      "schema": {
+       "type": "integer"
+      }
+     },
+     {
+      "name": "range_from",
+      "in": "query",
+      "description": "the start of the analyst's time range: only flows that started in it count",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "range_to",
+      "in": "query",
+      "description": "the end of the analyst's time range",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "filter",
+      "in": "query",
+      "description": "a filter expression (D17); repeat for several, combined with AND",
+      "schema": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "style": "form",
+      "explode": true
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ThreatLine"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/E400"
+     },
+     "500": {
+      "$ref": "#/components/responses/E500"
+     },
+     "501": {
+      "$ref": "#/components/responses/E501"
+     }
+    }
+   },
+   "post": {
+    "summary": "Hosts and hops time-consistent with a conversation (case backend)",
+    "description": "Who could have reached a before the conversation a -> b, and where b could have gone after it. A 400 says when there are no flows from a to b in that time.",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/write"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ThreatLineQueryBody"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ThreatLine"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/E400"
+     },
+     "403": {
+      "$ref": "#/components/responses/E403"
+     },
+     "500": {
+      "$ref": "#/components/responses/E500"
+     },
+     "501": {
+      "$ref": "#/components/responses/E501"
+     }
+    }
+   }
+  },
+  "/healthz": {
+   "get": {
+    "summary": "Is the service up",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Health"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/export": {
+   "post": {
+    "summary": "The marked hosts, and the marked and suspect flows on the drawn connections",
+    "description": "For a CSV export. Without the case backend, the marked flows only.",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/write"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/MarkedQuery"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Export"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/E400"
+     },
+     "403": {
+      "$ref": "#/components/responses/E403"
+     },
+     "500": {
+      "$ref": "#/components/responses/E500"
+     },
+     "502": {
+      "$ref": "#/components/responses/E502"
+     }
+    }
+   }
+  },
+  "/api/pcap": {
+   "post": {
+    "summary": "A Security Onion flow's packets, from its sensor through SOC",
+    "description": "The PCAP file, as an attachment, extracted by the sensor that saw the flow, through SOC's Connect API. Needs a SOC API client (TB_SOC_CLIENT_ID, TB_SOC_CLIENT_SECRET; Security Onion Pro), else 501. The request waits for the sensor, up to TB_PCAP_TIMEOUT seconds; a 502 says why the sensor could not provide it, with the SOC job's link where there is one.",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/write"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/PcapRequest"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/vnd.tcpdump.pcap": {
+        "schema": {
+         "type": "string",
+         "contentMediaType": "application/vnd.tcpdump.pcap"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/E400"
+     },
+     "403": {
+      "$ref": "#/components/responses/E403"
+     },
+     "501": {
+      "$ref": "#/components/responses/E501"
+     },
+     "502": {
+      "$ref": "#/components/responses/E502"
+     }
+    }
+   }
+  },
+  "/api/suspect": {
+   "post": {
+    "summary": "What the marks keep of the drawn connections (D16, case backend)",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/write"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/MarkedQuery"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Suspects"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/E400"
+     },
+     "403": {
+      "$ref": "#/components/responses/E403"
+     },
+     "500": {
+      "$ref": "#/components/responses/E500"
+     },
+     "501": {
+      "$ref": "#/components/responses/E501"
+     }
+    }
+   }
+  }
+ },
+ "components": {
+  "securitySchemes": {
+   "mutualTLS": {
+    "type": "mutualTLS",
+    "description": "a client certificate signed by the ThreatBridge CA (python -m threatbridge serves plain HTTP locally)"
+   }
+  },
+  "parameters": {
+   "write": {
+    "name": "X-ThreatBridge",
+    "in": "header",
+    "required": true,
+    "schema": {
+     "const": "1"
+    },
+    "description": "required on every write: browsers can't add it to a cross-site request"
+   }
+  },
+  "responses": {
+   "E400": {
+    "description": "a parameter or the body is invalid; the message says which",
+    "content": {
+     "application/json": {
+      "schema": {
+       "$ref": "#/components/schemas/Error"
+      }
+     }
+    }
+   },
+   "E403": {
+    "description": "a write without the X-ThreatBridge header",
+    "content": {
+     "application/json": {
+      "schema": {
+       "$ref": "#/components/schemas/Error"
+      }
+     }
+    }
+   },
+   "E404": {
+    "description": "no such saved map",
+    "content": {
+     "application/json": {
+      "schema": {
+       "$ref": "#/components/schemas/Error"
+      }
+     }
+    }
+   },
+   "E409": {
+    "description": "a map is already saved under that name",
+    "content": {
+     "application/json": {
+      "schema": {
+       "$ref": "#/components/schemas/Error"
+      }
+     }
+    }
+   },
+   "E500": {
+    "description": "a shared file (exclude list, marks, saved map) is not valid JSON; it is left for someone to fix",
+    "content": {
+     "application/json": {
+      "schema": {
+       "$ref": "#/components/schemas/Error"
+      }
+     }
+    }
+   },
+   "E501": {
+    "description": "this needs another backend (threat lines, paths and suspect connections: the case backend; PCAP downloads: Security Onion with a SOC API client)",
+    "content": {
+     "application/json": {
+      "schema": {
+       "$ref": "#/components/schemas/Error"
+      }
+     }
+    }
+   },
+   "E502": {
+    "description": "Elasticsearch or SOC failed or answered unexpectedly",
+    "content": {
+     "application/json": {
+      "schema": {
+       "$ref": "#/components/schemas/Error"
+      }
+     }
+    }
+   }
+  },
+  "schemas": {
+   "AttackPaths": {
+    "additionalProperties": false,
+    "properties": {
+     "pairs": {
+      "description": "each pair of marked hosts with a path between them",
+      "items": {
+       "$ref": "#/components/schemas/PairPaths"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "pairs"
+    ],
+    "type": "object"
+   },
+   "CaseSummary": {
+    "additionalProperties": false,
+    "description": "The case's evidence.",
+    "properties": {
+     "flows": {
+      "type": "integer"
+     },
+     "hosts": {
+      "type": "integer"
+     },
+     "start": {
+      "anyOf": [
+       {
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "the first flow's start; null for an empty case"
+     },
+     "end": {
+      "anyOf": [
+       {
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "the last flow's start; null for an empty case"
+     },
+     "dns_names": {
+      "description": "names in the evidence's DNS answers",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "flows",
+     "hosts",
+     "start",
+     "end",
+     "dns_names"
+    ],
+    "type": "object"
+   },
+   "CheckedFilter": {
+    "additionalProperties": false,
+    "examples": [
+     {
+      "filter": "(SMB OR TLS) AND sport == 42000"
+     }
+    ],
+    "properties": {
+     "filter": {
+      "description": "the expression's canonical form",
+      "type": "string"
+     }
+    },
+    "required": [
+     "filter"
+    ],
+    "type": "object"
+   },
+   "Config": {
+    "additionalProperties": false,
+    "description": "What a client needs to know about this server (D20).",
+    "properties": {
+     "api_version": {
+      "description": "the API version this server speaks",
+      "type": "integer"
+     },
+     "limits": {
+      "$ref": "#/components/schemas/Limits"
+     },
+     "filter": {
+      "$ref": "#/components/schemas/FilterVocabulary"
+     },
+     "default_window": {
+      "description": "a query's window when it gives none (TB_WINDOW)",
+      "type": "string"
+     },
+     "max_window": {
+      "description": "the longest window (TB_MAX_WINDOW)",
+      "type": "string"
+     },
+     "default_limit": {
+      "description": "peers per expansion when a query gives none (TB_LIMIT)",
+      "type": "integer"
+     },
+     "max_limit": {
+      "description": "the most peers per expansion (TB_MAX_LIMIT); larger limits are capped",
+      "type": "integer"
+     },
+     "directions": {
+      "$ref": "#/components/schemas/Directions"
+     },
+     "orders": {
+      "items": {
+       "enum": [
+        "top",
+        "bottom"
+       ],
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "backend": {
+      "enum": [
+       "elastic",
+       "case",
+       "demo"
+      ],
+      "type": "string"
+     },
+     "rare_scan_cap": {
+      "description": "distinct peers the rarest scan looks at (TB_RARE_SCAN_CAP)",
+      "type": "integer"
+     },
+     "soc_pivots": {
+      "description": "whether SOC pivots and PCAP links apply (not for the case backend)",
+      "type": "boolean"
+     },
+     "analysis": {
+      "description": "whether threat lines and paths are available (case backend)",
+      "type": "boolean"
+     },
+     "threat_hops": {
+      "description": "the default hop limit (TB_THREAT_HOPS)",
+      "type": "integer"
+     },
+     "suspects": {
+      "description": "whether marks hide what isn't on a line through them (POST /api/suspect; case backend)",
+      "type": "boolean"
+     },
+     "marks_poll": {
+      "description": "seconds between the map's checks for other analysts' marks",
+      "type": "integer"
+     },
+     "protocol_names": {
+      "additionalProperties": {
+       "type": "string"
+      },
+      "description": "how the map names each protocol: {\"ssl\": \"TLS\", \"krb\": \"Kerberos\", ...}; others in capitals",
+      "type": "object"
+     },
+     "max_filters": {
+      "description": "filters at once",
+      "type": "integer"
+     },
+     "live_dns": {
+      "description": "whether domain names on the exclude list are also looked up (TB_LIVE_DNS)",
+      "type": "boolean"
+     },
+     "pcap_download": {
+      "description": "whether POST /api/pcap is available",
+      "type": "boolean"
+     },
+     "case": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/CaseSummary"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "the case backend's evidence; otherwise null"
+     }
+    },
+    "required": [
+     "api_version",
+     "limits",
+     "filter",
+     "default_window",
+     "max_window",
+     "default_limit",
+     "max_limit",
+     "directions",
+     "orders",
+     "backend",
+     "rare_scan_cap",
+     "soc_pivots",
+     "analysis",
+     "threat_hops",
+     "suspects",
+     "marks_poll",
+     "protocol_names",
+     "max_filters",
+     "live_dns",
+     "pcap_download",
+     "case"
+    ],
+    "type": "object"
+   },
+   "Directions": {
+    "additionalProperties": false,
+    "properties": {
+     "in": {
+      "type": "string"
+     },
+     "out": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "in",
+     "out"
+    ],
+    "type": "object"
+   },
+   "DrawnEdge": {
+    "additionalProperties": false,
+    "description": "A connection on the map, with the span drawn.",
+    "properties": {
+     "source": {
+      "type": "string"
+     },
+     "target": {
+      "type": "string"
+     },
+     "from": {
+      "type": "string"
+     },
+     "to": {
+      "description": "default from",
+      "type": "string"
+     }
+    },
+    "required": [
+     "source",
+     "target",
+     "from"
+    ],
+    "type": "object"
+   },
+   "Edge": {
+    "additionalProperties": false,
+    "description": "One connection, as the map draws it.",
+    "properties": {
+     "source": {
+      "type": "string"
+     },
+     "target": {
+      "type": "string"
+     },
+     "count": {
+      "description": "its flows; 0 for none",
+      "type": "integer"
+     },
+     "first_seen": {
+      "anyOf": [
+       {
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "null for no flows"
+     },
+     "last_seen": {
+      "anyOf": [
+       {
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "ports": {
+      "description": "the most used destination ports, up to 5",
+      "items": {
+       "type": "integer"
+      },
+      "type": "array"
+     },
+     "protocols": {
+      "description": "every protocol the flows carry, sorted: named as Zeek names its services (`dns`, `http`, `smb`, `ssl` for TLS, ...), plus `icmp`, and `unknown` for flows nothing identified. Security Onion gives Zeek's own; case files are identified from the payload, then by well-known port",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "source",
+     "target",
+     "count",
+     "first_seen",
+     "last_seen",
+     "ports",
+     "protocols"
+    ],
+    "type": "object"
+   },
+   "EdgeQueryBody": {
+    "additionalProperties": false,
+    "description": "The query's parameters as a JSON object (text or numbers), plus filters and marks.",
+    "properties": {
+     "src": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "dst": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "from": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "to": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "range_from": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "range_to": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "filters": {
+      "description": "filter expressions (D17), combined with AND",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "marks": {
+      "$ref": "#/components/schemas/Marks"
+     }
+    },
+    "type": "object"
+   },
+   "Error": {
+    "additionalProperties": false,
+    "description": "What went wrong; the status says what kind of error.",
+    "properties": {
+     "error": {
+      "description": "e.g. invalid IP address: 'nope'",
+      "type": "string"
+     }
+    },
+    "required": [
+     "error"
+    ],
+    "type": "object"
+   },
+   "ExcludeEntry": {
+    "additionalProperties": false,
+    "properties": {
+     "entry": {
+      "description": "an IP, a CIDR, a domain name or *.domain",
+      "type": "string"
+     }
+    },
+    "required": [
+     "entry"
+    ],
+    "type": "object"
+   },
+   "Excludes": {
+    "additionalProperties": false,
+    "properties": {
+     "entries": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "resolved": {
+      "additionalProperties": {
+       "$ref": "#/components/schemas/Resolution"
+      },
+      "description": "for each domain name on the list",
+      "type": "object"
+     },
+     "entry": {
+      "description": "adding one: the entry as stored (CIDRs normalised, names lower-cased)",
+      "type": "string"
+     }
+    },
+    "required": [
+     "entries",
+     "resolved"
+    ],
+    "type": "object"
+   },
+   "Export": {
+    "additionalProperties": false,
+    "properties": {
+     "hosts": {
+      "description": "every marked host",
+      "items": {
+       "$ref": "#/components/schemas/ExportHost"
+      },
+      "type": "array"
+     },
+     "flows": {
+      "description": "each marked or suspect flow on the connections sent",
+      "items": {
+       "$ref": "#/components/schemas/ExportFlow"
+      },
+      "type": "array"
+     },
+     "truncated": {
+      "description": "there were more than limits.export_flows flows",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "hosts",
+     "flows",
+     "truncated"
+    ],
+    "type": "object"
+   },
+   "ExportFlow": {
+    "additionalProperties": false,
+    "properties": {
+     "start": {
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+      "type": "string"
+     },
+     "end": {
+      "anyOf": [
+       {
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "src": {
+      "type": "string"
+     },
+     "sport": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "dst": {
+      "type": "string"
+     },
+     "dport": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "proto": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "protocols": {
+      "description": "every protocol the flows carry, sorted: named as Zeek names its services (`dns`, `http`, `smb`, `ssl` for TLS, ...), plus `icmp`, and `unknown` for flows nothing identified. Security Onion gives Zeek's own; case files are identified from the payload, then by well-known port",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "packets": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "bytes": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "status": {
+      "enum": [
+       "marked",
+       "suspect"
+      ],
+      "type": "string"
+     }
+    },
+    "required": [
+     "start",
+     "end",
+     "src",
+     "sport",
+     "dst",
+     "dport",
+     "proto",
+     "protocols",
+     "packets",
+     "bytes",
+     "status"
+    ],
+    "type": "object"
+   },
+   "ExportHost": {
+    "additionalProperties": false,
+    "properties": {
+     "ip": {
+      "type": "string"
+     },
+     "time": {
+      "anyOf": [
+       {
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "note": {
+      "type": "string"
+     },
+     "count": {
+      "type": "integer"
+     },
+     "marked": {
+      "description": "marked itself, through marked flows, or both",
+      "enum": [
+       "direct",
+       "flows",
+       "both"
+      ],
+      "type": "string"
+     }
+    },
+    "required": [
+     "ip",
+     "time",
+     "note",
+     "count",
+     "marked"
+    ],
+    "type": "object"
+   },
+   "FilterField": {
+    "additionalProperties": false,
+    "description": "A field a filter compares.",
+    "properties": {
+     "name": {
+      "type": "string"
+     },
+     "kind": {
+      "description": "what its values are (see kinds)",
+      "enum": [
+       "port",
+       "count",
+       "seconds",
+       "address",
+       "transport",
+       "time"
+      ],
+      "type": "string"
+     },
+     "comparisons": {
+      "items": {
+       "enum": [
+        "==",
+        "!=",
+        "<",
+        ">",
+        "<=",
+        ">="
+       ],
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "ranges": {
+      "description": "whether it takes a range, a-b",
+      "type": "boolean"
+     },
+     "either_end": {
+      "description": "whether it tests both ends of a flow (port, host)",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "name",
+     "kind",
+     "comparisons",
+     "ranges",
+     "either_end"
+    ],
+    "type": "object"
+   },
+   "FilterKinds": {
+    "additionalProperties": false,
+    "description": "What each kind of value is.",
+    "properties": {
+     "port": {
+      "type": "string"
+     },
+     "count": {
+      "type": "string"
+     },
+     "seconds": {
+      "type": "string"
+     },
+     "address": {
+      "type": "string"
+     },
+     "transport": {
+      "type": "string"
+     },
+     "time": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "port",
+     "count",
+     "seconds",
+     "address",
+     "transport",
+     "time"
+    ],
+    "type": "object"
+   },
+   "FilterOperators": {
+    "additionalProperties": false,
+    "description": "How each operator is spelt.",
+    "properties": {
+     "not": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "and": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "or": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "not",
+     "and",
+     "or"
+    ],
+    "type": "object"
+   },
+   "FilterVocabulary": {
+    "additionalProperties": false,
+    "description": "The filter language (D17), taken from the parser itself.",
+    "properties": {
+     "fields": {
+      "items": {
+       "$ref": "#/components/schemas/FilterField"
+      },
+      "type": "array"
+     },
+     "kinds": {
+      "$ref": "#/components/schemas/FilterKinds"
+     },
+     "operators": {
+      "$ref": "#/components/schemas/FilterOperators"
+     },
+     "protocols": {
+      "description": "the protocol names, as the map shows them; any other Zeek service in capitals works too",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "grammar": {
+      "description": "the grammar, in EBNF",
+      "type": "string"
+     }
+    },
+    "required": [
+     "fields",
+     "kinds",
+     "operators",
+     "protocols",
+     "grammar"
+    ],
+    "type": "object"
+   },
+   "Flow": {
+    "additionalProperties": false,
+    "properties": {
+     "start": {
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+      "type": "string"
+     },
+     "duration": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "seconds"
+     },
+     "sport": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "dport": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "proto": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "packets": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "bytes": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "protocols": {
+      "description": "every protocol the flows carry, sorted: named as Zeek names its services (`dns`, `http`, `smb`, `ssl` for TLS, ...), plus `icmp`, and `unknown` for flows nothing identified. Security Onion gives Zeek's own; case files are identified from the payload, then by well-known port",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "id": {
+      "description": "Security Onion: the connection log's Elasticsearch ID, for POST /api/pcap",
+      "type": "string"
+     },
+     "soc_pcap": {
+      "description": "Security Onion: SOC's link that has the sensor extract the flow's packets",
+      "type": "string"
+     }
+    },
+    "required": [
+     "start",
+     "duration",
+     "sport",
+     "dport",
+     "proto",
+     "packets",
+     "bytes",
+     "protocols"
+    ],
+    "type": "object"
+   },
+   "FlowMark": {
+    "additionalProperties": false,
+    "properties": {
+     "src": {
+      "type": "string"
+     },
+     "dst": {
+      "type": "string"
+     },
+     "start": {
+      "description": "to the millisecond, as flow lists show it",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+      "type": "string"
+     },
+     "sport": {
+      "type": "integer"
+     },
+     "dport": {
+      "type": "integer"
+     },
+     "proto": {
+      "type": "string"
+     },
+     "note": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "src",
+     "dst",
+     "start",
+     "sport",
+     "dport",
+     "proto",
+     "note"
+    ],
+    "type": "object"
+   },
+   "FlowMarkIn": {
+    "additionalProperties": false,
+    "description": "A flow, as its connection's flow list gives it.",
+    "properties": {
+     "src": {
+      "type": "string"
+     },
+     "dst": {
+      "type": "string"
+     },
+     "start": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ],
+      "description": "as the flow list shows it, to the millisecond"
+     },
+     "sport": {
+      "type": "integer"
+     },
+     "dport": {
+      "type": "integer"
+     },
+     "proto": {
+      "type": "string"
+     },
+     "note": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "up to limits.note characters"
+     }
+    },
+    "required": [
+     "src",
+     "dst",
+     "start",
+     "sport",
+     "dport",
+     "proto"
+    ],
+    "type": "object"
+   },
+   "Flows": {
+    "additionalProperties": false,
+    "examples": [
+     {
+      "dst": "10.0.0.9",
+      "end": "2024-05-01T12:10:00.000Z",
+      "flows": [
+       {
+        "bytes": 80,
+        "dport": 445,
+        "duration": 0.001,
+        "packets": 2,
+        "proto": "tcp",
+        "protocols": [
+         "smb"
+        ],
+        "sport": 50001,
+        "start": "2024-05-01T12:10:00.000Z"
+       }
+      ],
+      "offset": 0,
+      "src": "10.0.0.5",
+      "start": "2024-05-01T12:10:00.000Z",
+      "total": 1
+     }
+    ],
+    "properties": {
+     "src": {
+      "type": "string"
+     },
+     "dst": {
+      "type": "string"
+     },
+     "start": {
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+      "type": "string"
+     },
+     "end": {
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+      "type": "string"
+     },
+     "offset": {
+      "type": "integer"
+     },
+     "total": {
+      "description": "the connection's flows in [start, end]",
+      "type": "integer"
+     },
+     "flows": {
+      "items": {
+       "$ref": "#/components/schemas/Flow"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "src",
+     "dst",
+     "start",
+     "end",
+     "offset",
+     "total",
+     "flows"
+    ],
+    "type": "object"
+   },
+   "FlowsQueryBody": {
+    "additionalProperties": false,
+    "description": "The query's parameters as a JSON object (text or numbers), plus filters and marks.",
+    "properties": {
+     "src": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "dst": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "from": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "to": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "offset": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "limit": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "range_from": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "range_to": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "filters": {
+      "description": "filter expressions (D17), combined with AND",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "marks": {
+      "$ref": "#/components/schemas/Marks"
+     },
+     "within": {
+      "description": "intervals [from, to] from POST /api/suspect (up to limits.within), to list only a kept connection's marked and suspect flows (case backend)",
+      "items": {
+       "maxItems": 2,
+       "minItems": 2,
+       "prefixItems": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "string"
+        }
+       ],
+       "type": "array"
+      },
+      "type": "array"
+     }
+    },
+    "type": "object"
+   },
+   "Health": {
+    "additionalProperties": false,
+    "properties": {
+     "status": {
+      "const": "ok",
+      "type": "string"
+     },
+     "backend": {
+      "enum": [
+       "elastic",
+       "case",
+       "demo"
+      ],
+      "type": "string"
+     },
+     "api_version": {
+      "description": "the API version this server speaks (D20)",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "status",
+     "backend",
+     "api_version"
+    ],
+    "type": "object"
+   },
+   "Hop": {
+    "additionalProperties": false,
+    "properties": {
+     "source": {
+      "type": "string"
+     },
+     "target": {
+      "type": "string"
+     },
+     "start": {
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+      "type": "string"
+     },
+     "sport": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "dport": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "proto": {
+      "type": "string"
+     },
+     "packets": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "bytes": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "protocols": {
+      "description": "every protocol the flows carry, sorted: named as Zeek names its services (`dns`, `http`, `smb`, `ssl` for TLS, ...), plus `icmp`, and `unknown` for flows nothing identified. Security Onion gives Zeek's own; case files are identified from the payload, then by well-known port",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "source",
+     "target",
+     "start",
+     "sport",
+     "dport",
+     "proto",
+     "packets",
+     "bytes",
+     "protocols"
+    ],
+    "type": "object"
+   },
+   "HostMark": {
+    "additionalProperties": false,
+    "properties": {
+     "ip": {
+      "type": "string"
+     },
+     "time": {
+      "anyOf": [
+       {
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "note": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "ip",
+     "time",
+     "note"
+    ],
+    "type": "object"
+   },
+   "HostMarkIn": {
+    "additionalProperties": false,
+    "properties": {
+     "ip": {
+      "type": "string"
+     },
+     "time": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "ISO-8601 or epoch; blank or null: unknown"
+     },
+     "note": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "up to limits.note characters"
+     }
+    },
+    "required": [
+     "ip"
+    ],
+    "type": "object"
+   },
+   "HostToUnmark": {
+    "additionalProperties": false,
+    "properties": {
+     "ip": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "ip"
+    ],
+    "type": "object"
+   },
+   "KeptEdge": {
+    "additionalProperties": false,
+    "description": "A connection that carries marked or suspect flows: the counts, times, ports and protocols are\nthose flows' only.",
+    "properties": {
+     "source": {
+      "type": "string"
+     },
+     "target": {
+      "type": "string"
+     },
+     "count": {
+      "description": "its flows; 0 for none",
+      "type": "integer"
+     },
+     "first_seen": {
+      "anyOf": [
+       {
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "null for no flows"
+     },
+     "last_seen": {
+      "anyOf": [
+       {
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "ports": {
+      "description": "the most used destination ports, up to 5",
+      "items": {
+       "type": "integer"
+      },
+      "type": "array"
+     },
+     "protocols": {
+      "description": "every protocol the flows carry, sorted: named as Zeek names its services (`dns`, `http`, `smb`, `ssl` for TLS, ...), plus `icmp`, and `unknown` for flows nothing identified. Security Onion gives Zeek's own; case files are identified from the payload, then by well-known port",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "status": {
+      "const": "kept",
+      "type": "string"
+     },
+     "marked": {
+      "description": "its marked flows",
+      "type": "integer"
+     },
+     "suspect": {
+      "description": "its suspect flows",
+      "type": "integer"
+     },
+     "within": {
+      "description": "the intervals they started in, to list them (POST /api/flows)",
+      "items": {
+       "maxItems": 2,
+       "minItems": 2,
+       "prefixItems": [
+        {
+         "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+         "type": "string"
+        },
+        {
+         "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+         "type": "string"
+        }
+       ],
+       "type": "array"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "source",
+     "target",
+     "count",
+     "first_seen",
+     "last_seen",
+     "ports",
+     "protocols",
+     "status",
+     "marked",
+     "suspect",
+     "within"
+    ],
+    "type": "object"
+   },
+   "Limits": {
+    "additionalProperties": false,
+    "description": "Every bound a request is held to, besides max_window, max_limit and max_filters.",
+    "properties": {
+     "hops": {
+      "description": "hops in a threat line or path",
+      "type": "integer"
+     },
+     "threat_line_hosts": {
+      "description": "hosts a threat line reaches in each direction (TB_THREAT_MAX_HOSTS)",
+      "type": "integer"
+     },
+     "paths": {
+      "description": "paths between two hosts (TB_MAX_PATHS)",
+      "type": "integer"
+     },
+     "paths_per_pair": {
+      "description": "attack paths per pair of marked hosts, without src and dst",
+      "type": "integer"
+     },
+     "flow_page": {
+      "description": "flows in one page of a connection's flow list",
+      "type": "integer"
+     },
+     "connection_flows": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "Security Onion: how far into a connection's flows a page can reach (offset + limit); null: no bound"
+     },
+     "filter_length": {
+      "description": "characters in a filter expression",
+      "type": "integer"
+     },
+     "filter_depth": {
+      "description": "nested parentheses or NOTs in a filter expression",
+      "type": "integer"
+     },
+     "edges": {
+      "description": "drawn connections sent to /api/suspect or /api/export",
+      "type": "integer"
+     },
+     "within": {
+      "description": "intervals in a flow list's within",
+      "type": "integer"
+     },
+     "export_flows": {
+      "description": "flows in an export",
+      "type": "integer"
+     },
+     "marks": {
+      "description": "hosts, and flows, in a list of marks",
+      "type": "integer"
+     },
+     "note": {
+      "description": "characters in a mark's note",
+      "type": "integer"
+     },
+     "saved_maps": {
+      "description": "saved maps",
+      "type": "integer"
+     },
+     "map_bytes": {
+      "description": "bytes in a saved map",
+      "type": "integer"
+     },
+     "map_name": {
+      "description": "characters in a saved map's name",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "hops",
+     "threat_line_hosts",
+     "paths",
+     "paths_per_pair",
+     "flow_page",
+     "connection_flows",
+     "filter_length",
+     "filter_depth",
+     "edges",
+     "within",
+     "export_flows",
+     "marks",
+     "note",
+     "saved_maps",
+     "map_bytes",
+     "map_name"
+    ],
+    "type": "object"
+   },
+   "LineEdge": {
+    "additionalProperties": false,
+    "description": "A host pair's flows that fit the line.",
+    "properties": {
+     "source": {
+      "type": "string"
+     },
+     "target": {
+      "type": "string"
+     },
+     "count": {
+      "description": "its flows; 0 for none",
+      "type": "integer"
+     },
+     "first_seen": {
+      "anyOf": [
+       {
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "null for no flows"
+     },
+     "last_seen": {
+      "anyOf": [
+       {
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "ports": {
+      "description": "the most used destination ports, up to 5",
+      "items": {
+       "type": "integer"
+      },
+      "type": "array"
+     },
+     "protocols": {
+      "description": "every protocol the flows carry, sorted: named as Zeek names its services (`dns`, `http`, `smb`, `ssl` for TLS, ...), plus `icmp`, and `unknown` for flows nothing identified. Security Onion gives Zeek's own; case files are identified from the payload, then by well-known port",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "role": {
+      "enum": [
+       "selected",
+       "up",
+       "down"
+      ],
+      "type": "string"
+     }
+    },
+    "required": [
+     "source",
+     "target",
+     "count",
+     "first_seen",
+     "last_seen",
+     "ports",
+     "protocols",
+     "role"
+    ],
+    "type": "object"
+   },
+   "LineNode": {
+    "additionalProperties": false,
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "role": {
+      "description": "selected (a and b), up (earlier), down (later)",
+      "enum": [
+       "selected",
+       "up",
+       "down",
+       "both"
+      ],
+      "type": "string"
+     },
+     "time": {
+      "description": "when the line reached it",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+      "type": "string"
+     },
+     "hops": {
+      "description": "how many hops it took",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "id",
+     "role",
+     "time",
+     "hops"
+    ],
+    "type": "object"
+   },
+   "MapDocument": {
+    "additionalProperties": false,
+    "description": "A saved map (D19, D22): its hosts where they were, its connections with their counts as drawn,\nthe highlights (classes), the view, the toolbar, the filters, its own marks and the queries it was\nbuilt from, in order. The map reads only what it understands and leaves out what is malformed.",
+    "properties": {
+     "version": {
+      "description": "1: saved before filters and marks; it has no filters, marks or queries",
+      "enum": [
+       1,
+       2
+      ],
+      "type": "integer"
+     },
+     "iocTime": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "the IOC host's anchor"
+     },
+     "settings": {
+      "additionalProperties": {
+       "type": "string"
+      },
+      "description": "the toolbar and the paths form: each field's text, by its element id",
+      "propertyNames": {
+       "enum": [
+        "ip",
+        "ts",
+        "direction",
+        "window",
+        "range-from",
+        "range-to",
+        "order",
+        "limit",
+        "route-src",
+        "route-src-time",
+        "route-dst",
+        "route-dst-time"
+       ]
+      },
+      "type": "object"
+     },
+     "nodes": {
+      "items": {
+       "$ref": "#/components/schemas/MapNode"
+      },
+      "type": "array"
+     },
+     "edges": {
+      "items": {
+       "$ref": "#/components/schemas/MapEdge"
+      },
+      "type": "array"
+     },
+     "view": {
+      "$ref": "#/components/schemas/MapView"
+     },
+     "filters": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "marks": {
+      "$ref": "#/components/schemas/Marks"
+     },
+     "queries": {
+      "description": "in order, to run again with other filters",
+      "items": {
+       "$ref": "#/components/schemas/MapQuery"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "version",
+     "nodes",
+     "edges"
+    ],
+    "type": "object"
+   },
+   "MapEdge": {
+    "additionalProperties": false,
+    "description": "A connection, as drawn.",
+    "properties": {
+     "source": {
+      "type": "string"
+     },
+     "target": {
+      "type": "string"
+     },
+     "direction": {
+      "enum": [
+       "in",
+       "out"
+      ],
+      "type": "string"
+     },
+     "count": {
+      "type": "number"
+     },
+     "ports": {
+      "items": {
+       "type": "integer"
+      },
+      "type": "array"
+     },
+     "protocols": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "classes": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "first_seen": {
+      "type": "string"
+     },
+     "last_seen": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "source",
+     "target"
+    ],
+    "type": "object"
+   },
+   "MapName": {
+    "additionalProperties": false,
+    "properties": {
+     "name": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "name"
+    ],
+    "type": "object"
+   },
+   "MapNode": {
+    "additionalProperties": false,
+    "description": "A host, where it was.",
+    "properties": {
+     "id": {
+      "minLength": 1,
+      "type": "string"
+     },
+     "position": {
+      "$ref": "#/components/schemas/Position"
+     },
+     "classes": {
+      "description": "the highlights (up, down, line-selected, faded, attack, route), and other classes, which opening a map ignores",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "anchor": {
+      "type": "string"
+     },
+     "root": {
+      "type": "boolean"
+     },
+     "depth": {
+      "type": "number"
+     },
+     "expandedIn": {
+      "type": "boolean"
+     },
+     "expandedOut": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "id"
+    ],
+    "type": "object"
+   },
+   "MapQuery": {
+    "additionalProperties": false,
+    "description": "A query the map was built from, with the fields that query took.",
+    "properties": {
+     "op": {
+      "description": "node and edge: a version 1 map's hosts and connections, as converted",
+      "enum": [
+       "root",
+       "expand",
+       "threatline",
+       "routes",
+       "remove",
+       "node",
+       "edge"
+      ],
+      "type": "string"
+     },
+     "ip": {
+      "type": "string"
+     },
+     "ts": {
+      "type": "string"
+     },
+     "direction": {
+      "type": "string"
+     },
+     "window": {
+      "type": "string"
+     },
+     "limit": {
+      "type": "string"
+     },
+     "order": {
+      "type": "string"
+     },
+     "a": {
+      "type": "string"
+     },
+     "b": {
+      "type": "string"
+     },
+     "from": {
+      "type": "string"
+     },
+     "to": {
+      "type": "string"
+     },
+     "src": {
+      "type": "string"
+     },
+     "dst": {
+      "type": "string"
+     },
+     "src_time": {
+      "type": "string"
+     },
+     "dst_time": {
+      "type": "string"
+     },
+     "id": {
+      "type": "string"
+     },
+     "source": {
+      "type": "string"
+     },
+     "target": {
+      "type": "string"
+     },
+     "anchor": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "data": {
+      "$ref": "#/components/schemas/NodeData"
+     }
+    },
+    "required": [
+     "op"
+    ],
+    "type": "object"
+   },
+   "MapToSave": {
+    "additionalProperties": false,
+    "properties": {
+     "name": {
+      "description": "1 to limits.map_name printable characters",
+      "type": "string"
+     },
+     "map": {
+      "additionalProperties": true,
+      "description": "up to limits.map_bytes, kept as it is; the map saves a MapDocument",
+      "type": "object"
+     },
+     "overwrite": {
+      "description": "replace a map saved under that name; otherwise that is a 409",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "name",
+     "map"
+    ],
+    "type": "object"
+   },
+   "MapView": {
+    "additionalProperties": false,
+    "properties": {
+     "zoom": {
+      "type": "number"
+     },
+     "pan": {
+      "$ref": "#/components/schemas/Position"
+     }
+    },
+    "required": [
+     "zoom",
+     "pan"
+    ],
+    "type": "object"
+   },
+   "MarkedHost": {
+    "additionalProperties": false,
+    "properties": {
+     "ip": {
+      "type": "string"
+     },
+     "time": {
+      "anyOf": [
+       {
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "when it was reached: the earliest known of its own mark's time and its marked flows' starts; null: unknown"
+     },
+     "note": {
+      "type": "string"
+     },
+     "direct": {
+      "description": "it is marked itself",
+      "type": "boolean"
+     },
+     "count": {
+      "description": "its own mark, plus the marked flows it is an end of",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "ip",
+     "time",
+     "note",
+     "direct",
+     "count"
+    ],
+    "type": "object"
+   },
+   "MarkedQuery": {
+    "additionalProperties": false,
+    "description": "The connections drawn, and the query's other parameters (text or numbers).",
+    "properties": {
+     "edges": {
+      "description": "up to limits.edges",
+      "items": {
+       "$ref": "#/components/schemas/DrawnEdge"
+      },
+      "type": "array"
+     },
+     "window": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "hops": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "range_from": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "range_to": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "filters": {
+      "description": "filter expressions (D17), combined with AND",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "marks": {
+      "$ref": "#/components/schemas/Marks"
+     }
+    },
+    "required": [
+     "edges"
+    ],
+    "type": "object"
+   },
+   "Marks": {
+    "additionalProperties": false,
+    "description": "Marks to use instead of the shared ones (an opened map's own, D19).",
+    "properties": {
+     "hosts": {
+      "items": {
+       "$ref": "#/components/schemas/HostMarkIn"
+      },
+      "type": "array"
+     },
+     "flows": {
+      "items": {
+       "$ref": "#/components/schemas/FlowMarkIn"
+      },
+      "type": "array"
+     }
+    },
+    "type": "object"
+   },
+   "MarksView": {
+    "additionalProperties": false,
+    "description": "The marks (D15), shared by every analyst.",
+    "examples": [
+     {
+      "flows": [
+       {
+        "dport": 3389,
+        "dst": "10.0.0.20",
+        "note": "",
+        "proto": "tcp",
+        "sport": 50001,
+        "src": "10.0.0.9",
+        "start": "2024-05-01T13:20:00.000Z"
+       }
+      ],
+      "hosts": [
+       {
+        "count": 2,
+        "direct": true,
+        "ip": "10.0.0.20",
+        "note": "EDR",
+        "time": "2024-05-01T13:00:00.000Z"
+       }
+      ],
+      "marked": [
+       {
+        "ip": "10.0.0.20",
+        "note": "EDR",
+        "time": "2024-05-01T13:00:00.000Z"
+       }
+      ],
+      "version": "5f0c2a91d0e4b7c3"
+     }
+    ],
+    "properties": {
+     "hosts": {
+      "description": "every marked host, those marked through a marked flow too, sorted by time, unknown first",
+      "items": {
+       "$ref": "#/components/schemas/MarkedHost"
+      },
+      "type": "array"
+     },
+     "marked": {
+      "description": "the hosts marked themselves",
+      "items": {
+       "$ref": "#/components/schemas/HostMark"
+      },
+      "type": "array"
+     },
+     "flows": {
+      "description": "the marked flows",
+      "items": {
+       "$ref": "#/components/schemas/FlowMark"
+      },
+      "type": "array"
+     },
+     "version": {
+      "description": "changes whenever the marks do",
+      "type": "string"
+     }
+    },
+    "required": [
+     "hosts",
+     "marked",
+     "flows",
+     "version"
+    ],
+    "type": "object"
+   },
+   "Neighbors": {
+    "additionalProperties": false,
+    "examples": [
+     {
+      "anchor": "2024-05-01T13:00:00.000Z",
+      "direction": "in",
+      "distinct_peers": 2,
+      "end": "2024-05-01T13:00:00.000Z",
+      "ip": "10.0.0.9",
+      "order": "top",
+      "peers": [
+       {
+        "count": 1,
+        "first_seen": "2024-05-01T12:10:00.000Z",
+        "last_seen": "2024-05-01T12:10:00.000Z",
+        "peer": "10.0.0.5",
+        "ports": [
+         445
+        ],
+        "protocols": [
+         "smb"
+        ]
+       }
+      ],
+      "start": "2024-04-30T13:00:00.000Z",
+      "truncated": false
+     }
+    ],
+    "properties": {
+     "ip": {
+      "type": "string"
+     },
+     "direction": {
+      "enum": [
+       "in",
+       "out"
+      ],
+      "type": "string"
+     },
+     "order": {
+      "enum": [
+       "top",
+       "bottom"
+      ],
+      "type": "string"
+     },
+     "anchor": {
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+      "type": "string"
+     },
+     "start": {
+      "description": "the window's start; after end when the window and the time range don't overlap",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+      "type": "string"
+     },
+     "end": {
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+      "type": "string"
+     },
+     "peers": {
+      "items": {
+       "$ref": "#/components/schemas/Peer"
+      },
+      "type": "array"
+     },
+     "distinct_peers": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "null: Elasticsearch's estimate is unavailable"
+     },
+     "truncated": {
+      "description": "the rarest scan stopped at rare_scan_cap distinct peers, so the bottom list may be incomplete",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "ip",
+     "direction",
+     "order",
+     "anchor",
+     "start",
+     "end",
+     "peers",
+     "distinct_peers",
+     "truncated"
+    ],
+    "type": "object"
+   },
+   "NeighborsQueryBody": {
+    "additionalProperties": false,
+    "description": "The query's parameters as a JSON object (text or numbers), plus filters and marks.",
+    "properties": {
+     "ip": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "direction": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "ts": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "window": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "limit": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "order": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "range_from": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "range_to": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "filters": {
+      "description": "filter expressions (D17), combined with AND",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "marks": {
+      "$ref": "#/components/schemas/Marks"
+     }
+    },
+    "type": "object"
+   },
+   "NodeData": {
+    "additionalProperties": false,
+    "properties": {
+     "anchor": {
+      "type": "string"
+     },
+     "root": {
+      "type": "boolean"
+     },
+     "depth": {
+      "type": "number"
+     },
+     "expandedIn": {
+      "type": "boolean"
+     },
+     "expandedOut": {
+      "type": "boolean"
+     }
+    },
+    "type": "object"
+   },
+   "OtherEdge": {
+    "additionalProperties": false,
+    "properties": {
+     "source": {
+      "type": "string"
+     },
+     "target": {
+      "type": "string"
+     },
+     "status": {
+      "description": "unaffected: no marked host is in its part of the map (hosts joined by the connections sent); hidden: in a part with marks, it carries no marked or suspect flow",
+      "enum": [
+       "unaffected",
+       "hidden"
+      ],
+      "type": "string"
+     }
+    },
+    "required": [
+     "source",
+     "target",
+     "status"
+    ],
+    "type": "object"
+   },
+   "PairPaths": {
+    "additionalProperties": false,
+    "properties": {
+     "from": {
+      "type": "string"
+     },
+     "to": {
+      "type": "string"
+     },
+     "paths": {
+      "description": "shortest first",
+      "items": {
+       "$ref": "#/components/schemas/Path"
+      },
+      "type": "array"
+     },
+     "truncated": {
+      "description": "there are more than listed",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "from",
+     "to",
+     "paths",
+     "truncated"
+    ],
+    "type": "object"
+   },
+   "Path": {
+    "additionalProperties": false,
+    "description": "One chain of flows that proves the path.",
+    "properties": {
+     "hops": {
+      "items": {
+       "$ref": "#/components/schemas/Hop"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "hops"
+    ],
+    "type": "object"
+   },
+   "PathsBetween": {
+    "additionalProperties": false,
+    "properties": {
+     "src": {
+      "type": "string"
+     },
+     "dst": {
+      "type": "string"
+     },
+     "paths": {
+      "description": "shortest first",
+      "items": {
+       "$ref": "#/components/schemas/Path"
+      },
+      "type": "array"
+     },
+     "truncated": {
+      "description": "there are more than listed",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "src",
+     "dst",
+     "paths",
+     "truncated"
+    ],
+    "type": "object"
+   },
+   "PathsQueryBody": {
+    "additionalProperties": false,
+    "description": "The query's parameters as a JSON object (text or numbers), plus filters and marks.",
+    "properties": {
+     "src": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "dst": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "src_time": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "dst_time": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "window": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "hops": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "range_from": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "range_to": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "filters": {
+      "description": "filter expressions (D17), combined with AND",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "marks": {
+      "$ref": "#/components/schemas/Marks"
+     }
+    },
+    "type": "object"
+   },
+   "PcapRequest": {
+    "additionalProperties": false,
+    "properties": {
+     "id": {
+      "description": "the flow's id, from its flow list",
+      "type": "string"
+     },
+     "time": {
+      "description": "the flow's start",
+      "type": "string"
+     }
+    },
+    "required": [
+     "id",
+     "time"
+    ],
+    "type": "object"
+   },
+   "Peer": {
+    "additionalProperties": false,
+    "properties": {
+     "peer": {
+      "type": "string"
+     },
+     "count": {
+      "description": "its flows",
+      "type": "integer"
+     },
+     "first_seen": {
+      "anyOf": [
+       {
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "last_seen": {
+      "anyOf": [
+       {
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "ports": {
+      "description": "the most used destination ports, up to 5",
+      "items": {
+       "type": "integer"
+      },
+      "type": "array"
+     },
+     "protocols": {
+      "description": "every protocol the flows carry, sorted: named as Zeek names its services (`dns`, `http`, `smb`, `ssl` for TLS, ...), plus `icmp`, and `unknown` for flows nothing identified. Security Onion gives Zeek's own; case files are identified from the payload, then by well-known port",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "peer",
+     "count",
+     "first_seen",
+     "last_seen",
+     "ports",
+     "protocols"
+    ],
+    "type": "object"
+   },
+   "Pivot": {
+    "additionalProperties": false,
+    "properties": {
+     "query": {
+      "description": "the Dashboards filter, in OQL",
+      "type": "string"
+     },
+     "url": {
+      "description": "the Dashboards link",
+      "type": "string"
+     }
+    },
+    "required": [
+     "query",
+     "url"
+    ],
+    "type": "object"
+   },
+   "Position": {
+    "additionalProperties": false,
+    "properties": {
+     "x": {
+      "type": "number"
+     },
+     "y": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "x",
+     "y"
+    ],
+    "type": "object"
+   },
+   "ProtocolCount": {
+    "additionalProperties": false,
+    "properties": {
+     "protocol": {
+      "description": "Zeek's name, as in other answers",
+      "type": "string"
+     },
+     "name": {
+      "description": "what a filter writes",
+      "type": "string"
+     },
+     "flows": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "protocol",
+     "name",
+     "flows"
+    ],
+    "type": "object"
+   },
+   "ProtocolCounts": {
+    "additionalProperties": false,
+    "examples": [
+     {
+      "end": null,
+      "protocols": [
+       {
+        "flows": 4,
+        "name": "SMB",
+        "protocol": "smb"
+       },
+       {
+        "flows": 1,
+        "name": "TLS",
+        "protocol": "ssl"
+       }
+      ],
+      "start": null
+     }
+    ],
+    "properties": {
+     "start": {
+      "anyOf": [
+       {
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "the start of the range counted; null: open"
+     },
+     "end": {
+      "anyOf": [
+       {
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "its end; null: open"
+     },
+     "protocols": {
+      "description": "most flows first",
+      "items": {
+       "$ref": "#/components/schemas/ProtocolCount"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "start",
+     "end",
+     "protocols"
+    ],
+    "type": "object"
+   },
+   "ProtocolsQueryBody": {
+    "additionalProperties": false,
+    "description": "The query's parameters as a JSON object (text or numbers), plus filters and marks.",
+    "properties": {
+     "range_from": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "range_to": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "filters": {
+      "description": "filter expressions (D17), combined with AND",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "marks": {
+      "$ref": "#/components/schemas/Marks"
+     }
+    },
+    "type": "object"
+   },
+   "Resolution": {
+    "additionalProperties": false,
+    "properties": {
+     "capture": {
+      "description": "addresses in DNS answers in the evidence (pcaps, or Security Onion's DNS records)",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "dns": {
+      "description": "addresses from a live lookup",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "error": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "what went wrong, if anything"
+     }
+    },
+    "required": [
+     "capture",
+     "dns",
+     "error"
+    ],
+    "type": "object"
+   },
+   "Resolved": {
+    "additionalProperties": false,
+    "examples": [
+     {
+      "anchor": "2024-05-01T13:09:50.001Z",
+      "ip": "10.0.0.9"
+     }
+    ],
+    "properties": {
+     "ip": {
+      "type": "string"
+     },
+     "anchor": {
+      "description": "the time the map starts from",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+      "type": "string"
+     }
+    },
+    "required": [
+     "ip",
+     "anchor"
+    ],
+    "type": "object"
+   },
+   "SaveResult": {
+    "additionalProperties": false,
+    "properties": {
+     "name": {
+      "type": "string"
+     },
+     "saved": {
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+      "type": "string"
+     },
+     "sessions": {
+      "items": {
+       "$ref": "#/components/schemas/Session"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "name",
+     "saved",
+     "sessions"
+    ],
+    "type": "object"
+   },
+   "SavedMap": {
+    "additionalProperties": false,
+    "properties": {
+     "name": {
+      "type": "string"
+     },
+     "saved": {
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+      "type": "string"
+     },
+     "map": {
+      "additionalProperties": true,
+      "description": "as it was saved; the map saves a MapDocument",
+      "type": "object"
+     }
+    },
+    "required": [
+     "name",
+     "saved",
+     "map"
+    ],
+    "type": "object"
+   },
+   "Session": {
+    "additionalProperties": false,
+    "properties": {
+     "name": {
+      "type": "string"
+     },
+     "saved": {
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+      "type": "string"
+     }
+    },
+    "required": [
+     "name",
+     "saved"
+    ],
+    "type": "object"
+   },
+   "Sessions": {
+    "additionalProperties": false,
+    "properties": {
+     "sessions": {
+      "description": "the most recently saved first",
+      "items": {
+       "$ref": "#/components/schemas/Session"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "sessions"
+    ],
+    "type": "object"
+   },
+   "Suspects": {
+    "additionalProperties": false,
+    "properties": {
+     "edges": {
+      "description": "one per connection sent",
+      "items": {
+       "anyOf": [
+        {
+         "$ref": "#/components/schemas/KeptEdge"
+        },
+        {
+         "$ref": "#/components/schemas/OtherEdge"
+        }
+       ]
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "edges"
+    ],
+    "type": "object"
+   },
+   "ThreatLine": {
+    "additionalProperties": false,
+    "properties": {
+     "a": {
+      "type": "string"
+     },
+     "b": {
+      "type": "string"
+     },
+     "nodes": {
+      "items": {
+       "$ref": "#/components/schemas/LineNode"
+      },
+      "type": "array"
+     },
+     "edges": {
+      "items": {
+       "$ref": "#/components/schemas/LineEdge"
+      },
+      "type": "array"
+     },
+     "truncated": {
+      "description": "a direction stopped at limits.threat_line_hosts hosts",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "a",
+     "b",
+     "nodes",
+     "edges",
+     "truncated"
+    ],
+    "type": "object"
+   },
+   "ThreatLineQueryBody": {
+    "additionalProperties": false,
+    "description": "The query's parameters as a JSON object (text or numbers), plus filters and marks.",
+    "properties": {
+     "a": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "b": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "from": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "to": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "window": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "hops": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "range_from": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "range_to": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "filters": {
+      "description": "filter expressions (D17), combined with AND",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "marks": {
+      "$ref": "#/components/schemas/Marks"
+     }
+    },
+    "type": "object"
+   }
+  }
+ }
+}
