@@ -1,14 +1,18 @@
-"""The API's description for programs (D20-D22): the OpenAPI document, the version and limits
-in /api/config, and the saved-map format. Every response any API test gets is checked against
-the document by tests/conftest.py; the tour below makes sure every operation is among them."""
+"""The API's description for programs (D20-D22): the OpenAPI document generated from
+threatbridge/apidoc.py, API.md's index, the version and limits in /api/config, and the
+saved-map format. Every response any API test gets is checked against the document by
+tests/conftest.py; the tour below makes sure every operation is among them."""
 import json
 import os
 import re
+import subprocess
+import sys
 
 import pytest
 from openapi_spec_validator import validate
 
 from conftest import CALLED, OPENAPI, ROOT, schema_error
+from threatbridge import apidoc
 from threatbridge import app as app_mod
 from threatbridge import compromised, filters, sessions
 from threatbridge.app import create_app
@@ -33,6 +37,50 @@ def operations():
     return {(m.upper(), p) for p, ops in OPENAPI["paths"].items() for m in ops if m != "parameters"}
 
 
+def test_the_committed_document_is_the_generated_one():
+    assert read("threatbridge", "openapi.json") == apidoc.text(), "run: python -m threatbridge.apidoc"
+
+
+def test_the_generator_stops_at_a_route_it_cannot_describe():
+    routes = apidoc.routes()
+    with pytest.raises(apidoc.Undescribed, match="GET /api/new"):
+        apidoc.build({**routes, ("GET", "/api/new"): "api_new"})
+    del routes[("GET", "/healthz")]
+    with pytest.raises(apidoc.Undescribed, match="healthz"):
+        apidoc.build(routes)
+
+
+def test_the_service_runs_without_pydantic():
+    script = ("import sys; sys.modules['pydantic'] = None\n"
+              "from threatbridge.app import create_app\n"
+              "from threatbridge.config import Config\n"
+              "from threatbridge.backends import DemoBackend\n"
+              "cfg = Config(backend='demo', live_dns=False, compromised_file='/nonexistent/c.json')\n"
+              "r = create_app(cfg, DemoBackend(cfg)).test_client().get('/api/openapi.json')\n"
+              "assert r.status_code == 200 and r.get_json()['openapi'].startswith('3.1')\n")
+    r = subprocess.run([sys.executable, "-c", script], cwd=ROOT, capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+
+
+def examples(node, pointer=""):
+    """(pointer to a schema, one of its examples) for every example in the document."""
+    if isinstance(node, dict):
+        for example in node.get("examples", []) if isinstance(node.get("examples"), list) else []:
+            yield pointer, example
+        for key, value in node.items():
+            yield from examples(value, f"{pointer}/{key}")
+    elif isinstance(node, list):
+        for i, value in enumerate(node):
+            yield from examples(value, f"{pointer}/{i}")
+
+
+def test_every_example_matches_its_schema():
+    found = list(examples(OPENAPI["components"]["schemas"], "/components/schemas"))
+    assert len(found) >= 5
+    for pointer, example in found:
+        assert schema_error(example, pointer) is None, pointer
+
+
 def test_the_document_is_valid_openapi_3_1():
     validate(OPENAPI)
     assert OPENAPI["openapi"].startswith("3.1")
@@ -47,44 +95,28 @@ def test_the_document_and_the_routes_list_the_same_operations(tmp_path):
     assert served == operations()
 
 
-def api_md_sections():
-    """{(METHOD, path): the text of its section in docs/API.md}."""
-    parts = re.split(r"^### `(GET|POST|PUT|DELETE) (/\S*)`$", read("docs", "API.md"), flags=re.M)
-    return {(parts[i], parts[i + 1]): parts[i + 2] for i in range(1, len(parts), 3)}
+def api_md_index():
+    """{(METHOD, path)} from the rows of API.md's index: | `path` | METHOD, METHOD | what |."""
+    rows = re.findall(r"^\| `(/\S*)` \| ([A-Z, ]+) \|", read("docs", "API.md"), re.M)
+    return {(m.strip(), path) for path, methods in rows for m in methods.split(",")}
 
 
-def table_names(text):
-    return {n for cell in re.findall(r"^\| (`[^|]+`) \|", text, re.M) for n in re.findall(r"`([a-z_]+)`", cell)}
+def test_api_md_indexes_the_operations_the_document_has():
+    assert api_md_index() == operations()
 
 
-def test_api_md_and_the_document_list_the_same_operations():
-    assert set(api_md_sections()) == operations()
-
-
-def test_api_md_lists_the_query_parameters_the_document_does():
-    # A query's filters (repeated filter=) are described once, under Conventions.
-    sections = api_md_sections()
-    for (method, path), op in ((k, OPENAPI["paths"][k[1]][k[0].lower()]) for k in operations()):
-        if method != "GET" or path == "/api/config":           # its table lists fields
-            continue
-        params = {OPENAPI["components"]["parameters"][p["$ref"].rsplit("/", 1)[1]]["name"] if "$ref" in p else p["name"]
-                  for p in op.get("parameters", []) if p.get("$ref") != "#/components/parameters/filter"}
-        assert table_names(sections[(method, path)]) == params, path
-
-
-def test_api_md_lists_the_config_fields_the_document_does():
-    schema = OPENAPI["components"]["schemas"]["Config"]
-    assert table_names(api_md_sections()[("GET", "/api/config")]) == set(schema["properties"])
+def test_api_md_leaves_parameters_and_fields_to_the_document():
+    assert not re.search(r"^\| (Field|Parameter) \|", read("docs", "API.md"), re.M)
 
 
 def test_the_version_is_the_same_everywhere(tmp_path):
     cfg = Config(backend="demo", live_dns=False, compromised_file=str(tmp_path / "c.json"))
     client = create_app(cfg, DemoBackend(cfg)).test_client()
     version = app_mod.API_VERSION
-    assert re.fullmatch(r"\d+\.\d+", version)
+    assert type(version) is int and version >= 1
     assert client.get("/healthz").get_json()["api_version"] == version
     assert client.get("/api/config").get_json()["api_version"] == version
-    assert OPENAPI["info"]["version"] == version
+    assert OPENAPI["info"]["version"] == str(version)
     assert f"API version **{version}**" in read("docs", "API.md")
 
 

@@ -317,7 +317,7 @@ def test_backend_failures_reach_the_client_as_502(tmp_path):
     c = create_app(cfg, be).test_client()
     r = c.get("/api/neighbors?ip=10.0.0.5&ts=2024-05-01T12:00:00Z")
     assert r.status_code == 502 and r.get_json() == {"error": "Elasticsearch returned HTTP 503"}
-    assert c.get("/healthz").get_json() == {"status": "ok", "backend": "elastic", "api_version": "1.0"}
+    assert c.get("/healthz").get_json() == {"status": "ok", "backend": "elastic", "api_version": 1}
 
 
 # ---- demo backend, and choosing a backend -------------------------------------------------

@@ -260,6 +260,7 @@ pip install -r requirements.txt -r requirements-test.txt
 python -m pytest
 TB_BACKEND=demo python -m threatbridge --port 5055   # fake data, plain HTTP, localhost only
 TB_PERF=1 python -m pytest -s tests/test_perf.py    # PRF-1/2/3: 1.25M flows, a busy week; about a minute
+python -m threatbridge.apidoc                        # after changing the API: regenerate threatbridge/openapi.json
 ```
 
 The nfcapd test needs `nfdump` installed (`apt install nfdump`); without it, it is skipped locally.
@@ -318,6 +319,7 @@ Layout:
 | `threatbridge/backends.py` | The data backends behind the map: Elasticsearch, case (files) and demo |
 | `threatbridge/config.py` | Settings from the `TB_*` environment variables |
 | `threatbridge/app.py` | The HTTP API (documented in `docs/API.md` and `threatbridge/openapi.json`) and the command line |
+| `threatbridge/apidoc.py` | The API's requests and responses as pydantic models, which generate `threatbridge/openapi.json`; for development only |
 | `threatbridge/static/` | The Cytoscape.js UI, vendored so it works air-gapped |
 
 ## License

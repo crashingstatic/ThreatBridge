@@ -513,8 +513,8 @@ generated case) and `ui_mtls.mjs` (the container). *Manual* names the tests abov
 | PRF-S1 Parallel reading | `test_sources.py` (the same flows as one at a time), `test_case.py` | |
 | PRF-S3 Progress | `test_progress.py` (a simulated terminal, and the log); `ui_smoke.mjs`, `ui_actions.mjs` (busy indicator, Cancel) | TERM-01 (a real terminal) |
 | EXT-1 Security Onion workflows | `test_integration.py` (SOC actions open the map), `test_query.py` (pivots, configurable); `ui_smoke.mjs` | SO-01, SO-06 |
-| EXT-S2 API | `test_openapi.py` (every endpoint documented in API.md and OpenAPI), the API tests | |
-| EXT-S4 OpenAPI | `test_openapi.py` (valid OpenAPI 3.1, the same operations as the routes and API.md), `conftest.py` (every API response the tests get matches its schema) | |
+| EXT-S2 API | `test_openapi.py` (every endpoint in API.md's index and in OpenAPI), the API tests | |
+| EXT-S4 OpenAPI | `test_openapi.py` (the committed document is what `threatbridge/apidoc.py` generates; valid OpenAPI 3.1; the same operations as the routes and API.md's index; its examples match its schemas), `conftest.py` (every API response the tests get matches its schema) | |
 | EXT-S5 Self-description | `test_openapi.py` (version, limits), `test_filters.py` (the vocabulary is what the parser takes), `test_case.py`, `test_backends.py` (protocol counts) | |
 | EXT-S6 Map format | `test_openapi.py` (the format, and the maps the browser tests save) | |
 | Mutual TLS | `mtls_check.sh`, `ui_mtls.mjs` (CI Docker job) | TLS-01 (a browser's own certificate store); ENV-SO uses it |

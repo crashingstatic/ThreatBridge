@@ -21,7 +21,7 @@ from .sessions import Conflict, NotFound, SessionStore
 from .soc import SocClient
 
 log = logging.getLogger("threatbridge")
-API_VERSION = "1.0"   # D20: the minor number goes up for additions, the major for breaking changes
+API_VERSION = 1   # D20: goes up only when something is removed or changes meaning
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 OPENAPI = os.path.join(os.path.dirname(__file__), "openapi.json")   # D21
 MAX_HOPS = 20
