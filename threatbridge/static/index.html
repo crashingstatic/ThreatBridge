@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ThreatBridge</title>
+  <link rel="icon" href="data:,">
+  <!-- The id stops Cytoscape injecting an inline <style> (blocked by our CSP). -->
+  <link rel="stylesheet" id="__________cytoscape_stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header id="toolbar">
+    <strong class="brand">ThreatBridge</strong>
+    <label>Host / IOC IP <input id="ip" placeholder="10.0.0.5" autocomplete="off" spellcheck="false"></label>
+    <label>Anchor time (UTC) <input id="ts" placeholder="2024-05-01T12:00:00Z (blank = now)" spellcheck="false"></label>
+    <label>Direction
+      <select id="direction">
+        <option value="in">Inbound: who connected to the host (past)</option>
+        <option value="out">Outbound: who the host connected to (future)</option>
+      </select>
+    </label>
+    <label>Window <input id="window" size="5" value="24h"></label>
+    <label>Range from (UTC) <input id="range-from" placeholder="blank = no limit" spellcheck="false"></label>
+    <label>Range to (UTC) <input id="range-to" placeholder="blank = no limit" spellcheck="false"></label>
+    <label>Peers
+      <select id="order">
+        <option value="top">Top (most connections)</option>
+        <option value="bottom">Bottom (rarest)</option>
+      </select>
+    </label>
+    <label>N <input id="limit" size="4" value="50"></label>
+    <button id="go" type="button">Map</button>
+    <button id="fit" type="button">Fit</button>
+    <button id="clear" type="button">Clear</button>
+    <label>Highlight protocol
+      <select id="protocol"><option value="">All</option></select>
+    </label>
+    <button id="apply-protocol" type="button" disabled title="Add the protocol highlighted as a filter">Apply as filter</button>
+    <label class="filter">Filter (Enter applies)
+      <input id="filter" placeholder="e.g. (SMB || TLS) &amp;&amp; sport 42000" autocomplete="off" spellcheck="false">
+    </label>
+    <ul id="filter-list" class="chips" aria-label="Filters applied"></ul>
+    <span id="busy" hidden><span id="busy-text"></span> <button id="cancel" type="button">Cancel</button></span>
+    <div id="status-line"><span id="status" role="status"></span> <span id="hidden-note"></span></div>
+  </header>
+  <main>
+    <div id="cy"></div>
+    <aside id="details">
+      <h2>Details</h2>
+      <div id="detail-body"><p class="hint">Left-click a host to expand it in the selected direction.
+        Left-click a connection to list its flows in time order and trace its threat line
+        (PCAP/NetFlow cases). The time range, when set, limits everything shown.
+        Right-click a host or connection for more, such as marking a host compromised or a
+        Security Onion filter for two hosts. A flow in a connection's list can be marked
+        compromised too. Filters (toolbar) narrow every query, for example
+        <code>(SMB || TLS) &amp;&amp; sport 42000</code> or <code>NOT DNS AND bytes &gt; 10000</code>.</p></div>
+      <section id="compromised-section">
+        <h2>Compromised hosts</h2>
+        <p id="local-marks" class="local-marks" hidden>Showing the marks saved with <span id="local-marks-name"></span>,
+          not the shared ones. Changes stay in this map until you share them.
+          <button id="share-marks" type="button">Share</button></p>
+        <form id="compromised-form" class="entry-form">
+          <input id="compromised-ip" placeholder="10.0.0.5" spellcheck="false" autocomplete="off">
+          <input id="compromised-time" placeholder="time UTC (blank = unknown)" spellcheck="false" autocomplete="off">
+          <button type="submit">Mark</button>
+        </form>
+        <ul id="compromised-list" class="entries"></ul>
+        <h3>Marked flows</h3>
+        <ul id="marked-flow-list" class="entries"></ul>
+        <div class="file-buttons"><button id="export-csv" type="button">Export CSV</button></div>
+      </section>
+      <section id="paths">
+        <h2>Attack paths</h2>
+        <p class="hint">Time-consistent paths between compromised hosts, recomputed on every change:
+          up to 10 per pair, shortest first.</p>
+        <ul id="path-list" class="entries"></ul>
+      </section>
+      <section id="routes">
+        <h2>Paths between two hosts</h2>
+        <p class="hint">Every way an attacker on the first host could have reached the second over
+          connections in the evidence: each hop opened by the host the attacker was on, in time
+          order, at most the Window after the hop before. IOC times are optional.</p>
+        <form id="route-form" class="entry-form route-form">
+          <input id="route-src" placeholder="from, e.g. 10.4.0.2" spellcheck="false" autocomplete="off">
+          <input id="route-src-time" placeholder="IOC time (optional)" spellcheck="false" autocomplete="off">
+          <input id="route-dst" placeholder="to, e.g. 10.5.0.3" spellcheck="false" autocomplete="off">
+          <input id="route-dst-time" placeholder="IOC time (optional)" spellcheck="false" autocomplete="off">
+          <button type="submit">Find paths</button>
+        </form>
+        <p id="route-summary" class="hint"></p>
+        <ul id="route-list" class="entries"></ul>
+      </section>
+      <section id="sessions">
+        <h2>Saved maps</h2>
+        <p class="hint">Maps saved here are shared with every analyst; click one to open it. A file
+          keeps a map for yourself or to pass on.</p>
+        <form id="session-form" class="entry-form">
+          <input id="session-name" placeholder="name, e.g. incident 42" spellcheck="false" autocomplete="off">
+          <button type="submit">Save</button>
+        </form>
+        <div class="file-buttons">
+          <button id="session-download" type="button">Save to file</button>
+          <label class="button">Open file <input id="session-file" type="file" accept=".json,application/json"></label>
+        </div>
+        <ul id="session-list" class="entries"></ul>
+      </section>
+      <section id="excludes">
+        <h2>Shared exclude list</h2>
+        <p class="hint">IPs, CIDRs and domain names hidden from every analyst's maps and never
+          crossed by threat lines or attack paths. A domain stands for the addresses it had in the
+          capture's DNS answers and in a live lookup; <code>*.example.com</code> matches capture
+          answers only.</p>
+        <form id="exclude-form" class="entry-form">
+          <input id="exclude-input" placeholder="10.0.0.53, 10.0.0.0/24 or updates.example.com" spellcheck="false" autocomplete="off">
+          <button type="submit">Add</button>
+        </form>
+        <ul id="exclude-list" class="entries"></ul>
+      </section>
+      <div class="legend">
+        <span><span class="sw root"></span> IOC host</span>
+        <span><span class="sw in"></span> inbound (past)</span>
+        <span><span class="sw out"></span> outbound (future)</span>
+        <span><span class="sw compromised"></span> compromised</span>
+        <span><span class="sw marked-line"></span> marked connection</span>
+        <span><span class="sw suspect-line"></span> suspect connection</span>
+        <span><span class="sw attack"></span> attack path</span>
+        <span><span class="sw route"></span> path between two hosts</span>
+        <span><span class="sw up"></span> threat line: earlier</span>
+        <span><span class="sw down"></span> threat line: later</span>
+      </div>
+    </aside>
+  </main>
+  <ul id="menu" class="menu" hidden></ul>
+  <script src="/static/vendor/cytoscape.min.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

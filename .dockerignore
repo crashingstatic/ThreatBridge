@@ -1,0 +1,13 @@
+.git
+certs
+tests
+mutants
+node_modules
+*.pyc
+__pycache__
+*.db
+*.db.lock
+exclude.json*
+compromised.json*
+sessions
+deploy/threatbridge.env
