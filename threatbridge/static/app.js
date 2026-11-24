@@ -429,6 +429,7 @@
       case "expand": return expandWith(q, false);
       case "threatline": return threatLineWith(q, false);
       case "routes": return routesWith(q, false);
+      case "contacts": return contactsWith(q, false);
       case "node": addNode(q.id, q.data.anchor || null, q.data); return null;   // a version 1 map's host
       case "edge": return edgeWith(q);
       case "remove": {
@@ -477,7 +478,7 @@
     detailsFor = null;
     const rows = [
       ["Source", e.data("source")], ["Destination", e.data("target")],
-      ["Direction", e.data("direction") === "in" ? "inbound (past)" : "outbound (future)"],
+      ["Direction", e.data("direction") === "in" ? "inbound" : "outbound"],
       ["Connections", e.data("count")], ["Top dst ports", (e.data("ports") || []).join(", ")],
       ["Protocols", e.data("protocols").map(protocolName).join(", ")],
       ["First seen", e.data("first_seen")], ["Last seen", e.data("last_seen")],
@@ -636,6 +637,7 @@
       ...(cfg.soc_pivots === false ? [] :
         [{ label: "Open host in SOC dashboard", action: () => openPivot(n.id(), null, null) }]),
       ...compromiseItems(n),
+      ...(cfg.contacts ? [{ label: "Inside hosts that talked to it", action: () => findContacts(n.id()) }] : []),
       ...(cfg.analysis ? [
         { label: "Find paths from this host…", action: () => routeEnd(n.id(), "src") },
         { label: "Find paths to this host…", action: () => routeEnd(n.id(), "dst") }] : []),
@@ -1192,6 +1194,94 @@
     findRoutes().catch((err) => fail(err));
   });
 
+  // ---- who talked to it (ATK-11): the inside hosts that exchanged flows with an address, a
+  // network or a domain name. The first N (the toolbar's) go on the map; the rest are listed.
+  async function findContacts(target) {
+    const q = { op: "contacts", target, limit: settingsNow().limit };
+    queries.push(q);
+    return contactsWith(q, true);
+  }
+
+  async function contactsWith(q, say) {
+    if (say) setStatus(`Looking for inside hosts that talked to ${q.target}…`);
+    const params = withRange(new URLSearchParams({ target: q.target }));
+    if (q.limit) params.set("limit", q.limit);
+    const r = await ask("/api/contacts", params);
+    const hosts = new Map(r.hosts.map((h) => [h.ip, h]));
+    const first = new Map();                   // each of the target's addresses: its first contact
+    for (const e of r.connections) {
+      const t = hosts.has(e.source) ? e.target : e.source;
+      if (e.count && (!first.has(t) || e.first_seen < first.get(t))) first.set(t, e.first_seen);
+    }
+    const drawn = new Set();
+    cy.batch(() => {
+      for (const e of r.connections) {
+        if (!e.count) continue;
+        const inside = hosts.has(e.source) ? e.source : e.target;
+        const outside = inside === e.source ? e.target : e.source;
+        addNode(outside, first.get(outside));
+        addNode(inside, hosts.get(inside).first_seen);
+        drawn.add(inside);
+        const data = edgeData(e.source, e.target, inside === e.source ? "out" : "in", e.count, e.ports,
+                              e.first_seen, e.last_seen, e.protocols);
+        const shown = cy.getElementById(data.id);
+        if (shown.nonempty()) shown.data(data); else cy.add({ group: "edges", data });
+      }
+    });
+    if (!say) return r;
+    const rest = r.hosts.filter((h) => !drawn.has(h.ip));
+    renderContacts(r, rest);
+    relayout();
+    hidingDue();
+    setStatus(contactsText(r, drawn.size, rest.length), false, r.truncated);
+    return r;
+  }
+
+  function contactsText(r, drawn, rest) {
+    if (!r.distinct_hosts) {
+      return `${r.target}: no inside host talked to it` +
+             (r.kind === "domain" && !r.addresses.length ? " (no address for it in the capture's DNS answers)" : "");
+    }
+    let msg = `${r.target}: ${r.distinct_hosts} inside host(s) talked to it, the first at ${r.hosts[0].first_seen}`;
+    if (rest) msg += `; ${drawn} on the map, ${rest} listed`;
+    if (r.truncated) msg += ` (the first ${r.hosts.length} only)`;
+    return msg;
+  }
+
+  function renderContacts(r, rest) {
+    $("contact-summary").textContent = r.distinct_hosts
+      ? `${r.target}: ${r.distinct_hosts} inside host(s)` + (rest.length ? `, ${rest.length} not on the map:` : "")
+      : `${r.target}: none`;
+    $("contact-list").replaceChildren(...rest.map((h) => listEntry(
+      h.ip, `first ${h.first_seen} · ${h.flows} flow(s): ${h.out} out, ${h.in} in`, "Add", () => addContact(h))));
+  }
+
+  // A listed host onto the map: its connections with the target's addresses, each way.
+  async function addContact(h) {
+    for (const peer of h.peers) {
+      for (const [source, target, direction] of [[h.ip, peer, "out"], [peer, h.ip, "in"]]) {
+        const q = { op: "edge", source, target, direction, from: h.first_seen, to: h.last_seen };
+        queries.push(q);
+        await edgeWith(q);
+      }
+    }
+    const n = cy.getElementById(h.ip);
+    if (n.nonempty() && !n.data("anchor")) n.data("anchor", h.first_seen);
+    relayout();
+    hidingDue();
+    for (const li of $("contact-list").children) {
+      if (li.firstChild.firstChild.textContent === h.ip) li.remove();
+    }
+    setStatus(`Added ${h.ip}`);
+  }
+
+  $("contact-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const target = $("contact-target").value.trim();
+    if (!target) { setStatus("Enter an address, a network or a domain name", true); return; }
+    findContacts(target).catch((err) => fail(err));
+  });
+
   // ---- export: the marked hosts, and the marked and suspect flows on the map, as CSV -------
   // A CSV cell: quoted when it must be, and never read as a formula by a spreadsheet.
   function csvCell(v) {
@@ -1419,6 +1509,7 @@
     getJSON("/api/excludes").then(renderExcludes).catch(() => {});
     $("paths").hidden = !cfg.analysis;
     $("routes").hidden = !cfg.analysis;
+    $("contacts").hidden = !cfg.contacts;
     try { showShared(await getJSON("/api/compromised"), true); } catch (_) { /* none */ }
     setInterval(pollMarks, (cfg.marks_poll || 5) * 1000);
     getJSON("/api/sessions").then((r) => renderSessions(r.sessions)).catch(() => {});

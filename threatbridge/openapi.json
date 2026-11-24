@@ -557,6 +557,136 @@
     }
    }
   },
+  "/api/contacts": {
+   "get": {
+    "summary": "The inside hosts that talked to an address, a network or a domain name (ATK-11)",
+    "description": "Every inside host (internal_nets) that exchanged flows with the target in either direction, in the time range (the whole case without one), with its flows passing the filters. Hosts on the exclude list, and the target's own addresses, are left out. Case backend only.",
+    "parameters": [
+     {
+      "name": "target",
+      "in": "query",
+      "description": "an IP address, a network (CIDR), or a domain name (also *.suffix), which stands for the addresses the capture's DNS answers gave it",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "description": "hosts whose connections are returned, 1 to max_limit; default default_limit. hosts lists them all",
+      "schema": {
+       "type": "integer"
+      }
+     },
+     {
+      "name": "range_from",
+      "in": "query",
+      "description": "the start of the analyst's time range: only flows that started in it count",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "range_to",
+      "in": "query",
+      "description": "the end of the analyst's time range",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "filter",
+      "in": "query",
+      "description": "a filter expression (D17); repeat for several, combined with AND",
+      "schema": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "style": "form",
+      "explode": true
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Contacts"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/E400"
+     },
+     "401": {
+      "$ref": "#/components/responses/E401"
+     },
+     "421": {
+      "$ref": "#/components/responses/E421"
+     },
+     "500": {
+      "$ref": "#/components/responses/E500"
+     },
+     "501": {
+      "$ref": "#/components/responses/E501"
+     }
+    }
+   },
+   "post": {
+    "summary": "The inside hosts that talked to an address, a network or a domain name (ATK-11)",
+    "description": "Every inside host (internal_nets) that exchanged flows with the target in either direction, in the time range (the whole case without one), with its flows passing the filters. Hosts on the exclude list, and the target's own addresses, are left out. Case backend only.",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/write"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ContactsQueryBody"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Contacts"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/E400"
+     },
+     "401": {
+      "$ref": "#/components/responses/E401"
+     },
+     "403": {
+      "$ref": "#/components/responses/E403"
+     },
+     "421": {
+      "$ref": "#/components/responses/E421"
+     },
+     "500": {
+      "$ref": "#/components/responses/E500"
+     },
+     "501": {
+      "$ref": "#/components/responses/E501"
+     }
+    }
+   }
+  },
   "/api/edge": {
    "get": {
     "summary": "One connection, as it would be drawn",
@@ -909,8 +1039,8 @@
   },
   "/api/neighbors": {
    "get": {
-    "summary": "One hop: who connected to a host before the anchor, or who it connected to after",
-    "description": "Who connected to ip in the window before the anchor (in), or who it connected to in the window after it (out). Hosts on the exclude list are left out. When the window and the time range don't overlap, start is after end and peers is empty. With filters, counts, times, ports and protocols are those of the flows that pass.",
+    "summary": "One hop: who connected to a host, or who it connected to, before or after the anchor",
+    "description": "Who connected to ip (in) or who it connected to (out), in the window before the anchor or after it (time; by default before for in, after for out). Hosts on the exclude list are left out. When the window and the time range don't overlap, start is after end and peers is empty. With filters, counts, times, ports and protocols are those of the flows that pass.",
     "parameters": [
      {
       "name": "ip",
@@ -1041,8 +1171,8 @@
     }
    },
    "post": {
-    "summary": "One hop: who connected to a host before the anchor, or who it connected to after",
-    "description": "Who connected to ip in the window before the anchor (in), or who it connected to in the window after it (out). Hosts on the exclude list are left out. When the window and the time range don't overlap, start is after end and peers is empty. With filters, counts, times, ports and protocols are those of the flows that pass.",
+    "summary": "One hop: who connected to a host, or who it connected to, before or after the anchor",
+    "description": "Who connected to ip (in) or who it connected to (out), in the window before the anchor or after it (time; by default before for in, after for out). Hosts on the exclude list are left out. When the window and the time range don't overlap, start is after end and peers is empty. With filters, counts, times, ports and protocols are those of the flows that pass.",
     "parameters": [
      {
       "$ref": "#/components/parameters/write"
@@ -2185,6 +2315,17 @@
       "description": "whether POST /api/pcap is available",
       "type": "boolean"
      },
+     "internal_nets": {
+      "description": "the client's own networks: inside hosts (TB_INTERNAL_NETS)",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "contacts": {
+      "description": "whether /api/contacts is available (case backend)",
+      "type": "boolean"
+     },
      "case": {
       "anyOf": [
        {
@@ -2218,8 +2359,233 @@
      "max_filters",
      "live_dns",
      "pcap_download",
+     "internal_nets",
+     "contacts",
      "case"
     ],
+    "type": "object"
+   },
+   "ContactHost": {
+    "additionalProperties": false,
+    "properties": {
+     "ip": {
+      "type": "string"
+     },
+     "flows": {
+      "description": "its flows with the target, both ways",
+      "type": "integer"
+     },
+     "out": {
+      "description": "those it opened",
+      "type": "integer"
+     },
+     "in": {
+      "description": "those the target opened",
+      "type": "integer"
+     },
+     "first_seen": {
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+      "type": "string"
+     },
+     "last_seen": {
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+      "type": "string"
+     },
+     "peers": {
+      "description": "the target's addresses it exchanged flows with",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "ip",
+     "flows",
+     "out",
+     "in",
+     "first_seen",
+     "last_seen",
+     "peers"
+    ],
+    "type": "object"
+   },
+   "Contacts": {
+    "additionalProperties": false,
+    "examples": [
+     {
+      "addresses": [
+       "203.0.113.66"
+      ],
+      "connections": [
+       {
+        "count": 1,
+        "first_seen": "2024-05-01T12:00:00.000Z",
+        "last_seen": "2024-05-01T12:00:00.000Z",
+        "ports": [
+         443
+        ],
+        "protocols": [
+         "ssl"
+        ],
+        "source": "203.0.113.66",
+        "target": "10.0.0.5"
+       }
+      ],
+      "distinct_hosts": 1,
+      "end": null,
+      "hosts": [
+       {
+        "first_seen": "2024-05-01T12:00:00.000Z",
+        "flows": 1,
+        "in": 1,
+        "ip": "10.0.0.5",
+        "last_seen": "2024-05-01T12:00:00.000Z",
+        "out": 0,
+        "peers": [
+         "203.0.113.66"
+        ]
+       }
+      ],
+      "kind": "address",
+      "start": null,
+      "target": "203.0.113.66",
+      "truncated": false
+     }
+    ],
+    "properties": {
+     "target": {
+      "description": "the target as read: an address, a network, or a domain name",
+      "type": "string"
+     },
+     "kind": {
+      "enum": [
+       "address",
+       "network",
+       "domain"
+      ],
+      "type": "string"
+     },
+     "start": {
+      "anyOf": [
+       {
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "the time range searched; null: open"
+     },
+     "end": {
+      "anyOf": [
+       {
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "addresses": {
+      "description": "the target's addresses some inside host exchanged flows with; for a domain, from the capture's DNS answers",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "hosts": {
+      "description": "the inside hosts, earliest first, at most limits.contacts",
+      "items": {
+       "$ref": "#/components/schemas/ContactHost"
+      },
+      "type": "array"
+     },
+     "distinct_hosts": {
+      "type": "integer"
+     },
+     "truncated": {
+      "description": "whether hosts stops at limits.contacts",
+      "type": "boolean"
+     },
+     "connections": {
+      "description": "the connections of the first limit hosts, as the map draws them",
+      "items": {
+       "$ref": "#/components/schemas/Edge"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "target",
+     "kind",
+     "start",
+     "end",
+     "addresses",
+     "hosts",
+     "distinct_hosts",
+     "truncated",
+     "connections"
+    ],
+    "type": "object"
+   },
+   "ContactsQueryBody": {
+    "additionalProperties": false,
+    "description": "The query's parameters as a JSON object (text or numbers), plus filters and marks.",
+    "properties": {
+     "target": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "limit": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "range_from": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "range_to": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "filters": {
+      "description": "filter expressions (D17), combined with AND",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "marks": {
+      "$ref": "#/components/schemas/Marks"
+     }
+    },
     "type": "object"
    },
    "Directions": {
@@ -3527,6 +3893,10 @@
      "map_name": {
       "description": "characters in a saved map's name",
       "type": "integer"
+     },
+     "contacts": {
+      "description": "inside hosts /api/contacts lists",
+      "type": "integer"
      }
     },
     "required": [
@@ -3545,7 +3915,8 @@
      "note",
      "saved_maps",
      "map_bytes",
-     "map_name"
+     "map_name",
+     "contacts"
     ],
     "type": "object"
    },
@@ -3853,6 +4224,7 @@
        "expand",
        "threatline",
        "routes",
+       "contacts",
        "remove",
        "node",
        "edge"
@@ -3911,6 +4283,7 @@
       "type": "string"
      },
      "target": {
+      "description": "edge: the responder; contacts: the address, network or domain name",
       "type": "string"
      },
      "anchor": {

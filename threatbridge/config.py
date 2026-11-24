@@ -2,6 +2,9 @@
 import os
 from dataclasses import dataclass, field, fields
 
+INTERNAL_NETS = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16",
+                 "fc00::/7", "fe80::/10")
+
 
 @dataclass
 class Config:
@@ -89,6 +92,10 @@ class Config:
     threat_hops: int = 6
     threat_max_hosts: int = 300
     max_paths: int = 500
+
+    # The client's own networks: "inside" hosts, e.g. those listed as having talked to an
+    # outside address. Default: the private, shared and link-local ranges.
+    internal_nets: list = field(default_factory=lambda: list(INTERNAL_NETS))
 
     # Local mode (python -m threatbridge, plain HTTP; D23): names the Host header may carry
     # besides the loopback names and the listening address, and a fixed login token instead of

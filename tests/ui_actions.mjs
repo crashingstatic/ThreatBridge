@@ -175,7 +175,7 @@ try {
   }
   assert.deepEqual(await menuItems(), ["10.0.0.77 ↔ 10.0.0.9", "Mark compromised"]);
   await page.keyboard.press("Escape");
-  assert.deepEqual(await rows(), ["Source", "10.0.0.77", "Destination", "10.0.0.9", "Direction", "inbound (past)",
+  assert.deepEqual(await rows(), ["Source", "10.0.0.77", "Destination", "10.0.0.9", "Direction", "inbound",
     "Connections", "1", "Top dst ports", "80", "Protocols", "HTTP", "First seen", "2024-05-01T12:30:00.000Z",
     "Last seen", "2024-05-01T12:30:00.000Z"]);
   await sleep(1300);                                        // the first connection's flows arrive late
@@ -200,7 +200,8 @@ try {
     "Expand inbound: who connected to it (past)", "Expand outbound: who it connected to (future)",
     "Expand outbound: who it connected to (past)", "Expand inbound: who connected to it (future)", "",
     "Mark compromised at 2024-05-01T12:10:00.000Z", "Mark compromised (time unknown)",
-    "Find paths from this host…", "Find paths to this host…", "Remove from map", "Add to shared exclude list"]);
+    "Inside hosts that talked to it", "Find paths from this host…", "Find paths to this host…", "Remove from map",
+    "Add to shared exclude list"]);
   const box = await page.locator("#menu").boundingBox();
   assert.ok(Math.abs(box.x - m5.x) < 1 && Math.abs(box.y - m5.y) < 1, JSON.stringify([box, m5]));
   await page.keyboard.press("Escape");
@@ -372,7 +373,7 @@ try {
   assert.equal(await anchor("10.0.1.2"), "2024-05-01T12:50:00.000Z");
   p = await at(edge("10.0.1.1", "10.0.1.2"), "edge");
   await page.mouse.click(p.x, p.y, { button: "right" });
-  assert.deepEqual((await rows()).slice(4, 6), ["Direction", "outbound (future)"]);
+  assert.deepEqual((await rows()).slice(4, 6), ["Direction", "outbound"]);
 
   // 8. Narrow the range after mapping: the old connection now has no flows in it.
   await page.fill("#range-to", "2024-05-01T12:00:00Z");
@@ -650,7 +651,8 @@ try {
   assert.deepEqual(await menuItems(), [`${markup} @ now`, "Expand inbound: who connected to it (past)",
     "Expand outbound: who it connected to (future)", "Expand outbound: who it connected to (past)",
     "Expand inbound: who connected to it (future)", "", "Mark compromised (time unknown)",
-    "Find paths from this host…", "Find paths to this host…", "Remove from map", "Add to shared exclude list"]);
+    "Inside hosts that talked to it", "Find paths from this host…", "Find paths to this host…", "Remove from map",
+    "Add to shared exclude list"]);
   assert.equal(await page.textContent("#detail-body dd"), markup);
   await page.keyboard.press("Escape");
   assert.equal(await page.evaluate(() => window.injected), undefined);

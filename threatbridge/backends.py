@@ -584,6 +584,53 @@ class CaseBackend:
             "truncated": False,
         }
 
+    def contacts(self, addresses, network, start, end, inside, exclude, limit, cap, scope=None):
+        """The inside hosts that exchanged flows with any of `addresses`, or with any host in
+        `network`, in either direction, between start and end (None: open). Each host with its
+        flows each way, first and last seen, and the addresses it talked to, earliest first,
+        at most `cap`; for the first `limit`, the connections as the map draws them."""
+        g, where = self._view(scope)
+        lo = start.timestamp() - TIME_SLACK if start else float("-inf")
+        hi = end.timestamp() + TIME_SLACK if end else float("inf")
+        if network:
+            net = ipaddress.ip_network(network)
+            targets = sorted((n for n in g if ipaddress.ip_address(n) in net), key=_ip_order)
+        else:
+            targets = [a for a in addresses if a in g]
+        named, excluded, inside = set(targets), _Excluded(exclude), _Excluded(inside)
+        hosts, pairs = {}, []
+        for t in targets:
+            # host -> t is the host's outbound; t -> host its inbound.
+            for direction, adjacency in (("out", g.pred[t]), ("in", g.succ[t])):
+                for host, edge in adjacency.items():
+                    if host in named or host in excluded or host not in inside:
+                        continue
+                    n, first, last = count_between(edge["times"], lo, hi)
+                    if not n:
+                        continue
+                    h = hosts.setdefault(host, {"ip": host, "flows": 0, "out": 0, "in": 0, "first": first,
+                                                "last": last, "peers": set()})
+                    h["flows"] += n
+                    h[direction] += n
+                    h["first"], h["last"] = min(h["first"], first), max(h["last"], last)
+                    h["peers"].add(t)
+                    pairs.append((host, t, direction))
+        ranked = sorted(hosts.values(), key=lambda h: (h["first"], _ip_order(h["ip"])))
+        drawn = {h["ip"] for h in ranked[:limit]}
+        connections = [self._edge(host, t, [(lo, hi)], where) if direction == "out"
+                       else self._edge(t, host, [(lo, hi)], where)
+                       for host, t, direction in sorted(pairs, key=lambda p: (_ip_order(p[0]), _ip_order(p[1]), p[2]))
+                       if host in drawn]
+        return {
+            "addresses": sorted({t for h in hosts.values() for t in h["peers"]}, key=_ip_order),
+            "hosts": [{"ip": h["ip"], "flows": h["flows"], "out": h["out"], "in": h["in"],
+                       "first_seen": fmt_time(_utc(h["first"])), "last_seen": fmt_time(_utc(h["last"])),
+                       "peers": sorted(h["peers"], key=_ip_order)} for h in ranked[:cap]],
+            "distinct_hosts": len(ranked),
+            "truncated": len(ranked) > cap,
+            "connections": connections,
+        }
+
     def _edge(self, src, dst, intervals, where=None):
         n, first, last, ports, found = self.store.edge(src, dst, intervals, where)
         return {"source": src, "target": dst, "count": n,
@@ -754,8 +801,14 @@ def _build_lock(db_path):
             fcntl.flock(fh, fcntl.LOCK_UN)
 
 
+def _ip_order(ip):
+    addr = ipaddress.ip_address(ip)
+    return addr.version, int(addr)
+
+
 class _Excluded:
-    """Membership test against the exclude list (IPs/CIDRs), cached per host."""
+    """Membership test against a list of IPs/CIDRs (the exclude list, the inside networks),
+    cached per host."""
 
     def __init__(self, exclude):
         self.nets = [ipaddress.ip_network(e) for e in exclude]

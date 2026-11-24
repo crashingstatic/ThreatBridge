@@ -18,9 +18,9 @@ from .excludes import ExcludeStore
 from .jsonstore import StoreError
 from .local import MIN_TOKEN, LocalAccess, install as install_local
 from .model import SourceError
-from .query import (DIRECTIONS, ORDERS, ValidationError, clip, fmt_time, parse_direction,
-                    parse_es_id, parse_exclude, parse_ip, parse_order, parse_time, parse_time_side, parse_window,
-                    soc_host_query, soc_pivot_query, soc_url, time_range)
+from .query import (DIRECTIONS, ORDERS, ValidationError, clip, fmt_time, is_domain, parse_direction,
+                    parse_es_id, parse_exclude, parse_ip, parse_network, parse_order, parse_time, parse_time_side,
+                    parse_window, soc_host_query, soc_pivot_query, soc_url, time_range)
 from .sessions import Conflict, NotFound, SessionStore
 from .soc import SocClient
 
@@ -35,6 +35,7 @@ MAX_EDGES = 20_000   # connections a map may send (suspect connections, exports)
 MAX_WITHIN = 100_000  # intervals a flow list may be limited to (a kept connection's "within")
 MAX_EXPORT = 200_000  # flows in an export
 MARKS_POLL = 5       # seconds between the map's checks for other analysts' marks (D15)
+MAX_CONTACTS = 1000  # inside hosts listed as having talked to an address (ATK-11)
 
 
 class _Body:
@@ -79,6 +80,12 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
         soc = SocClient(cfg)
 
     max_window = parse_window(cfg.max_window)
+    internal_nets = []
+    for net in cfg.internal_nets:
+        try:
+            internal_nets.append(parse_network(net))
+        except ValidationError:
+            raise ValidationError(f"TB_INTERNAL_NETS: not an IP network: {net!r}")
 
     def exclusions():
         """The exclude list as IPs/CIDRs: domain names replaced by their addresses."""
@@ -243,7 +250,7 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
               "filter_length": filters.MAX_LENGTH, "filter_depth": filters.MAX_DEPTH, "edges": MAX_EDGES,
               "within": MAX_WITHIN, "export_flows": MAX_EXPORT, "marks": compromised_mod.MAX_MARKS,
               "note": compromised_mod.MAX_NOTE, "saved_maps": sessions_mod.MAX_SESSIONS,
-              "map_bytes": sessions_mod.MAX_BYTES, "map_name": sessions_mod.MAX_NAME}
+              "map_bytes": sessions_mod.MAX_BYTES, "map_name": sessions_mod.MAX_NAME, "contacts": MAX_CONTACTS}
 
     @app.get("/api/config")
     def api_config():
@@ -257,7 +264,8 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
                        analysis=hasattr(backend, "threat_line"), threat_hops=cfg.threat_hops,
                        suspects=hasattr(backend, "suspects"), marks_poll=MARKS_POLL,
                        protocol_names=protocols.DISPLAY, max_filters=filters.MAX_FILTERS,
-                       live_dns=cfg.live_dns, pcap_download=soc is not None,
+                       live_dns=cfg.live_dns, pcap_download=soc is not None, internal_nets=internal_nets,
+                       contacts=hasattr(backend, "contacts"),
                        case=summary() if summary else None)
 
     @app.get("/api/openapi.json")
@@ -308,6 +316,25 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
                if start <= end else {"peers": [], "distinct_peers": 0, "truncated": False})
         return jsonify(ip=ip, direction=direction, time=side, order=order, anchor=fmt_time(anchor),
                        start=fmt_time(start), end=fmt_time(end), **res)
+
+    @app.route("/api/contacts", methods=["GET", "POST"])
+    def api_contacts():
+        """The inside hosts that talked to an address, a network or a domain name (ATK-11)."""
+        require("contacts")
+        a = args()
+        target = parse_exclude(a.get("target"))
+        if is_domain(target):
+            kind, addresses, network = "domain", resolver.captured(target), None
+        elif "/" in target:
+            kind, addresses, network = "network", None, target
+        else:
+            kind, addresses, network = "address", [target], None
+        limit = max(1, min(int_arg("limit", cfg.default_limit), cfg.max_limit))
+        start, end = range_arg()
+        res = backend.contacts(addresses, network, start, end, internal_nets, exclusions(), limit, MAX_CONTACTS,
+                               scope_arg())
+        return jsonify(target=target, kind=kind, start=fmt_time(start) if start else None,
+                       end=fmt_time(end) if end else None, **res)
 
     @app.route("/api/flows", methods=["GET", "POST"])
     def api_flows():
@@ -530,7 +557,7 @@ def main():
     local = LocalAccess.serving(a.host, a.port, cfg.allowed_hosts, token)
     try:
         app = create_app(cfg, local=local)
-    except SourceError as e:
+    except (SourceError, ValidationError) as e:
         p.exit(2, f"error: {e}\n")
     if a.host.strip() not in ("127.0.0.1", "localhost", "::1", "[::1]"):
         log.warning("listening on %s over plain HTTP: other machines can reach it. The names they use must "

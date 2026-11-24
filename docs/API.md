@@ -14,6 +14,10 @@ what a schema can't say.
 
 ## Changes
 
+- **Who talked to it (ATK-11).** `GET`/`POST /api/contacts`: the inside hosts that exchanged flows
+  with an address, a network or a domain name. `GET /api/config` has `internal_nets` (the inside
+  networks), `contacts` (whether the endpoint is available) and `limits.contacts`. Additions, so
+  `api_version` stays 1.
 - **Expansions either side of the anchor (ATK-10).** `GET`/`POST /api/neighbors` takes `time`
   (`before` or `after`; default `before` for `in`, `after` for `out`) and answers with it. A
   saved map's `expand` queries may carry it. An addition, so `api_version` stays 1.
@@ -91,7 +95,8 @@ Mapping connections:
 | Endpoint | Methods | |
 |---|---|---|
 | `/api/resolve` | GET | Check an IP and settle the anchor time a map starts from |
-| `/api/neighbors` | GET, POST | One hop: who connected to a host before the anchor, or who it connected to after |
+| `/api/neighbors` | GET, POST | One hop: who connected to a host, or who it connected to, before or after the anchor |
+| `/api/contacts` | GET, POST | The inside hosts that talked to an address, a network or a domain name (case backend) |
 | `/api/flows` | GET, POST | One page of a connection's flows, oldest first |
 | `/api/edge` | GET, POST | One connection, as it would be drawn |
 | `/api/protocols` | GET, POST | How many flows carry each protocol in a time range |

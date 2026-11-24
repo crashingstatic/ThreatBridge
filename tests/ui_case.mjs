@@ -260,6 +260,36 @@ try {
     assert.equal(await anchorOf(peer), anchor);
   }
 
+  // Who talked to it (ATK-11). 10.0.0.20 talked with 10.0.0.30 (11:50), 10.0.0.5 (12:15) and
+  // 10.0.0.9 (12:20): with N at 1 the earliest goes on the map and the other two are listed;
+  // one of them is added from the list.
+  await page.fill("#limit", "1");
+  await page.fill("#contact-target", "10.0.0.20");
+  await page.click("#contact-form button");
+  await waitStatus(/^10\.0\.0\.20: 3 inside host\(s\) talked to it/);
+  assert.equal(await status(), "10.0.0.20: 3 inside host(s) talked to it, the first at 2024-05-01T11:50:00.000Z; " +
+               "1 on the map, 2 listed");
+  assert.equal(await page.textContent("#contact-summary"), "10.0.0.20: 3 inside host(s), 2 not on the map:");
+  const listed = await page.$$eval("#contact-list li", (l) => l.map((x) => x.innerText.split("\n")[0]));
+  assert.deepEqual(listed, ["10.0.0.5", "10.0.0.9"]);
+  await page.locator("#contact-list li", { hasText: "10.0.0.5" }).locator("button").click();
+  await waitStatus(/^Added 10\.0\.0\.5$/);
+  assert.ok(await cyEval(() => window.threatbridge.cy.getElementById("10.0.0.5->10.0.0.20").nonempty()));
+  assert.deepEqual(await page.$$eval("#contact-list li", (l) => l.map((x) => x.innerText.split("\n")[0])), ["10.0.0.9"]);
+  // From a host's menu, and for a domain through the capture's DNS answers.
+  await page.fill("#limit", "50");
+  const outside = await at("node#10\\.0\\.0\\.30");
+  await page.mouse.click(outside.x, outside.y, { button: "right" });
+  await menuClick("Inside hosts that talked to it");
+  await waitStatus(/^10\.0\.0\.30: 1 inside host\(s\) talked to it, the first at 2024-05-01T11:50:00\.000Z$/);
+  await page.fill("#contact-target", "updates.example.com");
+  await page.click("#contact-form button");
+  await waitStatus(/^updates\.example\.com: 1 inside host\(s\) talked to it, the first at 2024-05-01T12:30:00\.000Z$/);
+  assert.ok(await cyEval(() => window.threatbridge.cy.getElementById("10.0.0.77->10.0.0.9").nonempty()));
+  await page.fill("#contact-target", "nothing.example");
+  await page.click("#contact-form button");
+  await waitStatus(/^nothing\.example: no inside host talked to it \(no address for it in the capture's DNS answers\)$/);
+
   assert.deepEqual(errors, [], "browser console errors");
   console.log("Case-mode UI test passed");
 } finally {

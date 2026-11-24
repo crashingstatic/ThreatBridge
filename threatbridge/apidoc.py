@@ -86,6 +86,7 @@ class Limits(Shape):
     saved_maps: int = Field(description="saved maps")
     map_bytes: int = Field(description="bytes in a saved map")
     map_name: int = Field(description="characters in a saved map's name")
+    contacts: int = Field(description="inside hosts /api/contacts lists")
 
 
 class FilterField(Shape):
@@ -163,6 +164,8 @@ class Config(Shape):
     max_filters: int = Field(description="filters at once")
     live_dns: bool = Field(description="whether domain names on the exclude list are also looked up (TB_LIVE_DNS)")
     pcap_download: bool = Field(description="whether POST /api/pcap is available")
+    internal_nets: list[str] = Field(description="the client's own networks: inside hosts (TB_INTERNAL_NETS)")
+    contacts: bool = Field(description="whether /api/contacts is available (case backend)")
     case: Optional[CaseSummary] = Field(description="the case backend's evidence; otherwise null")
 
 
@@ -261,6 +264,37 @@ class Edge(Shape):
     last_seen: Optional[Time]
     ports: Ports
     protocols: Protocols
+
+
+class ContactHost(Shape):
+    ip: str
+    flows: int = Field(description="its flows with the target, both ways")
+    out: int = Field(description="those it opened")
+    in_: int = Field(alias="in", description="those the target opened")
+    first_seen: Time
+    last_seen: Time
+    peers: list[str] = Field(description="the target's addresses it exchanged flows with")
+
+
+class Contacts(Shape):
+    model_config = example({
+        "target": "203.0.113.66", "kind": "address", "start": None, "end": None, "addresses": ["203.0.113.66"],
+        "hosts": [{"ip": "10.0.0.5", "flows": 1, "out": 0, "in": 1, "first_seen": "2024-05-01T12:00:00.000Z",
+                   "last_seen": "2024-05-01T12:00:00.000Z", "peers": ["203.0.113.66"]}],
+        "distinct_hosts": 1, "truncated": False,
+        "connections": [{"source": "203.0.113.66", "target": "10.0.0.5", "count": 1,
+                         "first_seen": "2024-05-01T12:00:00.000Z", "last_seen": "2024-05-01T12:00:00.000Z",
+                         "ports": [443], "protocols": ["ssl"]}]})
+    target: str = Field(description="the target as read: an address, a network, or a domain name")
+    kind: Literal["address", "network", "domain"]
+    start: Optional[Time] = Field(description="the time range searched; null: open")
+    end: Optional[Time]
+    addresses: list[str] = Field(description=(
+        "the target's addresses some inside host exchanged flows with; for a domain, from the capture's DNS answers"))
+    hosts: list[ContactHost] = Field(description="the inside hosts, earliest first, at most limits.contacts")
+    distinct_hosts: int
+    truncated: bool = Field(description="whether hosts stops at limits.contacts")
+    connections: list[Edge] = Field(description="the connections of the first limit hosts, as the map draws them")
 
 
 class CheckedFilter(Shape):
@@ -557,7 +591,7 @@ class NodeData(Shape):
 
 class MapQuery(Shape):
     """A query the map was built from, with the fields that query took."""
-    op: Literal["root", "expand", "threatline", "routes", "remove", "node", "edge"] = Field(description=(
+    op: Literal["root", "expand", "threatline", "routes", "contacts", "remove", "node", "edge"] = Field(description=(
         "node and edge: a version 1 map's hosts and connections, as converted"))
     ip: str = None
     ts: str = None
@@ -576,7 +610,7 @@ class MapQuery(Shape):
     dst_time: str = None
     id: str = None
     source: str = None
-    target: str = None
+    target: str = Field(None, description="edge: the responder; contacts: the address, network or domain name")
     anchor: Optional[str] = None
     data: NodeData = None
 
@@ -664,6 +698,17 @@ class EdgeQuery(BaseModel):
     filter: Filter = None
 
 
+class ContactsQuery(BaseModel):
+    target: str = Field(description=(
+        "an IP address, a network (CIDR), or a domain name (also *.suffix), which stands for the addresses the "
+        "capture's DNS answers gave it"))
+    limit: int = Field(None, description=(
+        "hosts whose connections are returned, 1 to max_limit; default default_limit. hosts lists them all"))
+    range_from: RangeFrom = None
+    range_to: RangeTo = None
+    filter: Filter = None
+
+
 class FilterQuery(BaseModel):
     filter: str = Field(description="the expression")
 
@@ -745,11 +790,17 @@ ENDPOINTS = {
             "protocols counts for each.")),
     "api_resolve": Endpoint("Check an IP and settle the anchor time a map starts from", Resolved, ResolveQuery,
                             errors=(400,)),
+    "api_contacts": Endpoint(
+        "The inside hosts that talked to an address, a network or a domain name (ATK-11)", Contacts,
+        ContactsQuery, errors=(400, 500, 501), description=(
+            "Every inside host (internal_nets) that exchanged flows with the target in either direction, in the "
+            "time range (the whole case without one), with its flows passing the filters. Hosts on the exclude "
+            "list, and the target's own addresses, are left out. Case backend only.")),
     "api_neighbors": Endpoint(
-        "One hop: who connected to a host before the anchor, or who it connected to after", Neighbors,
+        "One hop: who connected to a host, or who it connected to, before or after the anchor", Neighbors,
         NeighborsQuery, errors=(400, 500, 502), description=(
-            "Who connected to ip in the window before the anchor (in), or who it connected to in the window "
-            "after it (out). Hosts on the exclude list are left out. When the window and the time range "
+            "Who connected to ip (in) or who it connected to (out), in the window before the anchor or after "
+            "it (time; by default before for in, after for out). Hosts on the exclude list are left out. When the window and the time range "
             "don't overlap, start is after end and peers is empty. With filters, counts, times, ports and "
             "protocols are those of the flows that pass.")),
     "api_flows": Endpoint(

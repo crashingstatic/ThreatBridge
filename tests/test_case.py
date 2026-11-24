@@ -688,3 +688,86 @@ def test_expansions_before_and_after_the_anchor_either_way(client):
     assert client.get(base + "&direction=in" + early).get_json()["time"] == "before"
     r = client.get(base + "&direction=in&time=sideways" + early)
     assert r.status_code == 400 and r.get_json()["error"] == "time must be 'before' or 'after'"
+
+
+# ---- who talked to it (ATK-11) ------------------------------------------------------------
+
+OUT1, OUT2 = "203.0.113.66", "203.0.113.67"
+CONTACTS = [
+    flow(OUT1, "10.0.0.5", 443, T),                          # in: OUT1 opened it
+    flow("10.0.0.6", OUT1, 443, T + 60), flow("10.0.0.6", OUT1, 443, T + 120),   # out, twice
+    flow("10.0.0.7", OUT2, 8080, T + 30),                    # to the other address in the /24
+    flow("8.8.8.8", OUT1, 53, T + 10),                       # an outside host: not listed
+    flow(OUT1, OUT2, 22, T + 20),                            # the target's own addresses
+    flow("10.0.0.6", "10.0.0.5", 445, T + 200),              # not with the target
+]
+
+
+def contacts_client(tmp_path, **cfg_args):
+    cfg = Config(backend="case", compromised_file=str(tmp_path / "c.json"), live_dns=False,
+                 exclude_file=str(tmp_path / "ex.json"), **cfg_args)
+    backend = CaseBackend(cfg, flows=CONTACTS, dns={"evil.example": {OUT1: [T, T]}, "cdn.evil.example": {OUT2: [T, T]}})
+    return create_app(cfg, backend).test_client()
+
+
+def test_inside_hosts_that_talked_to_an_address(tmp_path):
+    c = contacts_client(tmp_path)
+    r = c.get(f"/api/contacts?target={OUT1}").get_json()
+    assert (r["target"], r["kind"], r["addresses"], r["start"], r["end"]) == (OUT1, "address", [OUT1], None, None)
+    assert r["hosts"] == [
+        {"ip": "10.0.0.5", "flows": 1, "out": 0, "in": 1, "first_seen": "2024-05-01T12:00:00.000Z",
+         "last_seen": "2024-05-01T12:00:00.000Z", "peers": [OUT1]},
+        {"ip": "10.0.0.6", "flows": 2, "out": 2, "in": 0, "first_seen": "2024-05-01T12:01:00.000Z",
+         "last_seen": "2024-05-01T12:02:00.000Z", "peers": [OUT1]}]                       # earliest first
+    assert (r["distinct_hosts"], r["truncated"]) == (2, False)
+    # The connections as the map draws them, each the way it went.
+    assert [(e["source"], e["target"], e["count"], e["ports"]) for e in r["connections"]] == [
+        (OUT1, "10.0.0.5", 1, [443]), ("10.0.0.6", OUT1, 2, [443])]
+    # Only the first `limit` hosts' connections; every host is still listed.
+    r = c.get(f"/api/contacts?target={OUT1}&limit=1").get_json()
+    assert len(r["hosts"]) == 2 and [e["target"] for e in r["connections"]] == ["10.0.0.5"]
+
+
+def test_a_network_and_a_domain_stand_for_their_addresses(tmp_path):
+    c = contacts_client(tmp_path)
+    r = c.get("/api/contacts?target=203.0.113.0/24").get_json()
+    assert (r["kind"], r["addresses"]) == ("network", [OUT1, OUT2])
+    assert [(h["ip"], h["peers"]) for h in r["hosts"]] == [("10.0.0.5", [OUT1]), ("10.0.0.7", [OUT2]),
+                                                           ("10.0.0.6", [OUT1])]
+    r = c.get("/api/contacts?target=evil.example").get_json()          # the capture's DNS answers
+    assert (r["kind"], r["addresses"], [h["ip"] for h in r["hosts"]]) == ("domain", [OUT1], ["10.0.0.5", "10.0.0.6"])
+    r = c.get("/api/contacts?target=*.evil.example").get_json()
+    assert (r["addresses"], [h["ip"] for h in r["hosts"]]) == ([OUT2], ["10.0.0.7"])
+    r = c.get("/api/contacts?target=nothing.example").get_json()       # never answered: nobody
+    assert (r["addresses"], r["hosts"], r["distinct_hosts"]) == ([], [], 0)
+
+
+def test_contacts_follow_the_time_range_filters_and_excludes(tmp_path):
+    c = contacts_client(tmp_path)
+    r = c.get(f"/api/contacts?target={OUT1}&range_from=2024-05-01T12:01:30Z").get_json()
+    assert r["start"] == "2024-05-01T12:01:30.000Z"
+    assert [(h["ip"], h["flows"]) for h in r["hosts"]] == [("10.0.0.6", 1)]
+    r = c.post("/api/contacts", json={"target": OUT1, "filters": ["NOT host 10.0.0.6"]}, headers=WRITE).get_json()
+    assert [h["ip"] for h in r["hosts"]] == ["10.0.0.5"]
+    c.post("/api/excludes", json={"entry": "10.0.0.5"}, headers=WRITE)
+    assert [h["ip"] for h in c.get(f"/api/contacts?target={OUT1}").get_json()["hosts"]] == ["10.0.0.6"]
+
+
+def test_inside_is_a_setting(tmp_path):
+    c = contacts_client(tmp_path, internal_nets=["10.0.0.6/32", "8.8.8.0/24"])
+    assert c.get("/api/config").get_json()["internal_nets"] == ["10.0.0.6", "8.8.8.0/24"]
+    assert [h["ip"] for h in c.get(f"/api/contacts?target={OUT1}").get_json()["hosts"]] == ["8.8.8.8", "10.0.0.6"]
+    with pytest.raises(ValidationError, match="TB_INTERNAL_NETS: not an IP network: 'lan'"):
+        contacts_client(tmp_path, internal_nets=["lan"])
+
+
+def test_contacts_need_a_target_and_the_case_backend(tmp_path):
+    c = contacts_client(tmp_path)
+    assert c.get("/api/config").get_json()["contacts"] is True
+    for bad in ("", "?target=", "?target=not a name!"):
+        r = c.get("/api/contacts" + bad)
+        assert r.status_code == 400 and "invalid IP, CIDR or domain name" in r.get_json()["error"]
+    cfg = Config(backend="demo", live_dns=False, compromised_file=str(tmp_path / "d.json"))
+    demo = create_app(cfg, DemoBackend(cfg)).test_client()
+    assert demo.get("/api/config").get_json()["contacts"] is False
+    assert demo.get(f"/api/contacts?target={OUT1}").status_code == 501
