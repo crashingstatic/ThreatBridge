@@ -28,7 +28,10 @@ export async function launch({ context = {}, expected = null } = {}) {
                                        window.threatbridge.settling()));
     return position(selector, kind);
   };
+  // Cytoscape keeps where the map is on the page, and catches up only 100 ms after the map
+  // moves (as when the status line wraps): a click before then would miss. Catch it up now.
   const position = (selector, kind) => page.evaluate(([sel, k]) => {
+    window.threatbridge.cy.resize();
     const el = window.threatbridge.cy.$(sel)[0];
     const p = k === "edge" ? el.renderedMidpoint() : el.renderedPosition();
     const box = document.getElementById("cy").getBoundingClientRect();

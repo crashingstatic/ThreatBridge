@@ -45,7 +45,7 @@ python -m threatbridge --case /cases/incident-42/      # files or directories, i
   - Directories are searched recursively; other files are skipped. A file named more than once (directly, through its directory, or through a symlink) is read once.
   - A capture cut off mid-packet (tcpdump killed) is read up to its last whole packet.
   - Packets cut by the snap length (`tcpdump -s`) still count, as long as the ports were captured. IPv4 and IPv6 fragments after the first are skipped.
-  - nfcapd files are read with the `nfdump` binary (tested with 1.7.3). Set `TB_NFDUMP` if it is not on `PATH`. The file nfcapd is still writing (`nfcapd.current.*`) is skipped.
+  - nfcapd files are read with the `nfdump` binary (tested with 1.7.3 and 1.7.6). Set `TB_NFDUMP` if it is not on `PATH`. The file nfcapd is still writing (`nfcapd.current.*`) is skipped.
 - **One edge per connection,** from initiator to responder, like a Zeek conn record.
   - A TCP connection ends at a RST, at a new SYN after a FIN, or after 5 minutes idle. UDP and ICMP end after 1 minute idle.
   - Rotated captures (`tcpdump -C` / `-G`) are read in capture order, so a connection that spans files stays one flow.

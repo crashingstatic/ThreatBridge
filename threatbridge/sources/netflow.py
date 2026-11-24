@@ -6,7 +6,6 @@ connection are merged into one flow and oriented initiator -> responder.
 import ipaddress
 import logging
 import os
-import socket
 import subprocess
 import tempfile
 
@@ -16,48 +15,50 @@ from .workers import in_order
 
 log = logging.getLogger(__name__)
 
-# `nfdump -o pipe`, as printed by nfdump 1.7.3 (the only version tested):
-#   af|first_ms|last_ms|proto|src x4|sport|dst x4|dport|src_as|dst_as|in_if|out_if|flags|tos|packets|bytes
-# Addresses are four 32-bit integers, so IPv6 is never abbreviated (the "fmt:" output truncates
-# it), and times are epoch milliseconds, unaffected by the local time zone (unlike "csv").
-PIPE_FIELDS = 22
+# nfdump's custom output format: start|end|proto|src|sport|dst|dport|TCP flags|packets|bytes,
+# each padded with spaces. Times are epoch seconds, unaffected by the local time zone (unlike
+# "csv" and "json"); -N prints plain numbers (protocol, packets, bytes); -6 prints IPv6
+# addresses in full (otherwise they are shortened, losing digits). "-o pipe", read before, is
+# not in nfdump 1.7.6.
+FORMAT = "fmt:%tsr|%ter|%pr|%sa|%sp|%da|%dp|%flg|%pkt|%byt"
+FIELDS = FORMAT.count("|") + 1
+TESTED = "tested with nfdump 1.7.3 and 1.7.6"
+TCP_FLAG_LETTERS = "CEUAPRSF"      # bits 7 to 0, as nfdump prints them ("." for a flag not set)
 
 
-def _address(af, words):
-    if af == socket.AF_INET:
-        return str(ipaddress.IPv4Address(int(words[3])))
-    if af == socket.AF_INET6:
-        value = 0
-        for w in words:
-            value = (value << 32) | int(w)
-        return str(ipaddress.IPv6Address(value))
-    raise ValueError(f"unknown address family {af}")
+def _tcp_flags(text):
+    """TCP flags as nfdump prints them: a number (1.7.9 with -N) or TCP_FLAG_LETTERS, with "."
+    for each flag not set (1.7.3 and 1.7.6; all dots for a record that isn't TCP)."""
+    if text.isdigit():
+        return int(text)
+    if len(text) != 8 or any(c not in (letter, ".") for c, letter in zip(text, TCP_FLAG_LETTERS)):
+        raise ValueError(f"TCP flags {text!r}")
+    return sum(1 << (7 - i) for i, c in enumerate(text) if c != ".")
 
 
-def parse_pipe_line(line):
-    """One `nfdump -o pipe` line -> (start, end, proto, src, sport, dst, dport, packets, bytes,
-    TCP flags). An ICMP record has no ports; its type (nfdump prints type * 256 + code as the
-    destination port) gives its flags (see model.icmp_flags)."""
-    f = line.split("|")
-    if len(f) != PIPE_FIELDS:
-        raise SourceError(f"unexpected nfdump output ({len(f)} fields, expected {PIPE_FIELDS}); "
-                          "tested with nfdump 1.7.3")
+def parse_line(line):
+    """One line of nfdump FORMAT output -> (start, end, proto, src, sport, dst, dport, packets,
+    bytes, TCP flags). An ICMP record has no ports; nfdump prints "type.code" as its destination
+    port, and the type gives its flags (see model.icmp_flags)."""
+    f = [field.strip() for field in line.split("|")]
+    if len(f) != FIELDS:
+        raise SourceError(f"unexpected nfdump output ({len(f)} fields, expected {FIELDS}); {TESTED}")
     try:
-        af, number = int(f[0]), int(f[3])
+        number = int(f[2])
         proto = proto_name(number)
         if proto == "icmp":
-            sport, dport, flags = 0, 0, icmp_flags(number, int(f[13]) >> 8)
+            sport, dport, flags = 0, 0, icmp_flags(number, int(f[6].partition(".")[0]))
         else:
-            sport, dport, flags = int(f[8]), int(f[13]), int(f[18])
-        return (int(f[1]) / 1000.0, int(f[2]) / 1000.0, proto, _address(af, f[4:8]), sport,
-                _address(af, f[9:13]), dport, int(f[20]), int(f[21]), flags)
+            sport, dport, flags = int(f[4]), int(f[6]), _tcp_flags(f[7])
+        return (float(f[0]), float(f[1]), proto, str(ipaddress.ip_address(f[3])), sport,
+                str(ipaddress.ip_address(f[5])), dport, int(f[8]), int(f[9]), flags)
     except ValueError as e:
-        raise SourceError(f"unexpected nfdump output ({e}); tested with nfdump 1.7.3")
+        raise SourceError(f"unexpected nfdump output ({e}); {TESTED}")
 
 
 def read_records(path):
     """Yield parsed records from one nfcapd file."""
-    cmd = [os.environ.get("TB_NFDUMP", "nfdump"), "-q", "-o", "pipe", "-r", path]
+    cmd = [os.environ.get("TB_NFDUMP", "nfdump"), "-q", "-N", "-6", "-o", FORMAT, "-r", path]
     with tempfile.TemporaryFile() as err:
         try:
             # Argument list, no shell: the path is never interpreted.
@@ -68,7 +69,7 @@ def read_records(path):
             for line in proc.stdout:
                 line = line.strip()
                 if line:
-                    yield parse_pipe_line(line)
+                    yield parse_line(line)
         except BaseException:  # parse error, or the caller stopped reading
             proc.kill()
             proc.wait()

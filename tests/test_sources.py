@@ -15,7 +15,7 @@ from evidence import (ACK, FIN, MAC, PSH, RST, SYN, dns_answer, have_nfdump, icm
 from threatbridge import model, protocols, sources
 from threatbridge.model import Flow, SourceError
 from threatbridge.sources import netflow, pcap, workers
-from threatbridge.sources.netflow import pair_records, parse_pipe_line, read_records
+from threatbridge.sources.netflow import pair_records, parse_line, read_records
 from threatbridge.sources.pcap import record_dns
 
 
@@ -71,6 +71,11 @@ def fake_nfdump(tmp_path, monkeypatch, script):
     exe.write_text("#!/bin/sh\n" + script)
     exe.chmod(0o755)
     monkeypatch.setenv("TB_NFDUMP", str(exe))
+
+
+# A stand-in nfdump script that prints the lines kept next to the file it is given (its last
+# argument, after -r), in FILE.lines.
+CAT_LINES = 'for arg; do :; done\ncat "$arg.lines"\n'
 
 
 # ---- finding evidence files ---------------------------------------------------------------
@@ -440,38 +445,53 @@ def test_only_port_53_answers_count(tmp_path):
 
 # ---- NetFlow (nfdump) ---------------------------------------------------------------------
 
-# Real `nfdump -q -o pipe` output from nfdump 1.7.3.
-PIPE_V4 = "2|1792437101000|1792437111000|6|0|0|0|167772165|50000|0|0|0|167772169|445|0|0|0|0|27|0|10|1500"
+# `nfdump -q -N -6 -o FORMAT` output from nfdump 1.7.3 (times and addresses changed): TCP, UDP
+# and an ICMP echo request.
+NF_TCP = ("1792437101.250|1792437111.000|6    |                               10.0.0.5| 50000|"
+          "                               10.0.0.9|   445|...AP.SF|      10|    1500")
+NF_UDP = ("1792437151.000|1792437151.000|17   |                               10.0.0.5| 53000|"
+          "                                8.8.8.8|    53|........|       1|      70")
+NF_ICMP = ("1792437161.000|1792437161.000|1    |                               10.0.0.5|     0|"
+           "                                8.8.8.8|   8.0|........|       1|      84")
 
 
-PIPE_V6 = ("10|1792437238000|1792437242000|6|536939960|2863315899|3435978205|4008574977|51000|"
-           "536939960|286335522|858997828|1431660134|22|0|0|0|0|0|0|5|400")
+def nf_line(start=1792437101.25, end=1792437111.0, sport=50000, proto=6, src=C, dst=S, dport="445",
+            flags="...AP.SF"):
+    """A line as nfdump prints it, with each field's padding (as NF_TCP by default)."""
+    return (f"{start:.3f}|{end:.3f}|{proto:<5}|{src:>39}|{sport:>6}|{dst:>39}|{dport:>6}|{flags:>8}|"
+            f"{10:>8}|{1500:>8}")
 
 
-def test_parse_pipe_lines():
-    assert parse_pipe_line(PIPE_V4) == (1792437101.0, 1792437111.0, "tcp", C, 50000, S, 445, 10, 1500,
-                                        FIN | SYN | PSH | ACK)
-    rec = parse_pipe_line(PIPE_V6)
-    assert rec[3] == "2001:db8:aaaa:bbbb:cccc:dddd:eeee:1"
-    assert rec[5] == "2001:db8:1111:2222:3333:4444:5555:6666"
-    icmp = parse_pipe_line("2|0|0|1|0|0|0|167772165|0|0|0|0|134744072|2048|0|0|0|0|0|0|1|84")
-    assert (icmp[2], icmp[4], icmp[6], icmp[9]) == ("icmp", 0, 0, SYN)       # an echo request
-    with pytest.raises(SourceError, match="unexpected nfdump output"):
-        parse_pipe_line("2|1|2|6")
+def test_parse_nfdump_lines():
+    assert parse_line(NF_TCP) == (1792437101.25, 1792437111.0, "tcp", C, 50000, S, 445, 10, 1500,
+                                  FIN | SYN | PSH | ACK)
+    assert parse_line(NF_UDP) == (1792437151.0, 1792437151.0, "udp", C, 53000, R, 53, 1, 70, 0)
+    assert parse_line(NF_ICMP) == (1792437161.0, 1792437161.0, "icmp", C, 0, R, 0, 1, 84, SYN)  # echo request
+    assert nf_line() == NF_TCP
+    assert parse_line(nf_line(flags="27")) == parse_line(NF_TCP)          # nfdump 1.7.9: a number
+    assert parse_line(nf_line(flags="CEUAPRSF"))[9] == 255
+    # nfdump -6 prints IPv6 addresses in full; they are kept in the usual short form.
+    rec = parse_line(nf_line(src="2001:db8:aaaa:bbbb:cccc:dddd:eeee:1", dst="2001:db8:0:0:0:0:0:9"))
+    assert (rec[3], rec[5]) == ("2001:db8:aaaa:bbbb:cccc:dddd:eeee:1", "2001:db8::9")
+    reply = parse_line(nf_line(proto=58, src="2001:db8::9", dst="2001:db8::5", dport="129.0"))
+    assert (reply[2], reply[4], reply[6], reply[9]) == ("icmp", 0, 0, SYN | ACK)    # ICMPv6 echo reply
 
 
-@pytest.mark.parametrize("line", [
-    "0|0|0|6|0|0|0|1|50000|0|0|0|2|445|0|0|0|0|0|0|1|1",        # unknown address family
-    "2|x|0|6|0|0|0|1|50000|0|0|0|2|445|0|0|0|0|0|0|1|1",        # not a number
+@pytest.mark.parametrize("line, why", [
+    ("1792437101.250|1792437111.000|6", "3 fields, expected 10"),
+    ("2|1792437101000|1792437111000|6|0|0|0|167772165|50000|0|0|0|167772169|445|0|0|0|0|27|0|10|1500",
+     "22 fields, expected 10"),                                         # the old "-o pipe" output
+    (NF_TCP.replace("1792437101.250", "x"), "could not convert"),
+    (nf_line(flags="...AP.SX"), "TCP flags '...AP.SX'"),
+    (nf_line(flags="..."), "TCP flags '...'"),
+    (nf_line(dst="10.0.0.300"), "10.0.0.300"),
+    (nf_line(dst="2001:db8..9"), "2001:db8..9"),                     # shortened by nfdump without -6
+    (nf_line(proto=1, dport="x.0"), "invalid literal"),
 ])
-def test_unreadable_nfdump_lines_are_source_errors(line):
-    with pytest.raises(SourceError, match="unexpected nfdump output"):
-        parse_pipe_line(line)
-
-
-def test_unknown_address_family_is_named():
-    with pytest.raises(SourceError, match="unknown address family 0"):
-        parse_pipe_line("0|0|0|6|0|0|0|1|50000|0|0|0|2|445|0|0|0|0|0|0|1|1")
+def test_unreadable_nfdump_lines_are_source_errors(line, why):
+    with pytest.raises(SourceError, match="unexpected nfdump output") as e:
+        parse_line(line)
+    assert why in str(e.value) and "tested with nfdump" in str(e.value)
 
 
 def test_pairing_merges_halves_and_orients():
@@ -578,10 +598,11 @@ def test_real_nfcapd_file(tmp_path):
         (C, S, 50000, 445, 6, 10, 1500, t, t + 10),
         (S, C, 445, 50000, 6, 8, 9000, t, t + 10),
         (C, R, 53000, 53, 17, 1, 70, t + 50, t + 50),
+        (C, R, 0, 8 << 8, 1, 1, 84, t + 60, t + 60),                  # ICMP echo request
     ], now)
     flows = load([str(tmp_path)])    # directory: skips nfcapd's hidden stat file
     assert [(f.src, f.dst, f.dport, f.proto, f.packets, f.bytes) for f in flows] == [
-        (C, S, 445, "tcp", 18, 10500), (C, R, 53, "udp", 1, 70)]
+        (C, S, 445, "tcp", 18, 10500), (C, R, 53, "udp", 1, 70), (C, R, 0, "icmp", 1, 84)]
     assert flows[0].start == t and flows[0].end == t + 10
     assert flows[0].source == path and os.path.basename(path).startswith("nfcapd.")
 
@@ -672,14 +693,14 @@ def test_worker_processes_read_pcaps_and_report_errors(tmp_path):
 
 def test_worker_processes_read_nfcapd_files_in_order(tmp_path, monkeypatch):
     # A stand-in nfdump that prints the lines kept next to each "nfcapd" file.
-    fake_nfdump(tmp_path, monkeypatch, 'cat "$5.lines"\n')     # nfdump -q -o pipe -r FILE
+    fake_nfdump(tmp_path, monkeypatch, CAT_LINES)
     files = []
-    for i, start in enumerate([1792437101000, 1792437101000, 1792437201000]):
+    for i, start in enumerate([1792437101, 1792437101, 1792437201]):
         path = tmp_path / f"nfcapd.20260101000{i}"
         path.write_bytes(b"\x0c\xa5")
         sport = 50000 + i % 2
         path.with_name(path.name + ".lines").write_text(
-            f"2|{start}|{start + 1000}|6|0|0|0|167772165|{sport}|0|0|0|167772169|445|0|0|0|0|27|0|10|1500\n")
+            nf_line(start, start + 1, sport) + "\n")
         files.append(str(path))
     one = netflow.read_nfcapd(files, workers=1)
     # Files 0 and 2 hold the same connection 100 s apart (TCP idle timeout: 5 min): one flow.
@@ -764,11 +785,11 @@ def test_progress_reports_as_it_goes_and_logs_each_file(tmp_path, monkeypatch, c
 
 def test_nfcapd_progress_and_logs_through_read(tmp_path, monkeypatch, caplog):
     caplog.set_level(logging.INFO, logger="threatbridge.sources")
-    fake_nfdump(tmp_path, monkeypatch, 'cat "$5.lines"\n')
+    fake_nfdump(tmp_path, monkeypatch, CAT_LINES)
     for name, lines in (("nfcapd.202601010000", 1), ("nfcapd.202601010001", 2)):
         (tmp_path / name).write_bytes(b"\x0c\xa5" + b"\0" * lines)
         (tmp_path / (name + ".lines")).write_text("".join(
-            f"2|1792437101000|1792437102000|6|0|0|0|167772165|{50000 + i}|0|0|0|167772169|445|0|0|0|0|27|0|10|1500\n"
+            nf_line(1792437101, 1792437102, 50000 + i) + "\n"
             for i in range(lines)))
     seen = []
     flows = sources.read(sources.find([str(tmp_path / "nfcapd.202601010000"), str(tmp_path / "nfcapd.202601010001")]),
