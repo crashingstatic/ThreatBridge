@@ -11,6 +11,8 @@ apart, to page through; 12 two-hop routes 10.0.2.1 -> 10.0.2.10..21 -> 10.0.2.2;
 and filters (ui_marks.mjs), the timeline E -> A -> X -> B, X -> C, B -> F, A -> Y (10.9.0.1-7),
 with 10.9.1.1 -> 10.9.1.2 on its own.
 
+DHCP (dhcpd.leases): 10.0.0.5 was ws-042's until 12:30, then laptop-7's.
+
 And on hosts of their own: a beacon, 10.8.0.5 -> 198.51.100.9 (443) about every minute (10%
 jitter, 30 times, from 13:23:20), and a long connection, 10.8.0.6 -> 198.51.100.10 (22), kept
 alive for two hours from 13:40.
@@ -44,6 +46,22 @@ STORY = [("10.9.0.1", "10.9.0.2", 443, T + 100),    # E -> A, TLS
          ("10.9.1.1", "10.9.1.2", 445, T + 500)]    # a part of the map of its own
 
 
+LEASES = """# The format of this file is documented in the dhcpd.leases(5) manual page.
+lease 10.0.0.5 {
+  starts 3 2024/05/01 06:00:00;
+  ends 3 2024/05/01 18:00:00;
+  hardware ethernet 00:11:22:33:44:55;
+  client-hostname "ws-042";
+}
+lease 10.0.0.5 {
+  starts 3 2024/05/01 12:30:00;
+  ends never;
+  hardware ethernet 66:77:88:99:aa:bb;
+  client-hostname "laptop-7";
+}
+"""
+
+
 def beacon():
     rng, t, out = random.Random(5), T + 5000, []
     for _ in range(30):
@@ -66,6 +84,8 @@ def main(outdir):
                 (T - 1199.99, udp("10.0.0.53", "10.0.0.9", 53, 40000, dns_answer(
                     "updates.example.com", [("updates.example.com", "A", "10.0.0.77")])))]
     write_pcap(os.path.join(outdir, "chain.pcap"), sorted(packets, key=lambda p: p[0]))
+    with open(os.path.join(outdir, "dhcpd.leases"), "w") as fh:
+        fh.write(LEASES)
 
 
 if __name__ == "__main__":

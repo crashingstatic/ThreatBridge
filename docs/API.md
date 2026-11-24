@@ -14,6 +14,10 @@ what a schema can't say.
 
 ## Changes
 
+- **Machines behind addresses (ING-9).** `GET /api/machines` lists every machine (MAC address,
+  host name) that held an address, from DHCP; `POST /api/machines` gives, for each host, the one
+  at its time and how many held the address in the time range. The case summary in
+  `GET /api/config` has `leases`, and `limits.machines`. Additions, so `api_version` stays 1.
 - **Beacons and long connections (ATK-12).** `GET`/`POST /api/flagged` lists them. Filters take
   two more words, `beacon` and `long` (`filter.flags` in `GET /api/config`). `GET /api/config`
   has `flagged`, `beacon_score`, `beacon_min`, `long_connection` and `limits.flagged`. Additions,
@@ -100,6 +104,7 @@ Mapping connections:
 |---|---|---|
 | `/api/resolve` | GET | Check an IP and settle the anchor time a map starts from |
 | `/api/neighbors` | GET, POST | One hop: who connected to a host, or who it connected to, before or after the anchor |
+| `/api/machines` | GET, POST | Which machine held an address: every one (GET), or the one at each host's time (POST) (case backend) |
 | `/api/flagged` | GET, POST | Beacons and long connections (case backend) |
 | `/api/contacts` | GET, POST | The inside hosts that talked to an address, a network or a domain name (case backend) |
 | `/api/flows` | GET, POST | One page of a connection's flows, oldest first |

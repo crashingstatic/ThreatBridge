@@ -72,6 +72,10 @@
       { selector: "edge.proto-hit", style: {
           opacity: 1, "underlay-color": COLORS.protocol, "underlay-opacity": 0.55, "underlay-padding": 4,
           "z-index": 20 } },
+      // An address more than one machine held in the time range (D27): a dashed outline, outside
+      // the border, which says whether the host was expanded.
+      { selector: "node[?shared]", style: { "outline-width": 2, "outline-style": "dashed", "outline-color": COLORS.out,
+                                            "outline-offset": 2 } },
       // Beacons and long connections (ATK-12): a marker halfway along.
       { selector: "edge[?long]", style: { "mid-target-arrow-shape": "square", "mid-target-arrow-color": "#d8dee9" } },
       { selector: "edge[?beacon]", style: { "mid-target-arrow-shape": "diamond", "mid-target-arrow-color": "#d8dee9" } },
@@ -212,6 +216,33 @@
       animate: false, fit: true, padding: 40, spacingFactor: 1.1, avoidOverlap: true,
     }).run();
     markFlags();
+    refreshMachines().catch(() => {});
+  }
+
+  // ---- machines behind addresses (D27): from the case's DHCP evidence, the machine each host
+  // was at its time, and whether its address changed hands in the time range.
+  let machinesAsked = 0;
+  const hasLeases = () => Boolean(cfg.case && cfg.case.leases);
+  const machineText = (m) => (m ? `${m.name || "no name"} (${m.mac})` : "unknown");
+
+  async function refreshMachines() {
+    if (!hasLeases()) return;
+    const asked = ++machinesAsked;
+    const hosts = cy.nodes().map((n) => ({ ip: n.id(), time: n.data("anchor") || null }));
+    const body = { hosts };
+    if ($("range-from").value.trim()) body.range_from = $("range-from").value.trim();
+    if ($("range-to").value.trim()) body.range_to = $("range-to").value.trim();
+    const r = await getJSON("/api/machines", { method: "POST", headers: WRITE_HEADERS, body: JSON.stringify(body) });
+    if (asked !== machinesAsked) return;          // the map changed meanwhile: a newer answer comes
+    cy.batch(() => {
+      for (const h of r.hosts) {
+        const n = cy.getElementById(h.ip);
+        if (n.empty()) continue;
+        n.data("machine", h.machine);
+        n.data("shared", h.machines > 1);
+      }
+    });
+    if (detailsFor) refreshDetails(detailsFor);
   }
 
   function addNode(ip, anchor, extra) {
@@ -471,14 +502,28 @@
 
   function nodeDetails(n) {
     detailsFor = n.id();
-    showDetails([
+    const rows = [
       ["Host", n.id()], ["Anchor", n.data("anchor")], ["IOC root", n.data("root") ? "yes" : "no"],
       ["Compromised", compromisedText(n.id())],
       ["Hops from IOC", n.data("depth")],
       ["Inbound expanded", n.data("expandedIn") ? "yes" : "no"],
       ["Outbound expanded", n.data("expandedOut") ? "yes" : "no"],
       ["Degree", n.degree()],
-    ]);
+    ];
+    if (hasLeases()) rows.push(["Machine", machineText(n.data("machine"))]);
+    showDetails(rows);
+    if (hasLeases() && n.data("shared")) showHolders(n.id()).catch(() => {});
+  }
+
+  // Every machine that held the address in the time range, under the host's details.
+  async function showHolders(ip) {
+    const r = await getJSON(`/api/machines?${withRange(new URLSearchParams({ ip }))}`);
+    if (detailsFor !== ip) return;
+    const dl = $("detail-body").querySelector("dl");
+    for (const m of r.held_by) {
+      dl.append(el("dt", { textContent: "Held by" }),
+                el("dd", { textContent: `${machineText(m)}, ${m.from} → ${m.until || "end"}` }));
+    }
   }
 
   function edgeDetails(e) {
@@ -1566,6 +1611,7 @@
     $("routes").hidden = !cfg.analysis;
     $("contacts").hidden = !cfg.contacts;
     $("flagged").hidden = !cfg.flagged;
+    $("legend-shared").hidden = !hasLeases();
     loadFlagged().catch(() => {});
     try { showShared(await getJSON("/api/compromised"), true); } catch (_) { /* none */ }
     setInterval(pollMarks, (cfg.marks_poll || 5) * 1000);

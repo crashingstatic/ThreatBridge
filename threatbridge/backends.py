@@ -475,6 +475,9 @@ class CaseBackend:
                 self.graph = build_graph((f.src, f.dst, f.start) for f in flows)
             else:
                 self._load(cfg.case_paths, cfg.read_workers or os.cpu_count() or 1)
+        self.leases = {}
+        for h in self.store.leases():               # who held each address when (D27)
+            self.leases.setdefault(h[0], []).append(h)
         self.flow_count, first, last = self.store.stats()
         self.span = (_utc(first), _utc(last)) if self.flow_count else None
         log.info("case ready: %d flows, %d hosts, %d host pairs, %d names in DNS answers, in %.1fs",
@@ -514,6 +517,7 @@ class CaseBackend:
             "start": fmt_time(self.span[0]) if self.span else None,
             "end": fmt_time(self.span[1]) if self.span else None,
             "dns_names": len(self.dns),
+            "leases": sum(map(len, self.leases.values())),
         }
 
     # ---- filters (D17): what a query may use ------------------------------------------------
@@ -587,6 +591,26 @@ class CaseBackend:
             "distinct_peers": len(peers),
             "truncated": False,
         }
+
+    def machines(self, hosts, start, end):
+        """For each (ip, time or None) of `hosts`: the holding (D27) covering that time, and how
+        many machines held the address in [start, end] (None: open)."""
+        lo = start.timestamp() if start else float("-inf")
+        hi = end.timestamp() if end else float("inf")
+        out = []
+        for ip, when in hosts:
+            held = self.leases.get(ip, [])
+            here = dhcp.at(held, when.timestamp()) if when else None
+            inside = {h[1] for h in held if h[3] <= hi and (h[4] is None or h[4] >= lo)}
+            out.append({"ip": ip, "time": fmt_time(when) if when else None,
+                        "machine": _holding(here) if here else None, "machines": len(inside)})
+        return out
+
+    def holders(self, ip, start, end):
+        """Every holding of `ip` (D27) overlapping [start, end] (None: open), oldest first."""
+        lo = start.timestamp() if start else float("-inf")
+        hi = end.timestamp() if end else float("inf")
+        return [_holding(h) for h in self.leases.get(ip, []) if h[3] <= hi and (h[4] is None or h[4] >= lo)]
 
     def flagged(self, start, end, exclude, limit, scope=None):
         """Beacons (beacons.py; active in [start, end], None: open) and host pairs with long flows
@@ -824,6 +848,12 @@ def _build_lock(db_path):
             yield
         finally:
             fcntl.flock(fh, fcntl.LOCK_UN)
+
+
+def _holding(h):
+    _, mac, name, start, until, found_in = h
+    return {"mac": mac, "name": name, "from": fmt_time(_utc(start)),
+            "until": fmt_time(_utc(until)) if until is not None else None, "sources": found_in}
 
 
 def _ip_order(ip):

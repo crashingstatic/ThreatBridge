@@ -88,6 +88,7 @@ class Limits(Shape):
     map_name: int = Field(description="characters in a saved map's name")
     contacts: int = Field(description="inside hosts /api/contacts lists")
     flagged: int = Field(description="beacons, and host pairs with long flows, /api/flagged lists at most")
+    machines: int = Field(description="hosts POST /api/machines takes at once")
 
 
 class FilterField(Shape):
@@ -135,6 +136,7 @@ class CaseSummary(Shape):
     start: Optional[Time] = Field(description="the first flow's start; null for an empty case")
     end: Optional[Time] = Field(description="the last flow's start; null for an empty case")
     dns_names: int = Field(description="names in the evidence's DNS answers")
+    leases: int = Field(description="DHCP holdings: who held which address when (D27)")
 
 
 class Directions(Shape):
@@ -585,6 +587,45 @@ class SaveResult(Shape):
     sessions: list[Session]
 
 
+class Machine(Shape):
+    """One machine's holding of an address (D27)."""
+    mac: str
+    name: Optional[str] = Field(description="its host name, if DHCP gave one")
+    from_: Time = Field(alias="from")
+    until: Optional[Time] = Field(description="null: no end seen")
+    sources: list[str] = Field(description="the evidence files that tell it")
+
+
+class MachinesOf(Shape):
+    model_config = example({"ip": "10.0.0.5", "held_by": [
+        {"mac": "00:11:22:33:44:55", "name": "WS-042", "from": "2024-05-01T12:00:00.000Z",
+         "until": "2024-05-01T15:00:00.000Z", "sources": ["/cases/42/DhcpSrvLog-Wed.log"]}]})
+    ip: str
+    held_by: list[Machine] = Field(description="every holding overlapping the time range, oldest first")
+
+
+class HostToAsk(Shape):
+    ip: str
+    time: Optional[str] = Field(None, description="the time to say which machine it was at; null: none")
+
+
+class MachinesIn(Shape):
+    hosts: list[HostToAsk]
+    range_from: str = Field(None, description="the start of the time range machines are counted in")
+    range_to: str = Field(None, description="its end")
+
+
+class HostMachine(Shape):
+    ip: str
+    time: Optional[Time]
+    machine: Optional[Machine] = Field(description="the holding covering time; null if none is known")
+    machines: int = Field(description="the machines that held the address in the time range")
+
+
+class MachinesView(Shape):
+    hosts: list[HostMachine]
+
+
 class MapToSave(Shape):
     name: str = Field(description="1 to limits.map_name printable characters")
     map: dict[str, Any] = Field(description="up to limits.map_bytes, kept as it is; the map saves a MapDocument")
@@ -759,6 +800,12 @@ class ContactsQuery(BaseModel):
     filter: Filter = None
 
 
+class MachinesQuery(BaseModel):
+    ip: str = Field(description="an IP address")
+    range_from: RangeFrom = None
+    range_to: RangeTo = None
+
+
 class FlaggedQuery(BaseModel):
     limit: int = Field(None, description="the most of each list, 1 to limits.flagged; default 100")
     range_from: RangeFrom = None
@@ -853,6 +900,13 @@ ENDPOINTS = {
             "Every inside host (internal_nets) that exchanged flows with the target in either direction, in the "
             "time range (the whole case without one), with its flows passing the filters. Hosts on the exclude "
             "list, and the target's own addresses, are left out. Case backend only.")),
+    "api_machines_of": Endpoint(
+        "Every machine that held an address (D27)", MachinesOf, MachinesQuery, errors=(400, 501), description=(
+            "From the case's DHCP logs and the DHCP messages in its captures. Case backend only.")),
+    "api_machines": Endpoint(
+        "The machine behind each host's address at its time (D27)", MachinesView, body=MachinesIn, errors=(400, 501),
+        description=("And how many machines held each address in the time range: more than one means the address "
+                     "changed hands. Case backend only.")),
     "api_flagged": Endpoint(
         "Beacons and long connections (ATK-12)", Flagged, FlaggedQuery, errors=(400, 500, 501), description=(
             "Beacons: a source, destination, port and protocol whose flows score at least beacon_score over at "

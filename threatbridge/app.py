@@ -37,6 +37,7 @@ MAX_EXPORT = 200_000  # flows in an export
 MARKS_POLL = 5       # seconds between the map's checks for other analysts' marks (D15)
 MAX_CONTACTS = 1000  # inside hosts listed as having talked to an address (ATK-11)
 MAX_FLAGGED = 1000   # beacons, and pairs with long flows, listed at once (ATK-12)
+MAX_MACHINES = 5000  # hosts asked about at once (ING-9)
 
 
 class _Body:
@@ -253,7 +254,7 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
               "within": MAX_WITHIN, "export_flows": MAX_EXPORT, "marks": compromised_mod.MAX_MARKS,
               "note": compromised_mod.MAX_NOTE, "saved_maps": sessions_mod.MAX_SESSIONS,
               "map_bytes": sessions_mod.MAX_BYTES, "map_name": sessions_mod.MAX_NAME, "contacts": MAX_CONTACTS,
-              "flagged": MAX_FLAGGED}
+              "flagged": MAX_FLAGGED, "machines": MAX_MACHINES}
 
     @app.get("/api/config")
     def api_config():
@@ -340,6 +341,32 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
                                scope_arg())
         return jsonify(target=target, kind=kind, start=fmt_time(start) if start else None,
                        end=fmt_time(end) if end else None, **res)
+
+    @app.get("/api/machines")
+    def api_machines_of():
+        """Every machine that held an address in the time range (D27)."""
+        require("machines")
+        ip = parse_ip(args().get("ip"))
+        start, end = range_arg()
+        return jsonify(ip=ip, held_by=backend.holders(ip, start, end))
+
+    @app.post("/api/machines")
+    def api_machines():
+        """For each host, the machine behind its address at its time, and how many machines held
+        the address in the time range (D27)."""
+        require("machines")
+        body = json_body()
+        hosts = body.get("hosts")
+        if not isinstance(hosts, list) or len(hosts) > MAX_MACHINES:
+            raise ValidationError(f"hosts must be a list of at most {MAX_MACHINES}")
+        asked = []
+        for h in hosts:
+            if not isinstance(h, dict):
+                raise ValidationError("each host is an object with ip and time")
+            t = h.get("time")
+            asked.append((parse_ip(h.get("ip")), parse_time(t) if t else None))
+        start, end = range_arg()
+        return jsonify(hosts=backend.machines(asked, start, end))
 
     @app.route("/api/flagged", methods=["GET", "POST"])
     def api_flagged():

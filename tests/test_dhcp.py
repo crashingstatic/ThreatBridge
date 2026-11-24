@@ -150,3 +150,56 @@ def test_a_case_keeps_who_held_each_address(tmp_path, caplog):
     assert CaseBackend(cfg).store.leases() == leases
     (d / "dhcpd.leases").write_text(ISC.replace("ws-042", "ws-043"))
     assert any(name == "ws-043" for _, _, name, *_ in CaseBackend(cfg).store.leases())
+
+
+# ---- the machines API (D27) ----------------------------------------------------------------
+
+def machines_client(tmp_path):
+    from threatbridge.app import create_app
+    from threatbridge.model import Flow
+    obs = [("10.0.0.5", A, "WS-042", T, None, "assign", "win.log"), ("10.0.0.5", B, "LAPTOP-7", T + 3600, None,
+                                                                      "assign", "dhcp.log"),
+           ("10.0.0.6", A, "WS-042", T + 7200, T + 9000, "assign", "dhcp.log")]
+    flows = [Flow("10.0.0.5", "10.0.0.9", 50000, 445, "tcp", T + 60, T + 61, 2, 120, "x.pcap", "smb")]
+    cfg = Config(backend="case", live_dns=False, compromised_file=str(tmp_path / "c.json"),
+                 exclude_file=str(tmp_path / "ex.json"))
+    return create_app(cfg, CaseBackend(cfg, flows=flows, leases=obs)).test_client()
+
+
+def test_every_machine_that_held_an_address(tmp_path):
+    c = machines_client(tmp_path)
+    assert c.get("/api/config").get_json()["case"]["leases"] == 3
+    r = c.get("/api/machines?ip=10.0.0.5").get_json()
+    assert r == {"ip": "10.0.0.5", "held_by": [
+        {"mac": A, "name": "WS-042", "from": "2024-05-01T12:00:00.000Z", "until": "2024-05-01T13:00:00.000Z",
+         "sources": ["win.log"]},
+        {"mac": B, "name": "LAPTOP-7", "from": "2024-05-01T13:00:00.000Z", "until": None, "sources": ["dhcp.log"]}]}
+    r = c.get("/api/machines?ip=10.0.0.5&range_to=2024-05-01T12:30:00Z").get_json()
+    assert [h["mac"] for h in r["held_by"]] == [A]
+    assert c.get("/api/machines?ip=10.0.0.99").get_json()["held_by"] == []
+    assert c.get("/api/machines?ip=nope").status_code == 400
+
+
+def test_the_machine_behind_each_host_at_its_time(tmp_path):
+    c = machines_client(tmp_path)
+    r = c.post("/api/machines", json={"hosts": [{"ip": "10.0.0.5", "time": "2024-05-01T12:30:00Z"},
+                                                {"ip": "10.0.0.5", "time": "2024-05-01T14:00:00Z"},
+                                                {"ip": "10.0.0.6"}, {"ip": "10.0.0.9", "time": None}]},
+               headers={"X-ThreatBridge": "1"}).get_json()["hosts"]
+    assert [(h["ip"], h["machine"] and h["machine"]["name"], h["machines"]) for h in r] == [
+        ("10.0.0.5", "WS-042", 2), ("10.0.0.5", "LAPTOP-7", 2), ("10.0.0.6", None, 1), ("10.0.0.9", None, 0)]
+    # In a time range before the hand-over, one machine held 10.0.0.5.
+    r = c.post("/api/machines", json={"hosts": [{"ip": "10.0.0.5"}], "range_to": "2024-05-01T12:30:00Z"},
+               headers={"X-ThreatBridge": "1"}).get_json()["hosts"]
+    assert r[0]["machines"] == 1
+    for bad in ({"hosts": "10.0.0.5"}, {"hosts": [5]}, {"hosts": [{"ip": "x"}]}, {}):
+        assert c.post("/api/machines", json=bad, headers={"X-ThreatBridge": "1"}).status_code == 400
+
+
+def test_machines_need_the_case_backend(tmp_path):
+    from threatbridge.app import create_app
+    from threatbridge.backends import DemoBackend
+    cfg = Config(backend="demo", live_dns=False, compromised_file=str(tmp_path / "c.json"))
+    demo = create_app(cfg, DemoBackend(cfg)).test_client()
+    assert demo.get("/api/machines?ip=10.0.0.5").status_code == 501
+    assert demo.post("/api/machines", json={"hosts": []}, headers={"X-ThreatBridge": "1"}).status_code == 501

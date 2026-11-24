@@ -1158,6 +1158,109 @@
     }
    }
   },
+  "/api/machines": {
+   "get": {
+    "summary": "Every machine that held an address (D27)",
+    "description": "From the case's DHCP logs and the DHCP messages in its captures. Case backend only.",
+    "parameters": [
+     {
+      "name": "ip",
+      "in": "query",
+      "description": "an IP address",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "range_from",
+      "in": "query",
+      "description": "the start of the analyst's time range: only flows that started in it count",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "range_to",
+      "in": "query",
+      "description": "the end of the analyst's time range",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/MachinesOf"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/E400"
+     },
+     "401": {
+      "$ref": "#/components/responses/E401"
+     },
+     "421": {
+      "$ref": "#/components/responses/E421"
+     },
+     "501": {
+      "$ref": "#/components/responses/E501"
+     }
+    }
+   },
+   "post": {
+    "summary": "The machine behind each host's address at its time (D27)",
+    "description": "And how many machines held each address in the time range: more than one means the address changed hands. Case backend only.",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/write"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/MachinesIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/MachinesView"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/E400"
+     },
+     "401": {
+      "$ref": "#/components/responses/E401"
+     },
+     "403": {
+      "$ref": "#/components/responses/E403"
+     },
+     "421": {
+      "$ref": "#/components/responses/E421"
+     },
+     "501": {
+      "$ref": "#/components/responses/E501"
+     }
+    }
+   }
+  },
   "/api/neighbors": {
    "get": {
     "summary": "One hop: who connected to a host, or who it connected to, before or after the anchor",
@@ -2378,6 +2481,10 @@
      "dns_names": {
       "description": "names in the evidence's DNS answers",
       "type": "integer"
+     },
+     "leases": {
+      "description": "DHCP holdings: who held which address when (D27)",
+      "type": "integer"
      }
     },
     "required": [
@@ -2385,7 +2492,8 @@
      "hosts",
      "start",
      "end",
-     "dns_names"
+     "dns_names",
+     "leases"
     ],
     "type": "object"
    },
@@ -4007,6 +4115,47 @@
     ],
     "type": "object"
    },
+   "HostMachine": {
+    "additionalProperties": false,
+    "properties": {
+     "ip": {
+      "type": "string"
+     },
+     "time": {
+      "anyOf": [
+       {
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "machine": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/Machine"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "the holding covering time; null if none is known"
+     },
+     "machines": {
+      "description": "the machines that held the address in the time range",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "ip",
+     "time",
+     "machine",
+     "machines"
+    ],
+    "type": "object"
+   },
    "HostMark": {
     "additionalProperties": false,
     "properties": {
@@ -4065,6 +4214,29 @@
        }
       ],
       "description": "up to limits.note characters"
+     }
+    },
+    "required": [
+     "ip"
+    ],
+    "type": "object"
+   },
+   "HostToAsk": {
+    "additionalProperties": false,
+    "properties": {
+     "ip": {
+      "type": "string"
+     },
+     "time": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "the time to say which machine it was at; null: none"
      }
     },
     "required": [
@@ -4264,6 +4436,10 @@
      "flagged": {
       "description": "beacons, and host pairs with long flows, /api/flagged lists at most",
       "type": "integer"
+     },
+     "machines": {
+      "description": "hosts POST /api/machines takes at once",
+      "type": "integer"
      }
     },
     "required": [
@@ -4284,7 +4460,8 @@
      "map_bytes",
      "map_name",
      "contacts",
-     "flagged"
+     "flagged",
+     "machines"
     ],
     "type": "object"
    },
@@ -4429,6 +4606,131 @@
      "longest",
      "first_seen",
      "last_seen"
+    ],
+    "type": "object"
+   },
+   "Machine": {
+    "additionalProperties": false,
+    "description": "One machine's holding of an address (D27).",
+    "properties": {
+     "mac": {
+      "type": "string"
+     },
+     "name": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "its host name, if DHCP gave one"
+     },
+     "from": {
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+      "type": "string"
+     },
+     "until": {
+      "anyOf": [
+       {
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "null: no end seen"
+     },
+     "sources": {
+      "description": "the evidence files that tell it",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "mac",
+     "name",
+     "from",
+     "until",
+     "sources"
+    ],
+    "type": "object"
+   },
+   "MachinesIn": {
+    "additionalProperties": false,
+    "properties": {
+     "hosts": {
+      "items": {
+       "$ref": "#/components/schemas/HostToAsk"
+      },
+      "type": "array"
+     },
+     "range_from": {
+      "description": "the start of the time range machines are counted in",
+      "type": "string"
+     },
+     "range_to": {
+      "description": "its end",
+      "type": "string"
+     }
+    },
+    "required": [
+     "hosts"
+    ],
+    "type": "object"
+   },
+   "MachinesOf": {
+    "additionalProperties": false,
+    "examples": [
+     {
+      "held_by": [
+       {
+        "from": "2024-05-01T12:00:00.000Z",
+        "mac": "00:11:22:33:44:55",
+        "name": "WS-042",
+        "sources": [
+         "/cases/42/DhcpSrvLog-Wed.log"
+        ],
+        "until": "2024-05-01T15:00:00.000Z"
+       }
+      ],
+      "ip": "10.0.0.5"
+     }
+    ],
+    "properties": {
+     "ip": {
+      "type": "string"
+     },
+     "held_by": {
+      "description": "every holding overlapping the time range, oldest first",
+      "items": {
+       "$ref": "#/components/schemas/Machine"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "ip",
+     "held_by"
+    ],
+    "type": "object"
+   },
+   "MachinesView": {
+    "additionalProperties": false,
+    "properties": {
+     "hosts": {
+      "items": {
+       "$ref": "#/components/schemas/HostMachine"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "hosts"
     ],
     "type": "object"
    },

@@ -84,6 +84,27 @@ try {
   await page.selectOption("#protocol", "smb");
   assert.deepEqual(await protocolOptions(), [["", "All"], ["http", "HTTP"], ["smb", "SMB"]]);
 
+  // Machines behind addresses (D27): 10.0.0.5 changed hands at 12:30, so it has a dashed
+  // outline; at its time (12:10) it was ws-042, and its details list both machines.
+  const outline = (id) => cyEval((i) => {
+    const n = window.threatbridge.cy.getElementById(i);
+    return `${n.style("outline-width")} ${n.style("outline-style")}`;
+  }, id);
+  await page.waitForFunction(() => window.threatbridge.cy.getElementById("10.0.0.5").data("shared") === true);
+  assert.equal(await outline("10.0.0.5"), "2px dashed");
+  assert.equal(await outline("10.0.0.9"), "0px solid");
+  const m5 = await at("node#10\\.0\\.0\\.5");
+  await page.mouse.click(m5.x, m5.y, { button: "right" });
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => [...document.querySelectorAll("#detail-body dt")].filter((d) => d.textContent === "Held by").length === 2);
+  const machineRows = await page.$$eval("#detail-body dt", (dts) => dts.filter((d) => ["Machine", "Held by"].includes(d.textContent))
+    .map((d) => [d.textContent, d.nextElementSibling.textContent]));
+  assert.deepEqual(machineRows, [
+    ["Machine", "ws-042 (00:11:22:33:44:55)"],
+    ["Held by", "ws-042 (00:11:22:33:44:55), 2024-05-01T06:00:00.000Z → 2024-05-01T12:30:00.000Z"],
+    ["Held by", "laptop-7 (66:77:88:99:aa:bb), 2024-05-01T12:30:00.000Z → end"]]);
+  assert.ok(await page.locator("#legend-shared").isVisible());
+
   // Left-click the 10.0.0.5 -> 10.0.0.9 edge: the threat line runs back to the external
   // host and forward to 10.0.0.20, which was not on the map yet.
   let p = await at("edge#10\\.0\\.0\\.5-\\>10\\.0\\.0\\.9", "edge");

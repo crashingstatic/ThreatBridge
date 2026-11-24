@@ -150,15 +150,19 @@ try {
   const [y9, y5, y77, y66] = [await y("10.0.0.9"), await y("10.0.0.5"), await y("10.0.0.77"), await y("203.0.113.66")];
   assert.ok(y9 < y5 && y5 === y77 && y77 < y66, JSON.stringify([y9, y5, y77, y66]));
   // The details panel: right-click shows a host's without expanding it.
+  await page.waitForFunction(() => window.threatbridge.cy.getElementById("10.0.0.5").data("machine"));
   let q = await at(node("10.0.0.5"));
   await page.mouse.click(q.x, q.y, { button: "right" });
-  assert.deepEqual(await rows(), ["Host", "10.0.0.5", "Anchor", "2024-05-01T12:10:00.000Z", "IOC root", "no",
-    "Compromised", "no", "Hops from IOC", "1", "Inbound expanded", "yes", "Outbound expanded", "no", "Degree", "2"]);
+  // Up to its machine: an address that changed hands lists its holders after it (ui_case.mjs).
+  assert.deepEqual((await rows()).slice(0, 18), ["Host", "10.0.0.5", "Anchor", "2024-05-01T12:10:00.000Z", "IOC root", "no",
+    "Compromised", "no", "Hops from IOC", "1", "Inbound expanded", "yes", "Outbound expanded", "no", "Degree", "2",
+    "Machine", "ws-042 (00:11:22:33:44:55)"]);
   await page.keyboard.press("Escape");
   q = await at(node("10.0.0.9"));
   await page.mouse.click(q.x, q.y, { button: "right" });
   assert.deepEqual(await rows(), ["Host", "10.0.0.9", "Anchor", "2024-05-01T15:40:00.000Z", "IOC root", "yes",
-    "Compromised", "no", "Hops from IOC", "0", "Inbound expanded", "yes", "Outbound expanded", "no", "Degree", "2"]);
+    "Compromised", "no", "Hops from IOC", "0", "Inbound expanded", "yes", "Outbound expanded", "no", "Degree", "2",
+    "Machine", "unknown"]);
   await page.keyboard.press("Escape");
 
   // 3b. Right-clicking a connection of a case shows its details and flows, and no menu (no SOC

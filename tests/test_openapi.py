@@ -130,7 +130,7 @@ def test_the_limits_are_those_applied(tmp_path):
         "filter_depth": filters.MAX_DEPTH, "edges": app_mod.MAX_EDGES, "within": app_mod.MAX_WITHIN,
         "export_flows": app_mod.MAX_EXPORT, "marks": compromised.MAX_MARKS, "note": compromised.MAX_NOTE,
         "saved_maps": sessions.MAX_SESSIONS, "map_bytes": sessions.MAX_BYTES, "map_name": sessions.MAX_NAME,
-        "contacts": app_mod.MAX_CONTACTS, "flagged": app_mod.MAX_FLAGGED}
+        "contacts": app_mod.MAX_CONTACTS, "flagged": app_mod.MAX_FLAGGED, "machines": app_mod.MAX_MACHINES}
     elastic = Config(backend="elastic", live_dns=False, compromised_file=str(tmp_path / "c.json"))
     config = create_app(elastic).test_client().get("/api/config").get_json()
     assert config["limits"]["connection_flows"] == ES_MAX_RESULTS
@@ -174,6 +174,9 @@ def test_every_operation_answers_as_documented(tmp_path):
     assert case.post("/api/neighbors", json=query, headers=WRITE).status_code == 200
     assert case.get(f"/api/flows?src={A}&dst={X}&from={t0}&to={t1}&offset=0&limit=10").status_code == 200
     assert case.post("/api/flows", json={"src": A, "dst": X, "from": t0, "to": t1, "within": [[t0, t1]]},
+                     headers=WRITE).status_code == 200
+    assert case.get(f"/api/machines?ip={A}&range_from={t0}").status_code == 200
+    assert case.post("/api/machines", json={"hosts": [{"ip": A, "time": t0}, {"ip": X}], "range_to": t1},
                      headers=WRITE).status_code == 200
     assert case.get(f"/api/flagged?limit=5&range_from={t0}&filter=long").status_code == 200
     assert case.post("/api/flagged", json={"filters": ["NOT DNS"]}, headers=WRITE).status_code == 200

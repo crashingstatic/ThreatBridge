@@ -90,6 +90,8 @@ ol.flows .actions button { padding: 0 6px; font-size: 11px; }
 .sw.suspect-line { background: repeating-linear-gradient(90deg, var(--compromised) 0 5px, transparent 5px 8px); }
 .sw.attack, .sw.route, .sw.up, .sw.down { border-radius: 2px; height: 4px; }
 .sw.attack { background: var(--attack); } .sw.route { background: var(--route); }
+.legend > span[hidden] { display: none; }
+.sw.shared { background: #9aa7bd; border: 2px dashed var(--out); width: 10px; height: 10px; }
 .sw.beacon, .sw.long { width: 8px; height: 8px; border-radius: 0; background: #d8dee9; }
 .sw.beacon { transform: rotate(45deg); }
 .sw.up { background: var(--up); } .sw.down { background: var(--down); }
