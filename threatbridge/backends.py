@@ -36,6 +36,7 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
+from .communityid import community_id
 from . import analysis, filters, protocols, sources
 from .compromised import flow_key, marked_hosts, reached
 from .graph import build_graph, count_between
@@ -108,7 +109,8 @@ def _flow_row(f, status):
     """A case flow (model.Flow) as an export row."""
     return {"start": fmt_time(_utc(f.start)), "end": fmt_time(_utc(f.end)), "src": f.src,
             "sport": f.sport, "dst": f.dst, "dport": f.dport, "proto": f.proto,
-            "protocols": [f.service], "packets": f.packets, "bytes": f.bytes, "status": status}
+            "protocols": [f.service], "packets": f.packets, "bytes": f.bytes,
+            "community_id": community_id(f.src, f.dst, f.proto, f.sport, f.dport), "status": status}
 
 
 def marked_flow_rows(backend, edges, flows, limit):
@@ -122,6 +124,7 @@ def marked_flow_rows(backend, edges, flows, limit):
         t = _utc(_start(m["start"]))
         row = {"start": m["start"], "end": None, "src": m["src"], "sport": m["sport"], "dst": m["dst"],
                "dport": m["dport"], "proto": m["proto"], "protocols": [], "packets": None, "bytes": None,
+               "community_id": community_id(m["src"], m["dst"], m["proto"], m["sport"], m["dport"]),
                "status": "marked"}
         found = backend.flows(m["src"], m["dst"], t, t + timedelta(milliseconds=1), 0, 50)["flows"]
         for f in found:
@@ -273,6 +276,8 @@ class ElasticBackend:
                 "sport": one(cfg.f_sport), "dport": one(cfg.f_dport), "proto": proto,
                 "packets": total(cfg.f_packets), "bytes": total(cfg.f_bytes),
                 "protocols": named or ["icmp" if proto == "icmp" else protocols.UNKNOWN]}
+        if cfg.f_community_id and one(cfg.f_community_id):
+            flow["community_id"] = str(one(cfg.f_community_id))      # as Zeek recorded it
         if hit.get("_id"):
             flow.update(id=hit["_id"], soc_pcap=soc_pcap_url(cfg, hit["_id"], flow["start"]))
         return flow

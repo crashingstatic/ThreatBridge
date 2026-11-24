@@ -10,8 +10,8 @@ import time
 import dpkt
 import pytest
 
-from evidence import (ACK, FIN, MAC, PSH, RST, SYN, dns_answer, have_nfdump, icmp_echo, ip_bytes, load,
-                      make_nfcapd, tcp, udp, write_bulk_pcap, write_pcap)
+from evidence import (ACK, FIN, MAC, PSH, RST, SYN, dns_answer, have_nfdump, icmp_echo, ip_bytes, ipfix_biflows,
+                      load, make_nfcapd, tcp, udp, write_bulk_pcap, write_pcap)
 from threatbridge import model, protocols, sources
 from threatbridge.model import Flow, SourceError
 from threatbridge.sources import netflow, pcap, workers
@@ -62,8 +62,8 @@ def ipv6_fragment(offset, payload, more=True):
                                         data=bytes(ip6)))
 
 
-def rec(src, sport, dst, dport, start, end, packets=1, nbytes=100, proto="tcp", flags=0):
-    return (start, end, proto, src, sport, dst, dport, packets, nbytes, flags, "nf")
+def rec(src, sport, dst, dport, start, end, packets=1, nbytes=100, proto="tcp", flags=0, two_way=False):
+    return (start, end, proto, src, sport, dst, dport, packets, nbytes, flags, two_way, "nf")
 
 
 def fake_nfdump(tmp_path, monkeypatch, script):
@@ -88,13 +88,14 @@ def test_directory_walk_and_errors(tmp_path):
     (d / ".hidden.pcap").write_bytes(b"junk")
     assert len(load([str(d)])) == 1
 
-    with pytest.raises(SourceError, match="not a pcap or nfcapd"):
+    with pytest.raises(SourceError, match="not a pcap, pcapng or nfcapd"):
         load([str(d / "notes.txt")])
-    (d / "x.pcapng").write_bytes(bytes.fromhex("0a0d0d0a") + bytes(28))
-    with pytest.raises(SourceError, match="pcapng is not supported"):
+    (d / "x.pcapng").write_bytes(bytes.fromhex("0a0d0d0a") + bytes(28))   # pcapng's magic, then nothing
+    with pytest.raises(SourceError, match=r"x\.pcapng: not a readable pcapng file \(damaged at byte 0 "
+                                          r"\(unknown byte order\)\)"):
         load([str(d)])
     (tmp_path / "empty").mkdir()
-    with pytest.raises(SourceError, match="no pcap or nfcapd"):
+    with pytest.raises(SourceError, match="no pcap, pcapng or nfcapd"):
         load([str(tmp_path / "empty")])
     with pytest.raises(SourceError, match="no such file"):
         load([str(tmp_path / "missing")])
@@ -121,7 +122,7 @@ def test_a_duplicate_does_not_stop_the_walk(tmp_path):
 
 def test_files_that_are_not_evidence(tmp_path):
     (tmp_path / "empty").write_bytes(b"")
-    with pytest.raises(SourceError, match="not a pcap or nfcapd file"):
+    with pytest.raises(SourceError, match="not a pcap, pcapng or nfcapd file"):
         sources.find([str(tmp_path / "empty")])
     live = tmp_path / "nfcapd.current.4242"
     live.write_bytes(bytes.fromhex("0ca5") + b"\0" * 30)
@@ -446,27 +447,34 @@ def test_only_port_53_answers_count(tmp_path):
 # ---- NetFlow (nfdump) ---------------------------------------------------------------------
 
 # `nfdump -q -N -6 -o FORMAT` output from nfdump 1.7.3 (times and addresses changed): TCP, UDP
-# and an ICMP echo request.
+# and an ICMP echo request from NetFlow v5, and a two-way TCP record from IPFIX (RFC 5103).
 NF_TCP = ("1792437101.250|1792437111.000|6    |                               10.0.0.5| 50000|"
-          "                               10.0.0.9|   445|...AP.SF|      10|    1500")
+          "                               10.0.0.9|   445|...AP.SF|      10|    1500|       0|       0")
 NF_UDP = ("1792437151.000|1792437151.000|17   |                               10.0.0.5| 53000|"
-          "                                8.8.8.8|    53|........|       1|      70")
+          "                                8.8.8.8|    53|........|       1|      70|       0|       0")
 NF_ICMP = ("1792437161.000|1792437161.000|1    |                               10.0.0.5|     0|"
-           "                                8.8.8.8|   8.0|........|       1|      84")
+           "                                8.8.8.8|   8.0|........|       1|      84|       0|       0")
+NF_TWO_WAY = ("1792437101.250|1792437111.000|6    |                               10.0.0.5| 50000|"
+              "                               10.0.0.9|   445|...AP.SF|      10|    1500|       8|    9000")
 
 
 def nf_line(start=1792437101.25, end=1792437111.0, sport=50000, proto=6, src=C, dst=S, dport="445",
-            flags="...AP.SF"):
+            flags="...AP.SF", back=(0, 0)):
     """A line as nfdump prints it, with each field's padding (as NF_TCP by default)."""
     return (f"{start:.3f}|{end:.3f}|{proto:<5}|{src:>39}|{sport:>6}|{dst:>39}|{dport:>6}|{flags:>8}|"
-            f"{10:>8}|{1500:>8}")
+            f"{10:>8}|{1500:>8}|{back[0]:>8}|{back[1]:>8}")
 
 
 def test_parse_nfdump_lines():
     assert parse_line(NF_TCP) == (1792437101.25, 1792437111.0, "tcp", C, 50000, S, 445, 10, 1500,
-                                  FIN | SYN | PSH | ACK)
-    assert parse_line(NF_UDP) == (1792437151.0, 1792437151.0, "udp", C, 53000, R, 53, 1, 70, 0)
-    assert parse_line(NF_ICMP) == (1792437161.0, 1792437161.0, "icmp", C, 0, R, 0, 1, 84, SYN)  # echo request
+                                  FIN | SYN | PSH | ACK, False)
+    assert parse_line(NF_UDP) == (1792437151.0, 1792437151.0, "udp", C, 53000, R, 53, 1, 70, 0, False)
+    assert parse_line(NF_ICMP) == (1792437161.0, 1792437161.0, "icmp", C, 0, R, 0, 1, 84, SYN, False)  # echo request
+    # A two-way record: both directions' counts, together.
+    assert parse_line(NF_TWO_WAY) == (1792437101.25, 1792437111.0, "tcp", C, 50000, S, 445, 18, 10500,
+                                      FIN | SYN | PSH | ACK, True)
+    assert nf_line(back=(8, 9000)) == NF_TWO_WAY
+    assert parse_line(nf_line(back=(0, 40)))[10] is True                 # bytes alone say so too
     assert nf_line() == NF_TCP
     assert parse_line(nf_line(flags="27")) == parse_line(NF_TCP)          # nfdump 1.7.9: a number
     assert parse_line(nf_line(flags="CEUAPRSF"))[9] == 255
@@ -478,9 +486,11 @@ def test_parse_nfdump_lines():
 
 
 @pytest.mark.parametrize("line, why", [
-    ("1792437101.250|1792437111.000|6", "3 fields, expected 10"),
+    ("1792437101.250|1792437111.000|6", "3 fields, expected 12"),
     ("2|1792437101000|1792437111000|6|0|0|0|167772165|50000|0|0|0|167772169|445|0|0|0|0|27|0|10|1500",
-     "22 fields, expected 10"),                                         # the old "-o pipe" output
+     "22 fields, expected 12"),                                         # the old "-o pipe" output
+    (NF_TCP.rsplit("|", 2)[0], "10 fields, expected 12"),              # before the reverse counts
+    (NF_TCP[:-1] + "x", "invalid literal"),
     (NF_TCP.replace("1792437101.250", "x"), "could not convert"),
     (nf_line(flags="...AP.SX"), "TCP flags '...AP.SX'"),
     (nf_line(flags="..."), "TCP flags '...'"),
@@ -492,6 +502,20 @@ def test_unreadable_nfdump_lines_are_source_errors(line, why):
     with pytest.raises(SourceError, match="unexpected nfdump output") as e:
         parse_line(line)
     assert why in str(e.value) and "tested with nfdump" in str(e.value)
+
+
+def test_a_two_way_record_is_a_whole_connection_as_exported():
+    # The exporter saw both directions: its source started it, whatever the ports or flags say.
+    [f] = pair_records([rec(S, 445, C, 50000, T, T + 10, 18, 10500, flags=SYN | ACK, two_way=True)])
+    assert (f.src, f.sport, f.dst, f.dport, f.packets, f.bytes) == (S, 445, C, 50000, 18, 10500)
+    # A SYN answered by a RST is only told apart with both halves' flags; a two-way record has
+    # one set, so it is mapped.
+    [f] = pair_records([rec(C, 50000, S, 445, T, T, 2, 100, flags=SYN, two_way=True)])
+    assert (f.src, f.dst) == (C, S)
+    # A long connection the exporter split rejoins, as one-way halves do.
+    [f] = pair_records([rec(C, 50000, S, 445, T, T + 60, 10, 1000, two_way=True),
+                        rec(C, 50000, S, 445, T + 120, T + 180, 5, 500, two_way=True)])
+    assert (f.start, f.end, f.packets) == (T, T + 180, 15)
 
 
 def test_pairing_merges_halves_and_orients():
@@ -586,6 +610,20 @@ def test_nfdump_errors(tmp_path, monkeypatch):
     monkeypatch.setenv("TB_NFDUMP", str(tmp_path / "missing"))
     with pytest.raises(SourceError, match="nfdump not found"):
         list(read_records("x"))
+
+
+@pytest.mark.skipif(not have_nfdump() and not os.environ.get("CI"),
+                    reason="nfdump/nfcapd not installed")
+def test_real_ipfix_two_way_records(tmp_path):
+    # IPFIX biflows (RFC 5103) exported to a real nfcapd: each record a whole connection, one of
+    # them exported with the server as its source, as some exporters do.
+    now = int(time.time())
+    t = now - 100
+    make_nfcapd(tmp_path, [], now, ipfix_biflows([(C, S, 50000, 445, 6, 10, 1500, 8, 9000, t, t + 10),
+                                                  (S, R, 22, 51000, 6, 3, 300, 4, 400, t + 20, t + 21)], now))
+    flows = load([str(tmp_path)])
+    assert [(f.src, f.sport, f.dst, f.dport, f.packets, f.bytes) for f in flows] == [
+        (C, 50000, S, 445, 18, 10500), (S, 22, R, 51000, 7, 700)]
 
 
 # CI installs nfdump, so there a missing binary fails the test instead of skipping it.

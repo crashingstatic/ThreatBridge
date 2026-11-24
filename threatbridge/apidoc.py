@@ -215,6 +215,11 @@ class Neighbors(Shape):
         "the rarest scan stopped at rare_scan_cap distinct peers, so the bottom list may be incomplete"))
 
 
+COMMUNITY_ID = ("the flow's Community ID (version 1, seed 0), as Zeek, Suricata and Arkime record it; null for "
+                "ICMP and SCTP, whose type, code or ports the readers don't keep. Security Onion: the one Zeek "
+                "recorded, if any")
+
+
 class Flow(Shape):
     start: Time
     duration: Optional[float] = Field(description="seconds")
@@ -224,6 +229,7 @@ class Flow(Shape):
     packets: Optional[int]
     bytes: Optional[int]
     protocols: Protocols
+    community_id: Optional[str] = Field(description=COMMUNITY_ID)
     id: str = Field(None, description="Security Onion: the connection log's Elasticsearch ID, for POST /api/pcap")
     soc_pcap: str = Field(None, description="Security Onion: SOC's link that has the sensor extract the flow's packets")
 
@@ -233,7 +239,8 @@ class Flows(Shape):
         "src": "10.0.0.5", "dst": "10.0.0.9", "start": "2024-05-01T12:10:00.000Z",
         "end": "2024-05-01T12:10:00.000Z", "offset": 0, "total": 1,
         "flows": [{"start": "2024-05-01T12:10:00.000Z", "duration": 0.001, "sport": 50001, "dport": 445,
-                   "proto": "tcp", "packets": 2, "bytes": 80, "protocols": ["smb"]}]})
+                   "proto": "tcp", "packets": 2, "bytes": 80, "protocols": ["smb"],
+                   "community_id": "1:8MBOhLc7pAkGPTFKiKHeNLwIK0Q="}]})
     src: str
     dst: str
     start: Time
@@ -374,6 +381,7 @@ class ExportFlow(Shape):
     protocols: Protocols
     packets: Optional[int]
     bytes: Optional[int]
+    community_id: Optional[str] = Field(description=COMMUNITY_ID)
     status: Literal["marked", "suspect"]
 
 

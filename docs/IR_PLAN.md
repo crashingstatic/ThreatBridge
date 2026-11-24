@@ -133,6 +133,8 @@ string).
 - If it does, a record with reverse counts is taken as a whole connection, oriented as
   exported, without the pairing of one-way halves. If it doesn't, the README says so and the
   item stops there.
+- Checked 2026-11-24: nfcapd 1.7.3 keeps them (and the `post*` counters) as "out" packets and
+  bytes, so two-way records are read.
 
 **Decided 2026-11-24.** Community ID is computed when shown (flow list, CSV export, report),
 not stored. pcapng packets from all interfaces are read as one capture.
@@ -346,8 +348,8 @@ From the review, each reproduced in a browser:
 | Item | Decisions | Requirement | Tests | Code | CI |
 |---|---|---|---|---|---|
 | 11. Login and Host check | decided | done (D23, SEC-1, SEC-2) | done | done | green |
-| 12. Pin and sign | decided | done (D24, SEC-3 to SEC-5) | done | done | |
-| 6. Formats | decided | | | | |
+| 12. Pin and sign | decided | done (D24, SEC-3 to SEC-5) | done | done | green |
+| 6. Formats | decided | done (D6, ING-6 to ING-8) | done | done | |
 | 2. How they got in | | | | | |
 | 5. Machines behind addresses | | | | | |
 | 4. Accounts on hops | | | | | |

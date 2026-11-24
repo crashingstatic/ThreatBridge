@@ -12,8 +12,8 @@ Status last updated 2026-11-24. **Done**, **Partial**, **Missing**, **Unverified
 | D3 | Left-click an edge: highlight the threat line. Right-click an edge: menu with the SOC Dashboards pivot (and PCAP export, once D5 is lifted). |
 | D4 | Graph storage: NetworkX `DiGraph`, one edge per host pair, carrying the sorted start times of its flows; the flows themselves in SQLite. |
 | D5 | PCAP export (ATK-2, EXT-2) deferred. |
-| D6 | File inputs: tcpdump captures (classic pcap) and nfcapd files read with nfdump (tested with 1.7.3 and 1.7.6). |
-| D7 | A flow is one connection, oriented initiator -> responder like a Zeek conn record. Who started it is decided by time, then TCP flags, then ports; when none tells, it is recorded as two identical flows, one each way. Refused connections (a SYN answered only by a RST; Zeek's REJ) aren't mapped, so a port scan doesn't swamp the map. Idle timeouts are 5 min for TCP and 1 min for UDP/ICMP, and the two halves of a NetFlow connection are merged. Details in the README, "Post-mortem mode". |
+| D6 | File inputs: packet captures, pcap or pcapng, and nfcapd files read with nfdump (tested with 1.7.3 and 1.7.6). pcapng: every interface, each with its own link type and timestamp resolution and offset, in either byte order, over any number of sections; enhanced and obsolete packet blocks are read, simple packet blocks (no timestamp) left out with a warning, other blocks skipped; packets of an interface with a link type not decoded are left out with a warning (a file with nothing else is refused); a file cut off or damaged after its header is read up to there, with a warning. nfcapd: a record with reverse counts (an IPFIX biflow, RFC 5103, or NSEL) is a two-way record. |
+| D7 | A flow is one connection, oriented initiator -> responder like a Zeek conn record. Who started it is decided by time, then TCP flags, then ports; when none tells, it is recorded as two identical flows, one each way. Refused connections (a SYN answered only by a RST; Zeek's REJ) aren't mapped, so a port scan doesn't swamp the map. Idle timeouts are 5 min for TCP and 1 min for UDP/ICMP, and the two halves of a NetFlow connection are merged; a two-way NetFlow record (D6) is a whole connection, from the side the exporter put first. Details in the README, "Post-mortem mode". |
 | D8 | Attack paths and threat lines follow time order: a hop must start after the previous one, and within the map's Window of it. Limits: 6 hops, 300 hosts per threat-line direction. Post-mortem (case) backend only. The searches are exact: every arrival time at a host is kept, not only the earliest, because a later arrival can allow a hop an earlier one can't (its Window ends later). |
 | D9 | Domain names on the exclude list resolve from DNS answers in the capture first, then live DNS, and the two are combined. |
 | D10 | GRA-3 means: a connection's flows can be listed in time order (oldest first, paged), and an optional time range (from/to) limits every query. A flow is in the range if it started in it. Both work with all data sources. |
@@ -46,14 +46,17 @@ Status last updated 2026-11-24. **Done**, **Partial**, **Missing**, **Unverified
 
 | ID | Requirement | Status | Notes |
 |---|---|---|---|
-| ING-1 | SHALL ingest PCAP files and parse network conversations | Done | `sources/pcap.py` (D6, D7). pcapng not supported. |
+| ING-1 | SHALL ingest PCAP files and parse network conversations | Done | `sources/pcap.py` (D6, D7). |
 | ING-2 | SHALL ingest NetFlow data formats | Done | `sources/netflow.py`: nfcapd files via nfdump (D6). |
 | ING-3 | SHALL process multiple PCAP files from a specified directory | Done | Recursive; rotated captures are read in capture order. |
 | ING-4 | SHALL extract source/destination IP addresses, ports, timestamps, and protocol information | Done | File sources: all of them, plus packets and bytes. Security Onion: the same fields from Zeek conn records, shown in a connection's flow list (field names unverified, README). |
 | ING-5 | SHOULD name FTP data connections in captures as Zeek does, from the control connection's `PORT`/`EPRT` commands and 227/229 replies | Done | D14. Control connection by port (21, 2811) or Zeek's signature; announcements expire after 5 minutes and are used once. Checked against crafted captures (active, passive, EPSV, a non-FTP 220 greeting, wrong side, too late), not yet against a real FTP session and Zeek (TEST_PLAN REAL-01). |
 | ING-S1 | SHOULD support real-time ingestion of live network captures | Out of scope | D2 |
 | ING-S2 | SHOULD integrate with Security Onion sensor data extraction mechanisms | Done | Zeek conn records for the map, Zeek DNS records for domain excludes, and each flow's PCAP from its sensor: SOC's PCAP job link, or a download through the SOC Connect API (D12). Field names and the Connect API are unverified on a live install (README). |
-| ING-S3 | SHOULD support additional network data formats (sFlow, IPFIX) | Missing | |
+| ING-S3 | SHOULD support additional network data formats (sFlow, IPFIX) | Partial | IPFIX through nfcapd, two-way records included (ING-7). sFlow: Missing. |
+| ING-6 | SHOULD read pcapng captures, every interface with its own link type and clock | Done | D6. `sources/pcapng.py`. Tested on files written byte by byte and on files written by Wireshark's `editcap` and `mergecap` (two interfaces, two link types and resolutions). |
+| ING-7 | SHOULD take a two-way NetFlow record as one whole connection, oriented as exported | Done | D6, D7. Tested with an IPFIX biflow exported to a real nfcapd. A two-way record carries one set of TCP flags, so a refused connection in one is not told apart and is mapped. |
+| ING-8 | SHOULD show each flow's Community ID (version 1, seed 0) in the flow list and the CSV export | Done | `communityid.py`, checked against the specification's published test vectors. Computed when shown, not stored. None for ICMP and SCTP (type, code or ports not kept). Security Onion: the one Zeek recorded (`TB_FIELD_COMMUNITY_ID`), else computed. |
 
 ## Graph construction and visualization
 

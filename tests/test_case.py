@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from evidence import ACK, SYN, tcp, udp, write_pcap
+from threatbridge.communityid import community_id
 from threatbridge import protocols, sources
 from threatbridge import store as store_mod
 from threatbridge.app import create_app
@@ -250,11 +251,13 @@ def test_flows_api_lists_a_connection_oldest_first(client):
     base = f"/api/flows?src=10.0.0.1&dst={H}&from=2024-05-01T12:00:10.000Z&to=2024-05-01T12:00:30.000Z"
     r = client.get(base + "&limit=2").get_json()
     assert (r["total"], r["offset"]) == (3, 0)
+    cid = community_id("10.0.0.1", H, "tcp", 50000, 445)
+    assert cid.startswith("1:")
     assert r["flows"] == [
         {"start": "2024-05-01T12:00:10.000Z", "duration": 1.0, "sport": 50000, "dport": 445,
-         "proto": "tcp", "packets": 2, "bytes": 120, "protocols": ["smb"]},
+         "proto": "tcp", "packets": 2, "bytes": 120, "protocols": ["smb"], "community_id": cid},
         {"start": "2024-05-01T12:00:20.000Z", "duration": 1.0, "sport": 50000, "dport": 445,
-         "proto": "tcp", "packets": 2, "bytes": 120, "protocols": ["smb"]}]
+         "proto": "tcp", "packets": 2, "bytes": 120, "protocols": ["smb"], "community_id": cid}]
     r = client.get(base + "&limit=2&offset=2").get_json()
     assert [(f["start"], f["dport"]) for f in r["flows"]] == [("2024-05-01T12:00:30.000Z", 3389)]
     assert client.get(base + "&offset=3").get_json()["flows"] == []

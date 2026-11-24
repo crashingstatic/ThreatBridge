@@ -9,7 +9,7 @@ Click any host to expand it. Hops are *time-chained*: an outbound peer's next ho
 
 **Click a connection (edge)** to list its flows in time order; in Security Onion mode each flow can fetch its packets from the sensor that saw it. **Right-click it** → *Filter SOC Dashboards*. This opens SOC Dashboards filtered to every conversation between those two hosts, in either direction, **up to the IOC time**.
 
-Data sources: Zeek `conn` records in Security Onion's Elasticsearch (`event.dataset` = `conn` / `zeek.conn`), or, for post-mortem work, tcpdump captures and nfdump (nfcapd) files. See [Post-mortem mode](#post-mortem-mode-pcap-and-netflow-files).
+Data sources: Zeek `conn` records in Security Onion's Elasticsearch (`event.dataset` = `conn` / `zeek.conn`), or, for post-mortem work, packet captures (pcap and pcapng) and nfdump (nfcapd) files. See [Post-mortem mode](#post-mortem-mode-pcap-and-netflow-files).
 
 ## Features
 
@@ -23,7 +23,7 @@ Data sources: Zeek `conn` records in Security Onion's Elasticsearch (`event.data
 | Protocol highlight | Toolbar → *Highlight protocol* lists every protocol the connections on the map carry, by a one-word name (SMB, DNS, TLS, Kerberos, DCE-RPC, MSSQL, VNC, FTP, ICMP, Unknown, ...). Choosing one makes the connections carrying it glow and fades the rest: a preview. *Apply as filter* turns it into a filter. The choice holds as the map changes, until you choose another, *All*, or *Clear* (which resets only this); while no connection carries it, it says so. Security Onion mode uses Zeek's detection (`network.protocol`); case files are identified from the payload, then by port (see [Post-mortem mode](#post-mortem-mode-pcap-and-netflow-files)). |
 | Filters | Toolbar → *Filter*: type an expression and press Enter, e.g. `(SMB \|\| TLS) && sport 42000` or `NOT DNS AND bytes > 10000`. Each one goes into a list beside the box, with an × to remove it; they combine with AND. Every query then uses only the flows that pass: the map is rebuilt from the queries it was made of (each expansion, threat line and path, with the Window, N and order it had) and laid out again, and threat lines, attack paths, paths between hosts and flow lists use them too. Marked flows always pass, and marked hosts stay on the map even with no flow left. An expression that can't be read is not applied: the box turns light red and the status says what is wrong and where. See [Filter expressions](#filter-expressions). Both modes. Filters are saved with a map, not kept in the URL. |
 | Marks | Mark a host compromised (right-click, or the side panel), or a single flow: *Mark compromised* on a flow in a connection's list, or in the menu of a connection that holds one flow. A marked flow marks its two hosts. Marks are shared: every analyst's map shows them within 5 seconds. In post-mortem mode they also hide what isn't on a line to or from them (see [Threat lines, compromised hosts and attack paths](#threat-lines-compromised-hosts-and-attack-paths)). *Export CSV* saves the marked hosts and the marked and suspect flows on the map as two CSV files. |
-| Flow list | Clicking a connection lists its flows oldest first, 50 per page, with start, protocol, ports, duration, packets and bytes. Security Onion returns at most the first 10,000 flows of a connection; narrow the time range to page past them. |
+| Flow list | Clicking a connection lists its flows oldest first, 50 per page, with start, protocol, ports, duration, packets and bytes, and each flow's [Community ID](https://github.com/corelight/community-id-spec), the string Zeek, Suricata, Arkime and Security Onion record for the same connection (none for ICMP, whose type and code aren't kept). The CSV export has it too. Security Onion returns at most the first 10,000 flows of a connection; narrow the time range to page past them. |
 | PCAP | Security Onion mode: each flow links to SOC's PCAP job for it, and with a SOC API client ThreatBridge downloads the PCAP itself. See [PCAP for a flow](#pcap-for-a-flow). |
 | Saved maps | Side panel → *Saved maps*: save the map under a name for every analyst (`TB_SESSIONS_DIR`), or to a JSON file to keep or pass on. Opening one brings back the hosts where they were, the connections, the highlights, the view, the toolbar, the filters, the queries it was built from, and its marks. An opened map shows its own marks, not the shared ones: marking and unmarking change only the map's, and other analysts' don't appear, until you choose *Share* (side panel), which replaces the shared marks with the map's after asking. *Map* or reloading the page goes back to the shared marks. Saving under a name that exists asks first. Maps saved before filters (version 1) open with no marks. |
 | Progress | A request still running after a second shows its elapsed time and a *Cancel* button. Building a case shows each stage, the file being read, and the time left, on the terminal or in the log. |
@@ -51,13 +51,14 @@ Local mode serves plain HTTP, so it guards itself (D23):
   browser. To let colleagues connect, listen on another address (`--host 0.0.0.0`) and put the
   name they use in `TB_ALLOWED_HOSTS`; they still need the token.
 
-- **Inputs.** tcpdump captures in classic pcap format, and nfcapd files.
-  - Supported pcap link types: Ethernet, Linux `any` (SLL/SLL2), raw IP and loopback, with µs or ns timestamps.
-  - pcapng is not supported; convert it with `editcap -F pcap in.pcapng out.pcap`.
+- **Inputs.** Packet captures in pcap (tcpdump) or pcapng (Wireshark) format, and nfcapd files.
+  - Supported link types: Ethernet, Linux `any` (SLL/SLL2), raw IP and loopback, with µs or ns timestamps.
+  - pcapng: every interface is read, each with its own link type and timestamp resolution. Packets of an interface with another link type (Wi-Fi, say) are left out with a warning. Simple packet blocks carry no timestamp, so they are left out with a warning too. A damaged file is read up to the damage.
   - Directories are searched recursively; other files are skipped. A file named more than once (directly, through its directory, or through a symlink) is read once.
   - A capture cut off mid-packet (tcpdump killed) is read up to its last whole packet.
   - Packets cut by the snap length (`tcpdump -s`) still count, as long as the ports were captured. IPv4 and IPv6 fragments after the first are skipped.
   - nfcapd files are read with the `nfdump` binary (tested with 1.7.3 and 1.7.6). Set `TB_NFDUMP` if it is not on `PATH`. The file nfcapd is still writing (`nfcapd.current.*`) is skipped.
+  - Most NetFlow records are one-way, and the two halves of a connection are joined. A two-way record (an IPFIX biflow, RFC 5103, or a Cisco NSEL record) counts both directions; it is taken as a whole connection, from the side the exporter put first.
 - **One edge per connection,** from initiator to responder, like a Zeek conn record.
   - A TCP connection ends at a RST, at a new SYN after a FIN, or after 5 minutes idle. UDP and ICMP end after 1 minute idle.
   - Rotated captures (`tcpdump -C` / `-G`) are read in capture order, so a connection that spans files stays one flow.
@@ -238,6 +239,7 @@ Deployment on a live Security Onion install has **not been tested**. These point
 | `TB_FIELD_SPORT/PROTO/DURATION` | `source.port` / `network.transport` / `event.duration` | flow list |
 | `TB_FIELD_PACKETS` / `TB_FIELD_BYTES` | `client.packets,server.packets` / `client.ip_bytes,server.ip_bytes` | flow list; the fields are summed |
 | `TB_FIELD_SERVICE` | `network.protocol` | Zeek's `service`: the protocols it recognized, for the map's protocol filter; empty = all unknown |
+| `TB_FIELD_COMMUNITY_ID` | `network.community_id` | the Community ID Zeek recorded, shown in the flow list; empty, or missing from a record = worked out from the flow |
 | `TB_FIELD_CONN_STATE` | `connection.state` | Zeek's `conn_state`: records of refused connections (`REJ`) are left out; empty = keep them |
 | `TB_DNS_DATASETS` | `dns,zeek.dns` | Zeek DNS records, for domain names on the exclude list; empty = no dataset filter |
 | `TB_FIELD_DNS_QUERY` / `TB_FIELD_DNS_IP` | `dns.query.name` / `dns.resolved_ip` | their question name and answer addresses |

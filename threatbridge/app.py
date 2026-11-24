@@ -10,6 +10,7 @@ from flask import Flask, Response, g, jsonify, request, send_from_directory
 from . import compromised as compromised_mod
 from . import filters, protocols, sessions as sessions_mod
 from .backends import ES_MAX_RESULTS, BackendError, Scope, make_backend
+from .communityid import community_id
 from .compromised import CompromisedStore, parse_marks, reached
 from .config import Config
 from .domains import DomainResolver
@@ -317,6 +318,8 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
         limit = max(1, min(int_arg("limit", 50), MAX_FLOW_PAGE))
         res = (backend.flows(src, dst, start, end, offset, limit, scope_arg(), within_arg())
                if start <= end else {"total": 0, "flows": []})
+        for f in res["flows"]:     # Security Onion's flows may carry the one Zeek recorded
+            f.setdefault("community_id", community_id(src, dst, f.get("proto"), f.get("sport"), f.get("dport")))
         return jsonify(src=src, dst=dst, start=fmt_time(start), end=fmt_time(end), offset=offset,
                        **res)
 

@@ -85,11 +85,11 @@ def test_main(monkeypatch, capsys, no_settings):
     assert seen["cfg"].backend == "demo" and seen["cfg"].case_db is None and seen["run"] == ("127.0.0.1", 5055)
 
     def failing(cfg, local=None):
-        raise app_mod.SourceError("no pcap or nfcapd files found in: /c")
+        raise app_mod.SourceError("no pcap, pcapng or nfcapd files found in: /c")
     capsys.readouterr()                                       # what the starts above printed
     monkeypatch.setattr(app_mod, "create_app", failing)
     monkeypatch.setattr(sys, "argv", ["threatbridge", "--case", "/c"])
     with pytest.raises(SystemExit) as e:
         app_mod.main()
     assert e.value.code == 2
-    assert capsys.readouterr().err == "error: no pcap or nfcapd files found in: /c\n"
+    assert capsys.readouterr().err == "error: no pcap, pcapng or nfcapd files found in: /c\n"

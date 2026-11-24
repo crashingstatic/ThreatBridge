@@ -76,6 +76,7 @@ ol.flows { margin: 6px 0 0; padding-left: 3.4em; max-height: 45vh; overflow-y: a
   font-size: 12px; font-variant-numeric: tabular-nums; }
 ol.flows li { padding: 2px 0; border-bottom: 1px solid var(--line); }
 ol.flows small { display: block; color: var(--muted); }
+ol.flows code.cid { display: block; color: var(--muted); font-size: 11px; user-select: all; }
 ol.flows .actions { display: flex; gap: 8px; align-items: center; margin-top: 2px; }
 ol.flows .actions a { color: var(--in); }
 ol.flows .actions button { padding: 0 6px; font-size: 11px; }

@@ -1,7 +1,9 @@
 """Read nfcapd files (NetFlow/IPFIX collected by nfdump) into connection flows.
 
-Records are read with the nfdump binary. NetFlow records are one-way, so the two halves of a
-connection are merged into one flow and oriented initiator -> responder.
+Records are read with the nfdump binary. Most records are one-way, so the two halves of a
+connection are merged into one flow and oriented initiator -> responder. A two-way record (an
+IPFIX biflow, RFC 5103, or a NetFlow Secure Event Logging record) carries both directions'
+counts, and is taken as a whole connection, oriented as the exporter saw it.
 """
 import ipaddress
 import logging
@@ -15,12 +17,13 @@ from .workers import in_order
 
 log = logging.getLogger(__name__)
 
-# nfdump's custom output format: start|end|proto|src|sport|dst|dport|TCP flags|packets|bytes,
-# each padded with spaces. Times are epoch seconds, unaffected by the local time zone (unlike
-# "csv" and "json"); -N prints plain numbers (protocol, packets, bytes); -6 prints IPv6
-# addresses in full (otherwise they are shortened, losing digits). "-o pipe", read before, is
-# not in nfdump 1.7.6.
-FORMAT = "fmt:%tsr|%ter|%pr|%sa|%sp|%da|%dp|%flg|%pkt|%byt"
+# nfdump's custom output format: start|end|proto|src|sport|dst|dport|TCP flags|packets|bytes|
+# reverse packets|reverse bytes, each padded with spaces. Times are epoch seconds, unaffected by
+# the local time zone (unlike "csv" and "json"); -N prints plain numbers (protocol, packets,
+# bytes); -6 prints IPv6 addresses in full (otherwise they are shortened, losing digits). The
+# reverse ("out") counts are those of the other direction in a two-way record, 0 otherwise.
+# "-o pipe", read before, is not in nfdump 1.7.6.
+FORMAT = "fmt:%tsr|%ter|%pr|%sa|%sp|%da|%dp|%flg|%pkt|%byt|%opkt|%obyt"
 FIELDS = FORMAT.count("|") + 1
 TESTED = "tested with nfdump 1.7.3 and 1.7.6"
 TCP_FLAG_LETTERS = "CEUAPRSF"      # bits 7 to 0, as nfdump prints them ("." for a flag not set)
@@ -38,8 +41,9 @@ def _tcp_flags(text):
 
 def parse_line(line):
     """One line of nfdump FORMAT output -> (start, end, proto, src, sport, dst, dport, packets,
-    bytes, TCP flags). An ICMP record has no ports; nfdump prints "type.code" as its destination
-    port, and the type gives its flags (see model.icmp_flags)."""
+    bytes, TCP flags, two-way). Packets and bytes cover both directions of a two-way record.
+    An ICMP record has no ports; nfdump prints "type.code" as its destination port, and the
+    type gives its flags (see model.icmp_flags)."""
     f = [field.strip() for field in line.split("|")]
     if len(f) != FIELDS:
         raise SourceError(f"unexpected nfdump output ({len(f)} fields, expected {FIELDS}); {TESTED}")
@@ -50,8 +54,10 @@ def parse_line(line):
             sport, dport, flags = 0, 0, icmp_flags(number, int(f[6].partition(".")[0]))
         else:
             sport, dport, flags = int(f[4]), int(f[6]), _tcp_flags(f[7])
+        back_packets, back_bytes = int(f[10]), int(f[11])
         return (float(f[0]), float(f[1]), proto, str(ipaddress.ip_address(f[3])), sport,
-                str(ipaddress.ip_address(f[5])), dport, int(f[8]), int(f[9]), flags)
+                str(ipaddress.ip_address(f[5])), dport, int(f[8]) + back_packets, int(f[9]) + back_bytes,
+                flags, bool(back_packets or back_bytes))
     except ValueError as e:
         raise SourceError(f"unexpected nfdump output ({e}); {TESTED}")
 
@@ -96,10 +102,12 @@ class _Conn:
         self.oflags = self.rflags = 0      # each half's TCP flags, ORed together (0: not seen)
 
     def see(self, record):
-        """Count one of its records, from either side."""
-        start, end, _, src, sport, _, _, packets, nbytes, flags = record[:10]
+        """Count one of its records, from either side. A two-way record has seen both sides,
+        the first being its source's."""
+        start, end, _, src, sport, _, _, packets, nbytes, flags, two_way = record[:11]
         if (src, sport) == (self.orig, self.oport):
             self.oflags |= flags
+            self.reverse_seen = self.reverse_seen or two_way
         else:
             self.tie = self.tie or (not self.reverse_seen and start == self.start)
             self.reverse_seen = True
@@ -123,8 +131,8 @@ class _Conn:
 
 
 def pair_records(records):
-    """Merge one-way records (start, end, proto, src, sport, dst, dport, packets, bytes, TCP
-    flags, source) into connections. Records of the same endpoints (either way round) closer
+    """Merge records (start, end, proto, src, sport, dst, dport, packets, bytes, TCP flags,
+    two-way, source) into connections. Records of the same endpoints (either way round) closer
     together than the idle timeout belong to one connection; that also rejoins long
     connections split by the exporter."""
     flows, open_, left_out = [], {}, 0

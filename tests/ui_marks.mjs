@@ -208,9 +208,11 @@ try {
   assert.equal(await readFile(await hostsFile.path(), "utf8"),
                `ip,time,note,marked,count\r\n${B},,"'=1+1, ""x""",direct,1\r\n`);
   const flowLines = (await readFile(await flowsFile.path(), "utf8")).trim().split("\r\n");
-  assert.equal(flowLines[0], "start,end,src,sport,dst,dport,proto,protocols,packets,bytes,status");
-  assert.deepEqual(flowLines.slice(1).map((l) => l.split(",")).map((c) => [c[2], c[4], c[7], c[10]]).sort(), [
+  assert.equal(flowLines[0], "start,end,src,sport,dst,dport,proto,protocols,packets,bytes,community_id,status");
+  const flowRows = flowLines.slice(1).map((l) => l.split(","));
+  assert.deepEqual(flowRows.map((c) => [c[2], c[4], c[7], c[11]]).sort(), [
     [E, A, "ssl", "suspect"], [A, X, "smb", "suspect"], [X, B, "rdp", "suspect"], [B, F, "ssh", "suspect"]]);
+  assert.ok(flowRows.every((c) => /^1:[A-Za-z0-9+/]{27}=$/.test(c[10])), "each flow's Community ID");
   await waitStatus(/^Exported 1 marked host\(s\) and 4 marked or suspect flow\(s\)$/);
 
   // Another analyst's marks appear within seconds, and what they hide (ATK-8).

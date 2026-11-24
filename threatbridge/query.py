@@ -230,7 +230,8 @@ def es_flows_body(cfg, src, dst, start, end, offset, size, scope=None):
         "_source": False,
         "fields": [{"field": cfg.f_ts, "format": "strict_date_optional_time"}, cfg.f_sport,
                    cfg.f_dport, cfg.f_proto, cfg.f_duration, *cfg.f_packets, *cfg.f_bytes,
-                   *([cfg.f_service] if cfg.f_service else [])],
+                   *([cfg.f_service] if cfg.f_service else []),
+                   *([cfg.f_community_id] if cfg.f_community_id else [])],
         "query": es_filter(cfg, src, "out", start, end, [], peers=[dst], scope=scope),
     }
 

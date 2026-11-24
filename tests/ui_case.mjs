@@ -117,6 +117,8 @@ try {
   assert.equal(await page.$eval("#flows ol.flows li", (li) => li.firstChild.textContent),
                "2024-05-01T12:10:00.000Z");
   assert.match(await page.textContent("#flows ol.flows li small"), /^SMB · tcp 50001 → 445 · 0\.001 s · 2 pkts · \d+ B$/);
+  // Its Community ID: the string Zeek, Suricata and Arkime record for 10.0.0.5:50001 -> 10.0.0.9:445/tcp.
+  assert.equal(await page.textContent("#flows ol.flows li code.cid"), "1:8MBOhLc7pAkGPTFKiKHeNLwIK0Q=");
   assert.equal(await page.locator("#flows a, #flows button:has-text('PCAP')").count(), 0);   // no PCAP for case files
   await shot("threat-line");
 

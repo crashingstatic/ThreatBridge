@@ -515,6 +515,7 @@
                      page("Last", last, r.offset < last));
     const list = el("ol", { className: "flows", start: r.offset + 1 }, ...r.flows.map((f) => {
       const li = el("li", { textContent: f.start }, el("small", { textContent: flowMeta(f) }));
+      if (f.community_id) li.append(el("code", { className: "cid", textContent: f.community_id, title: "Community ID" }));
       const actions = flowActions(conn, f);
       if (actions) li.append(actions);
       return li;
@@ -1200,7 +1201,7 @@
     saveFile(new Blob([csv(["ip", "time", "note", "marked", "count"], r.hosts)], { type: "text/csv" }),
              `threatbridge-${name}-hosts.csv`);
     saveFile(new Blob([csv(["start", "end", "src", "sport", "dst", "dport", "proto", "protocols", "packets", "bytes",
-                            "status"], r.flows)], { type: "text/csv" }), `threatbridge-${name}-flows.csv`);
+                            "community_id", "status"], r.flows)], { type: "text/csv" }), `threatbridge-${name}-flows.csv`);
     setStatus(`Exported ${r.hosts.length} marked host(s) and ${r.flows.length} marked or suspect flow(s)` +
               (r.truncated ? " (the first ones only)" : ""), false, r.truncated);
   }

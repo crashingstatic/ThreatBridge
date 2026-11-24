@@ -7,6 +7,7 @@ import pytest
 from threatbridge import app as app_mod
 from threatbridge import query as q
 from threatbridge.app import create_app
+from threatbridge.communityid import community_id
 from threatbridge.backends import DemoBackend
 from threatbridge.config import Config
 from threatbridge.excludes import ExcludeStore
@@ -159,6 +160,10 @@ def test_time_range_and_flows_on_the_demo_backend(client):
     starts = [f["start"] for f in every["flows"]]
     assert every["total"] == len(starts) == 2 and starts == sorted(starts)
     assert client.get(base + "&limit=1&offset=1").get_json()["flows"] == every["flows"][1:]
+    # Each flow's Community ID, worked out from the connection's addresses and the flow's ports.
+    assert [f["community_id"] for f in every["flows"]] == [
+        community_id("10.0.0.7", "10.0.0.5", f["proto"], f["sport"], f["dport"]) for f in every["flows"]]
+    assert all(f["community_id"].startswith("1:") for f in every["flows"])
 
 
 def test_demo_flows_past_the_end(client):

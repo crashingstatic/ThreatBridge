@@ -220,6 +220,16 @@ def test_elastic_flows_read_the_configured_fields():
     assert be.flows("10.0.0.1", "10.0.0.2", T0, T0, 0, 50)["flows"][0]["protocols"] == ["unknown"]
 
 
+def test_elastic_flows_keep_the_community_id_zeek_recorded():
+    be = ElasticBackend(Config())
+    be.session = FlowsES([{"@timestamp": ["2024-05-01T12:00:00Z"], "network.community_id": ["1:zeek-recorded="]},
+                          {"@timestamp": ["2024-05-01T12:00:01Z"]}], total=2)
+    flows = be.flows("10.0.0.1", "10.0.0.2", T0, T0, 0, 50)["flows"]
+    assert flows[0]["community_id"] == "1:zeek-recorded=" and "community_id" not in flows[1]   # the API works it out
+    be.cfg.f_community_id = ""                                     # TB_FIELD_COMMUNITY_ID= : not read
+    assert "community_id" not in be.flows("10.0.0.1", "10.0.0.2", T0, T0, 0, 50)["flows"][0]
+
+
 def test_elastic_flows_request_and_limits():
     es = RecordingES({"hits": {}})
     be = ElasticBackend(Config())

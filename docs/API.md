@@ -14,6 +14,9 @@ what a schema can't say.
 
 ## Changes
 
+- **Community ID (ING-8).** Each flow in `GET`/`POST /api/flows`, and each flow row of
+  `POST /api/export`, has `community_id`: the flow's Community ID (version 1, seed 0), or null
+  for ICMP and SCTP. An addition, so `api_version` stays 1.
 - **Local mode's login and Host check (D23).** `python -m threatbridge` now needs its login token
   (401 without it) and a `Host` header naming it (421 otherwise). The container, behind mutual
   TLS, is unchanged. The endpoints and their answers are unchanged, so `api_version` stays 1.

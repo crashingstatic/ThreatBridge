@@ -64,26 +64,88 @@ def icmp_echo(src, dst, reply=False):
     return _ip(src, dst, 1, msg)
 
 
+def frame(pkt, linktype=1):
+    """A packet from tcp()/udp()/icmp_echo() as a frame of a link type; raw frames (bytes) as they are."""
+    if isinstance(pkt, bytes):
+        return pkt
+    ip, etype, _ = pkt
+    if linktype == 1:
+        return bytes(dpkt.ethernet.Ethernet(src=MAC, dst=MAC, type=etype, data=ip))
+    if linktype == 101:
+        return bytes(ip)
+    if linktype == 113:
+        return bytes(dpkt.sll.SLL(type=0, hrd=1, hlen=6, hdr=MAC + b"\0\0", ethtype=etype, data=ip))
+    if linktype == 276:
+        return bytes(dpkt.sll2.SLL2(ethtype=etype, hdr=MAC + b"\0\0", data=ip))
+    raise ValueError(linktype)
+
+
 def write_pcap(path, packets, linktype=1, nano=False):
     """packets: [(ts, packet)] with packets from tcp()/udp()/icmp_echo(), or raw frames (bytes)."""
     with open(path, "wb") as fh:
         w = dpkt.pcap.Writer(fh, linktype=linktype, nano=nano)
         for ts, pkt in packets:
-            if isinstance(pkt, bytes):
-                frame = pkt
-            else:
-                ip, etype, _ = pkt
-                if linktype == 1:
-                    frame = dpkt.ethernet.Ethernet(src=MAC, dst=MAC, type=etype, data=ip)
-                elif linktype == 101:
-                    frame = ip
-                elif linktype == 113:
-                    frame = dpkt.sll.SLL(type=0, hrd=1, hlen=6, hdr=MAC + b"\0\0", ethtype=etype, data=ip)
-                elif linktype == 276:
-                    frame = dpkt.sll2.SLL2(ethtype=etype, hdr=MAC + b"\0\0", data=ip)
-                else:
-                    raise ValueError(linktype)
-            w.writepkt(bytes(frame), ts=ts)
+            w.writepkt(frame(pkt, linktype), ts=ts)
+
+
+# ---- pcapng, written byte by byte (not with the reader's own library) ----------------------
+
+def _pad4(data):
+    return data + bytes(-len(data) % 4)
+
+
+def pcapng_block(order, btype, body):
+    """One block: type, total length, body padded to 4 bytes, total length again."""
+    body = _pad4(body)
+    return struct.pack(order + "II", btype, len(body) + 12) + body + struct.pack(order + "I", len(body) + 12)
+
+
+def _pcapng_option(order, code, value):
+    return struct.pack(order + "HH", code, len(value)) + _pad4(value)
+
+
+def pcapng_section(order, interfaces, packets, version=1):
+    """A section in byte order `order` ("<" or ">"). interfaces: [(link type, if_tsresol byte or
+    None, if_tsoffset seconds or None)]. packets, in order: ("epb", interface, ts, packet),
+    ("opb", interface, ts, packet), ("spb", interface, packet), or ("block", type, body);
+    a packet as for frame(), in its interface's link type."""
+    out = pcapng_block(order, 0x0A0D0D0A, struct.pack(order + "IHHq", 0x1A2B3C4D, version, 0, -1))
+    clocks = []
+    for linktype, resol, offset in interfaces:
+        opts = b""
+        if resol is not None:
+            opts += _pcapng_option(order, 9, bytes([resol]))
+        if offset is not None:
+            opts += _pcapng_option(order, 14, struct.pack(order + "q", offset))
+        out += pcapng_block(order, 1, struct.pack(order + "HHI", linktype, 0, 262144) + opts
+                            + struct.pack(order + "HH", 0, 0))
+        ticks = 10 ** 6 if resol is None else (2 ** (resol & 0x7F) if resol & 0x80 else 10 ** resol)
+        clocks.append((linktype, ticks, offset or 0))
+    for kind, *rest in packets:
+        if kind == "block":
+            out += pcapng_block(order, rest[0], rest[1])
+            continue
+        number = rest[0]
+        linktype, ticks, offset = clocks[number] if number < len(clocks) else (1, 10 ** 6, 0)
+        if kind == "spb":
+            data = frame(rest[1], linktype)
+            out += pcapng_block(order, 3, struct.pack(order + "I", len(data)) + data)
+            continue
+        ts, data = rest[1], frame(rest[2], linktype)
+        t = round((ts - offset) * ticks)
+        if kind == "epb":
+            head = struct.pack(order + "IIIII", number, t >> 32, t & 0xFFFFFFFF, len(data), len(data))
+            out += pcapng_block(order, 6, head + data)
+        else:
+            head = struct.pack(order + "HHIIII", number, 0, t >> 32, t & 0xFFFFFFFF, len(data), len(data))
+            out += pcapng_block(order, 2, head + data)
+    return out
+
+
+def write_pcapng(path, packets, linktype=1, resol=None):
+    """packets as for write_pcap, in one section with one interface."""
+    with open(path, "wb") as fh:
+        fh.write(pcapng_section("<", [(linktype, resol, None)], [("epb", 0, ts, p) for ts, p in packets]))
 
 
 def load(paths, dns=None):
@@ -110,12 +172,31 @@ def netflow_v5(records, unix_secs, uptime_ms=10_000_000):
     return out
 
 
+def ipfix_biflows(records, unix_secs):
+    """One IPFIX message with two-way records (RFC 5103: the reverse counts as enterprise
+    elements of PEN 29305). records: (src, dst, sport, dport, proto, packets, bytes, reverse
+    packets, reverse bytes, start_epoch, end_epoch)."""
+    def ie(number, length, pen=None):
+        return struct.pack("!HH", number, length) if pen is None else struct.pack("!HHI", number | 0x8000, length, pen)
+    # source and destination address and port, protocol, TCP flags, start and end (ms), packets,
+    # bytes, then the reverse packets and bytes.
+    fields = [ie(8, 4), ie(12, 4), ie(7, 2), ie(11, 2), ie(4, 1), ie(6, 1), ie(152, 8), ie(153, 8), ie(2, 8),
+              ie(1, 8), ie(2, 8, 29305), ie(1, 8, 29305)]
+    template = struct.pack("!HH", 256, len(fields)) + b"".join(fields)
+    data = b"".join(struct.pack("!4s4sHHBBQQQQQQ", socket.inet_aton(src), socket.inet_aton(dst), sport, dport, proto,
+                                0x1b, round(start * 1000), round(end * 1000), pkts, octets, back_pkts, back_octets)
+                    for src, dst, sport, dport, proto, pkts, octets, back_pkts, back_octets, start, end in records)
+    body = struct.pack("!HH", 2, 4 + len(template)) + template + struct.pack("!HH", 256, 4 + len(data)) + data
+    return struct.pack("!HHIII", 10, 16 + len(body), unix_secs, 1, 7) + body
+
+
 def have_nfdump():
     return bool(shutil.which("nfcapd") and shutil.which("nfdump"))
 
 
-def make_nfcapd(directory, records, unix_secs):
-    """Write a real nfcapd file into `directory` by exporting NetFlow v5 to a local nfcapd."""
+def make_nfcapd(directory, records, unix_secs, datagram=None):
+    """Write a real nfcapd file into `directory` by exporting NetFlow v5 records (or another
+    `datagram`, such as ipfix_biflows()) to a local nfcapd."""
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
@@ -128,7 +209,7 @@ def make_nfcapd(directory, records, unix_secs):
                 raise RuntimeError("nfcapd did not start")
             time.sleep(0.05)
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.sendto(netflow_v5(records, unix_secs), ("127.0.0.1", port))
+            s.sendto(datagram or netflow_v5(records, unix_secs), ("127.0.0.1", port))
         time.sleep(1)  # let nfcapd read the datagram before it is told to stop
     finally:
         proc.send_signal(signal.SIGTERM)

@@ -35,6 +35,8 @@ class Config:
     f_conn_state: str = "connection.state"
     # Zeek's service (the protocols it recognized, e.g. "smb,ntlm"). Empty: protocols unknown.
     f_service: str = "network.protocol"
+    # The Community ID Zeek recorded. Empty, or missing from a record: worked out from the flow.
+    f_community_id: str = "network.community_id"
     # Shown in a connection's flow list. Defaults: Security Onion 2.4's Zeek conn records,
     # duration in seconds; packets and bytes add up the listed fields (both directions).
     f_sport: str = "source.port"
@@ -107,7 +109,7 @@ class Config:
 
 
 # Settings an empty variable turns off: refused connections kept, protocols unknown.
-_MAY_BE_EMPTY = {"f_conn_state", "f_service"}
+_MAY_BE_EMPTY = {"f_conn_state", "f_service", "f_community_id"}
 
 
 def env_name(setting):

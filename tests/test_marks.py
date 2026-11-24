@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from threatbridge.communityid import community_id
 from threatbridge import app as app_module
 from threatbridge import backends
 from threatbridge import compromised as comp
@@ -532,15 +533,18 @@ def test_marked_flows_exported_with_what_the_backend_knows_of_them():
     rows = marked_flow_rows(backend, drawn, [ea, ax, xc], 10)                 # E -> A is not drawn
     assert rows == [
         {"start": ax["start"], "end": "2024-05-01T12:05:01.500Z", "src": A, "sport": 50000, "dst": X, "dport": 445,
-         "proto": "tcp", "protocols": ["smb"], "packets": 2, "bytes": 120, "status": "marked"},
+         "proto": "tcp", "protocols": ["smb"], "packets": 2, "bytes": 120,
+         "community_id": community_id(A, X, "tcp", 50000, 445), "status": "marked"},
         {"start": xc["start"], "end": None, "src": X, "sport": 50000, "dst": C, "dport": 445, "proto": "tcp",
-         "protocols": ["smb"], "packets": 2, "bytes": 120, "status": "marked"}]
+         "protocols": ["smb"], "packets": 2, "bytes": 120, "community_id": community_id(X, C, "tcp", 50000, 445),
+         "status": "marked"}]
     t = parse_time(ax["start"])
     assert backend.asked[0] == (A, X, t, t + timedelta(milliseconds=1), 0, 50)
     # Not found: what the mark says, the rest unknown; and no more than the limit.
     assert marked_flow_rows(FlowLists({}), drawn, [ax, xc], 1) == [
         {"start": ax["start"], "end": None, "src": A, "sport": 50000, "dst": X, "dport": 445, "proto": "tcp",
-         "protocols": [], "packets": None, "bytes": None, "status": "marked"}]
+         "protocols": [], "packets": None, "bytes": None, "community_id": community_id(A, X, "tcp", 50000, 445),
+         "status": "marked"}]
 
 
 def test_elasticsearch_exports_marked_hosts_and_flows(monkeypatch):
@@ -555,7 +559,7 @@ def test_elasticsearch_exports_marked_hosts_and_flows(monkeypatch):
                   {"ip": X, "time": ax["start"], "note": "", "count": 1, "marked": "flows"}],
         "flows": [{"start": ax["start"], "end": "2024-05-01T12:05:01.000Z", "src": A, "sport": 50000, "dst": X,
                    "dport": 445, "proto": "tcp", "protocols": ["smb"], "packets": 2, "bytes": 120,
-                   "status": "marked"}],
+                   "community_id": community_id(A, X, "tcp", 50000, 445), "status": "marked"}],
         "truncated": False}
 
 
@@ -570,7 +574,8 @@ def test_exports(client):
         (E, A, "suspect"), (A, X, "suspect"), (X, B, "marked"), (X, C, "suspect"), (B, F, "suspect")]
     assert r["flows"][0] == {"start": "2024-05-01T12:00:00.000Z", "end": "2024-05-01T12:00:01.000Z", "src": E,
                              "sport": 50000, "dst": A, "dport": 443, "proto": "tcp", "protocols": ["ssl"],
-                             "packets": 2, "bytes": 120, "status": "suspect"}
+                             "packets": 2, "bytes": 120, "community_id": community_id(E, A, "tcp", 50000, 443),
+                             "status": "suspect"}
     assert r["truncated"] is False
     assert client.post("/api/export", json={"edges": EDGES, "window": "1h", "marks": {"hosts": [], "flows": []}},
                        headers=WRITE).get_json() == {"hosts": [], "flows": [], "truncated": False}

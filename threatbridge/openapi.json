@@ -2555,6 +2555,17 @@
        }
       ]
      },
+     "community_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "the flow's Community ID (version 1, seed 0), as Zeek, Suricata and Arkime record it; null for ICMP and SCTP, whose type, code or ports the readers don't keep. Security Onion: the one Zeek recorded, if any"
+     },
      "status": {
       "enum": [
        "marked",
@@ -2574,6 +2585,7 @@
      "protocols",
      "packets",
      "bytes",
+     "community_id",
      "status"
     ],
     "type": "object"
@@ -2846,6 +2858,17 @@
       },
       "type": "array"
      },
+     "community_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "the flow's Community ID (version 1, seed 0), as Zeek, Suricata and Arkime record it; null for ICMP and SCTP, whose type, code or ports the readers don't keep. Security Onion: the one Zeek recorded, if any"
+     },
      "id": {
       "description": "Security Onion: the connection log's Elasticsearch ID, for POST /api/pcap",
       "type": "string"
@@ -2863,7 +2886,8 @@
      "proto",
      "packets",
      "bytes",
-     "protocols"
+     "protocols",
+     "community_id"
     ],
     "type": "object"
    },
@@ -2966,6 +2990,7 @@
       "flows": [
        {
         "bytes": 80,
+        "community_id": "1:8MBOhLc7pAkGPTFKiKHeNLwIK0Q=",
         "dport": 445,
         "duration": 0.001,
         "packets": 2,

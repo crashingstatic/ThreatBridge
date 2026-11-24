@@ -1,4 +1,4 @@
-"""Evidence readers: tcpdump captures and nfdump (nfcapd) files -> Flow records."""
+"""Evidence readers: packet captures (pcap, pcapng) and nfdump (nfcapd) files -> Flow records."""
 import logging
 import os
 
@@ -19,10 +19,8 @@ def _kind(path):
     """"pcap", "nfcapd", or None for anything else."""
     with open(path, "rb") as fh:
         head = fh.read(4)
-    if head in _PCAP_MAGICS:
+    if head in _PCAP_MAGICS or head == _PCAPNG_MAGIC:       # both read by pcap.py
         return "pcap"
-    if head == _PCAPNG_MAGIC:
-        raise SourceError(f"{path}: pcapng is not supported; convert it with: editcap -F pcap IN OUT")
     if head[:2] == _NFCAPD_MAGIC:
         return "nfcapd"
     return None
@@ -35,7 +33,7 @@ def _being_written(path):
 def _problem(path, kind):
     """Why a file of this kind can't be read as evidence, or None if it can."""
     if not kind:
-        return "not a pcap or nfcapd file"
+        return "not a pcap, pcapng or nfcapd file"
     if kind == "nfcapd" and _being_written(path):
         return "nfcapd is still being written to; use the files it has already rotated"
     return None
@@ -76,7 +74,7 @@ def find(paths):
         else:
             log.info("skipping %s: %s", path, problem)
     if not found["pcap"] and not found["nfcapd"]:
-        raise SourceError("no pcap or nfcapd files found in: " + ", ".join(paths))
+        raise SourceError("no pcap, pcapng or nfcapd files found in: " + ", ".join(paths))
     return found
 
 

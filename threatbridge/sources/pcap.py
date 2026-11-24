@@ -1,4 +1,4 @@
-"""Read tcpdump captures (classic pcap format) into connection flows."""
+"""Read packet captures (tcpdump's pcap, Wireshark's pcapng) into connection flows."""
 import logging
 import os
 import socket
@@ -9,6 +9,7 @@ import dpkt
 from .. import protocols
 from ..model import SourceError, icmp_flags, idle_timeout, oriented, proto_name, refused, settle
 from ..progress import counted
+from . import pcapng
 from .workers import in_order
 
 log = logging.getLogger(__name__)
@@ -239,12 +240,16 @@ def _open(fh, path):
 
 
 class _Counts:
-    """What reading one capture came to."""
-    __slots__ = ("packets", "skipped", "cut_off")
+    """What reading one capture came to. pcapng only: `untimed` packets have no timestamp,
+    `damaged` is the byte offset where a damaged file stops being read, and `unsupported`
+    counts the packets of each link type with no decoder."""
+    __slots__ = ("packets", "skipped", "cut_off", "untimed", "damaged", "unsupported")
 
     def __init__(self):
-        self.packets = self.skipped = 0
+        self.packets = self.skipped = self.untimed = 0
         self.cut_off = False
+        self.damaged = None
+        self.unsupported = {}
 
 
 def _packets(reader, counts):
@@ -262,9 +267,24 @@ def _packets(reader, counts):
         yield float(ts), buf  # nanosecond captures come back as Decimal
 
 
+def _frames(fh, path, counts):
+    """(timestamp, link type, frame) for each packet of an open pcap or pcapng file."""
+    if fh.read(4) == pcapng.MAGIC:
+        fh.seek(0)
+        yield from pcapng.read(fh, counts, path)
+        return
+    fh.seek(0)
+    reader = _open(fh, path)
+    linktype = reader.datalink()
+    if linktype not in _DECODERS:
+        raise SourceError(f"{path}: unsupported link type {linktype}")
+    for ts, buf in _packets(reader, counts):
+        yield ts, linktype, buf
+
+
 def _first_timestamp(path):
     with open(path, "rb") as fh:
-        for ts, _ in _packets(_open(fh, path), _Counts()):
+        for ts, _, _ in _frames(fh, path, _Counts()):
             return ts
     return float("inf")
 
@@ -325,16 +345,16 @@ def _decoded(path, dns, counts, report=None, notes=None):
     announces goes into `notes` as {packet's index: (host, port)}. `report` is called with the
     bytes read since its last call."""
     with open(path, "rb") as fh:
-        reader = _open(fh, path)
-        decode = _DECODERS.get(reader.datalink())
-        if decode is None:
-            raise SourceError(f"{path}: unsupported link type {reader.datalink()}")
         offset, index = 0, 0
-        for ts, buf in _packets(reader, counts):
+        for ts, linktype, buf in _frames(fh, path, counts):
             counts.packets += 1
             if report and not counts.packets % REPORT_EVERY:
                 report(fh.tell() - offset)
                 offset = fh.tell()
+            decode = _DECODERS.get(linktype)
+            if decode is None:                   # a pcapng interface of a kind not decoded
+                counts.unsupported[linktype] = counts.unsupported.get(linktype, 0) + 1
+                continue
             try:
                 ip = decode(buf)
             except (dpkt.Error, IndexError, struct.error):
@@ -375,6 +395,8 @@ def _decoded(path, dns, counts, report=None, notes=None):
             index += 1
         if report:
             report(fh.tell() - offset)
+    if counts.packets and sum(counts.unsupported.values()) == counts.packets:
+        raise SourceError(f"{path}: unsupported link type {', '.join(map(str, sorted(counts.unsupported)))}")
 
 
 def _ip_size(ip):
@@ -412,6 +434,13 @@ def _track(tracker, packets, path, hosts, notes):
 def _logged(path, counts):
     if counts.cut_off:
         log.warning("%s: capture is cut off after its last whole packet", path)
+    if counts.damaged is not None:
+        log.warning("%s: capture is damaged at byte %d; the packets before it are read", path, counts.damaged)
+    if counts.untimed:
+        log.warning("%s: %d packet(s) without a timestamp (pcapng simple packet blocks) left out", path,
+                    counts.untimed)
+    for linktype, n in sorted(counts.unsupported.items()):
+        log.warning("%s: %d packet(s) of unsupported link type %d left out", path, n, linktype)
     log.info("%s: %d packets, %d undecodable", path, counts.packets, counts.skipped)
 
 
