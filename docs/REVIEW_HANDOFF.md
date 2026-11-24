@@ -14,7 +14,7 @@ Nothing here has been fixed yet. Line numbers are as of commit `e2d1f31`.
 - **Checks before every push:**
 
   ```bash
-  pip install -r requirements.txt -r requirements-test.txt
+  uv sync --all-groups && source .venv/bin/activate   # since D24; before it, pip and requirements*.txt
   python -m pytest -q                                   # 1635 passed, 4 skipped at e2d1f31
   python -m pyflakes threatbridge tests
   python -m bandit -q -ll -r threatbridge

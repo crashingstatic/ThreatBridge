@@ -33,8 +33,8 @@ Data sources: Zeek `conn` records in Security Onion's Elasticsearch (`event.data
 ## Post-mortem mode (PCAP and NetFlow files)
 
 ```bash
-pip install -r requirements.txt
-python -m threatbridge --case /cases/incident-42/      # files or directories, in any mix
+uv sync --no-default-groups                           # the locked packages (uv: https://docs.astral.sh/uv/)
+uv run python -m threatbridge --case /cases/incident-42/   # files or directories, in any mix
 # --db /work/incident-42.db keeps the parsed flows and reuses them while the evidence is unchanged
 # open the address it prints when ready: http://127.0.0.1:5055/?token=...
 ```
@@ -270,14 +270,59 @@ The manual tests, for what CI can't check (how the map looks, other browsers and
 ## Development
 
 ```bash
-pip install -r requirements.txt -r requirements-test.txt
-python -m pytest
-TB_BACKEND=demo python -m threatbridge --port 5055   # fake data, plain HTTP; open the address it prints
-TB_PERF=1 python -m pytest -s tests/test_perf.py    # PRF-1/2/3: 1.25M flows, a busy week; about a minute
-python -m threatbridge.apidoc                        # after changing the API: regenerate threatbridge/openapi.json
+uv sync --all-groups                                       # the locked packages, test and lint tools included
+uv run python -m pytest
+TB_BACKEND=demo uv run python -m threatbridge --port 5055  # fake data, plain HTTP; open the address it prints
+TB_PERF=1 uv run python -m pytest -s tests/test_perf.py   # PRF-1/2/3: 1.25M flows, a busy week; about a minute
+uv run python -m threatbridge.apidoc                       # after changing the API: regenerate threatbridge/openapi.json
+uv run python -m pyflakes threatbridge tests && uv run bandit -q -ll -r threatbridge && uv run actionlint
+npm ci && npx playwright install chromium                  # for the browser tests (tests/ui_*.mjs)
 ```
 
 The nfcapd test needs `nfdump` installed (`apt install nfdump`); without it, it is skipped locally.
+
+### Dependencies (D24)
+
+Everything installed is pinned, and Dependabot proposes updates weekly:
+
+- Python packages: `pyproject.toml` lists them as ranges, `uv.lock` holds the exact versions and
+  their hashes. The container and CI install only from the lock file (`uv sync --frozen`). After
+  changing `pyproject.toml`, run `uv lock`. Without uv, export the lock file for pip:
+  `uv export --frozen --no-default-groups --no-emit-project -o requirements.txt`, then
+  `pip install --require-hashes -r requirements.txt`.
+- Playwright, for the browser tests: `package.json` and `package-lock.json` (`npm ci`).
+- The container's base images: pinned by digest in the `Dockerfile`.
+- GitHub Actions: pinned to commit hashes, each with its release in a comment.
+
+`tests/test_supply_chain.py` fails if any of these is left unpinned.
+
+### Releases
+
+A tag `v<version>`, matching `version` in `pyproject.toml`, makes
+`.github/workflows/release.yml` publish a GitHub release with:
+
+- the source as `threatbridge-<version>.tar.gz` and `.zip`;
+- `threatbridge-<version>-requirements.txt`: the locked Python packages with their hashes, for pip;
+- `SHA256SUMS`;
+- a Sigstore signature (`.sigstore.json`) for each of these, made keylessly through GitHub's
+  identity for this repository's release workflow;
+- a build provenance attestation for each, kept by GitHub.
+
+No container image is published; build it from the source (`deploy/run.sh`).
+
+To verify a download, either of:
+
+```bash
+gh attestation verify threatbridge-0.1.0.tar.gz --repo crashingstatic/ThreatBridge
+
+pip install sigstore
+sigstore verify identity threatbridge-0.1.0.tar.gz \
+  --bundle threatbridge-0.1.0.tar.gz.sigstore.json \
+  --cert-identity https://github.com/crashingstatic/ThreatBridge/.github/workflows/release.yml@refs/tags/v0.1.0 \
+  --cert-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+and `sha256sum -c SHA256SUMS` for the sums.
 
 ### Mutation testing
 
@@ -307,8 +352,8 @@ Run it again after changing the analysis or the readers, and look at the new sur
 |---|---|
 | Unit tests | pytest on Python 3.11 and 3.12, including reading a real nfcapd file (nfdump from apt), files read in parallel giving the same flows as one at a time, worker processes sharing files, the command line, SOC's Connect API against a stand-in, and the README, `docs/API.md`, the OpenAPI document, env example and SOC actions staying in step with the code; every API response the tests get is checked against the OpenAPI document |
 | Performance | `TB_PERF=1 tests/test_perf.py`: 1.25M flows built within 5 minutes (PRF-1/2), and the interactive queries timed on a busy case (PRF-3) |
-| Shellcheck | `scripts/`, `deploy/`, `tests/` shell scripts |
-| Security scan | `pip-audit` (known-vulnerable dependencies), `bandit -ll` (medium+ Python security issues) |
+| Lint | `shellcheck` on the `scripts/`, `deploy/` and `tests/` shell scripts, `actionlint` on the workflows, `pyflakes` on the Python |
+| Security scan | `pip-audit` on the locked packages the container installs (known-vulnerable dependencies), `bandit -ll` (medium+ Python security issues) |
 | Docker build + mTLS | Generates a throwaway PKI, builds and starts the container with `deploy/run.sh` (demo backend), then `tests/mtls_check.sh`. No cert and foreign-CA certs must be refused, a valid cert accepted, and writes without the CSRF header rejected. `tests/ui_mtls.mjs` then opens the map in Chromium through the container: refused without a certificate, working with one. |
 | UI tests | Headless Chromium. Every script fails on any unexpected console/CSP error, and screenshots are uploaded as an artifact. `tests/ui_smoke.mjs` (demo backend) checks the toolbar and its URL, loads the map as a SOC action would, Top and Bottom N, the SOC pivots (with the IOC time and the time range), the flows' PCAP links and download, the exclude list and what its entries resolved to, marking hosts compromised, the busy indicator, and the status line's messages. `tests/ui_case.mjs` runs post-mortem mode on a pcap made by `tests/make_case.py`: threat lines, compromised hosts and attack paths (with the Window, the time range and excludes), paths between two hosts with IOC times, and domain excludes. `tests/ui_actions.mjs` covers the rest: errors, slow writes kept in order, the details panel and layout, every menu and how menus close, time-chained hops, the compromised form, attack paths answered out of order, CIDRs, "Show all" paths, paging flows, threat lines cut short, saved maps (shared and as a file, including malformed files and markup in names), clicks after a resize or scroll, Fit and Clear. `tests/ui_marks.mjs` covers marks and filters: marking hosts and single flows, what the marks hide and how it looks, unmarking, typed filters (refused and applied), re-running the map's queries, Apply as filter, Clear, the CSV export, a second analyst seeing marks within seconds, an opened map's own marks and *Share*, and maps saved before filters. The maps the tests save are checked against the map document format, and the job ends with `tests/js_coverage.mjs`, which lists what of `app.js` no browser test ran. |
 

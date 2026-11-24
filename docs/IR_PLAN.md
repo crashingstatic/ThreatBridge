@@ -81,9 +81,11 @@ hashes. IR teams will install this inside client networks.
 - Python packages are managed with uv. `pyproject.toml` lists the dependencies (as ranges)
   and the test dependencies; `uv.lock` holds the exact versions and hashes of every package.
   The container and CI install from the lock file (`uv sync --frozen`).
-- `requirements.txt` and `requirements-test.txt` are exported from the lock file
-  (`uv export`), with hashes, for people who use pip and for `pip-audit`. A test fails if they
-  differ from what the lock file exports.
+- No requirements files are kept (Dependabot updates only `uv.lock`, so exported copies would
+  go stale). `pip-audit` and each release export one from the lock file with hashes; pip users
+  can do the same (`uv export`).
+- Playwright for the browser tests is locked in `package.json` and `package-lock.json`
+  (`npm ci`).
 - The base image pinned by digest in the `Dockerfile`.
 - GitHub Actions pinned to commit hashes instead of tags.
 - Dependabot opens pull requests to update the lock file, the image digest and the Actions.
@@ -93,8 +95,9 @@ hashes. IR teams will install this inside client networks.
   list of the locked dependencies to the GitHub release. No container image is published (CI
   still builds one to test it). The README says how to verify a release.
 
-**Tests.** CI installs from the lock file; a test fails if the exported requirements files
-and the lock file disagree; the workflows are checked with `actionlint`. Publishing itself can
+**Tests.** CI installs from the lock files; `tests/test_supply_chain.py` fails if an Action,
+a base image or Playwright is unpinned, if the uv versions disagree, or if `uv.lock` is out of
+step with `pyproject.toml`; the workflows are checked with `actionlint`. Publishing itself can
 only be tried on a real tag.
 
 **Decided 2026-11-24.** Signed source archives only. A lock file for the container and CI,
@@ -342,8 +345,8 @@ From the review, each reproduced in a browser:
 
 | Item | Decisions | Requirement | Tests | Code | CI |
 |---|---|---|---|---|---|
-| 11. Login and Host check | decided | done (D23, SEC-1, SEC-2) | done | done | |
-| 12. Pin and sign | decided | | | | |
+| 11. Login and Host check | decided | done (D23, SEC-1, SEC-2) | done | done | green |
+| 12. Pin and sign | decided | done (D24, SEC-3 to SEC-5) | done | done | |
 | 6. Formats | decided | | | | |
 | 2. How they got in | | | | | |
 | 5. Machines behind addresses | | | | | |

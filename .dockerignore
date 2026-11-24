@@ -11,3 +11,4 @@ exclude.json*
 compromised.json*
 sessions
 deploy/threatbridge.env
+.venv

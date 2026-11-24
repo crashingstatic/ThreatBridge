@@ -191,7 +191,7 @@ listener that accepts and closes), as the scenario needs:
 
 **Tester workstation (`tb-tester`):**
 
-- The ThreatBridge repository cloned, `python -m pip install -r requirements.txt pytest`
+- The ThreatBridge repository cloned, `uv sync`
   (Python 3.11 or later). It can run all the plan's local environments: ENV-DEMO, ENV-CASE,
   ENV-BUSY, ENV-BIG, ENV-MTLS and ENV-REAL.
 - **Browsers:** Chromium and `firefox-esr` (XB-01), and Edge if the operator said the analysts

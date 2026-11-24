@@ -59,9 +59,9 @@ Contents:
 
 ## 2. Test environments
 
-Run the commands from the repository root. Install the dependencies once with
-`python -m pip install -r requirements.txt pytest` (Python 3.11 or later). Stop a server with
-Ctrl+C.
+Run the commands from the repository root. Install the dependencies once with `uv sync`
+(Python 3.11 or later), then run the commands below in its environment (`source .venv/bin/activate`,
+or prefix each with `uv run`). Stop a server with Ctrl+C.
 
 ### ENV-DEMO: demo backend
 
