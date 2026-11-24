@@ -669,3 +669,22 @@ def test_the_temporary_store_is_never_in_the_working_directory():
     path = os.path.abspath(be.store.path)
     assert path.startswith(os.path.abspath(tempfile.gettempdir()) + os.sep)
     assert os.path.dirname(path) != os.getcwd()
+
+
+def test_expansions_before_and_after_the_anchor_either_way(client):
+    # H connected out to 10.0.0.20 at T+70 and was connected to by 10.0.0.1 at T+10..30. From an
+    # anchor at T+100: outbound before finds 10.0.0.20, outbound after (the default) nothing;
+    # from T+5: inbound after finds 10.0.0.1, 10.0.0.2, 10.1.0.7 and 10.0.0.3 within the window.
+    base = f"/api/neighbors?ip={H}&window=1h"
+    late, early = "&ts=2024-05-01T12:01:40Z", "&ts=2024-05-01T12:00:05Z"
+    r = client.get(base + "&direction=out&time=before" + late).get_json()
+    assert (r["time"], r["start"], r["end"]) == ("before", "2024-05-01T11:01:40.000Z", "2024-05-01T12:01:40.000Z")
+    assert [p["peer"] for p in r["peers"]] == ["10.0.0.20"]
+    assert client.get(base + "&direction=out" + late).get_json()["peers"] == []
+    assert client.get(base + "&direction=out" + late).get_json()["time"] == "after"
+    r = client.get(base + "&direction=in&time=after" + early).get_json()
+    assert r["time"] == "after"
+    assert sorted(p["peer"] for p in r["peers"]) == ["10.0.0.1", "10.0.0.2", "10.0.0.3", "10.1.0.7"]
+    assert client.get(base + "&direction=in" + early).get_json()["time"] == "before"
+    r = client.get(base + "&direction=in&time=sideways" + early)
+    assert r.status_code == 400 and r.get_json()["error"] == "time must be 'before' or 'after'"

@@ -290,11 +290,15 @@
     return { window: $("window").value.trim(), limit: $("limit").value.trim(), order: $("order").value };
   }
 
-  // direction "in": peer -> host, anchored in the past; "out": host -> peer, anchored in the future.
-  async function expand(ip, direction) {
+  // direction "in": peer -> host; "out": host -> peer. time: "before" or "after" the host's
+  // anchor; by default inbound looks back and outbound forward.
+  const defaultTime = (direction) => (direction === "in" ? "before" : "after");
+
+  async function expand(ip, direction, time) {
     const node = cy.getElementById(ip);
     const anchor = node.nonempty() ? node.data("anchor") : $("ts").value.trim();
-    const q = Object.assign({ op: "expand", ip, direction, anchor }, settingsNow());
+    const q = Object.assign({ op: "expand", ip, direction, time: time || defaultTime(direction), anchor },
+                            settingsNow());
     queries.push(q);
     return expandWith(q, true);
   }
@@ -302,10 +306,14 @@
   // One expansion: the host's peers as hosts and connections (one already drawn takes the new
   // counts). With `say`, the map is laid out again and the status bar tells what was found.
   async function expandWith(q, say) {
-    const params = withRange(new URLSearchParams({ ip: q.ip, direction: q.direction, window: q.window,
+    const time = q.time || defaultTime(q.direction);
+    const params = withRange(new URLSearchParams({ ip: q.ip, direction: q.direction, time, window: q.window,
                                                    limit: q.limit, order: q.order }));
     if (q.anchor) params.set("ts", q.anchor);
-    if (say) setStatus(`Querying ${q.direction === "in" ? "inbound (past)" : "outbound (future)"} for ${q.ip}…`);
+    if (say) {
+      setStatus(`Querying ${q.direction === "in" ? "inbound" : "outbound"} ` +
+                `(${time === "before" ? "past" : "future"}) for ${q.ip}…`);
+    }
     const res = await ask("/api/neighbors", params);
     const direction = q.direction;
 
@@ -317,7 +325,7 @@
     cy.batch(() => {
       for (const p of res.peers) {
         // Carry time forward/backward so the next hop follows the chain of activity.
-        const peerAnchor = direction === "out" ? p.first_seen : p.last_seen;
+        const peerAnchor = time === "after" ? p.first_seen : p.last_seen;
         addNode(p.peer, peerAnchor, { depth });
         const src = direction === "in" ? p.peer : res.ip;
         const dst = direction === "in" ? res.ip : p.peer;
@@ -620,8 +628,10 @@
     const oe = evt.originalEvent;
     showMenu(oe.clientX, oe.clientY, [
       { title: `${n.id()} @ ${n.data("anchor") || "now"}` },
-      { label: "Expand inbound: who connected to it (past)", action: () => expand(n.id(), "in") },
-      { label: "Expand outbound: who it connected to (future)", action: () => expand(n.id(), "out") },
+      { label: "Expand inbound: who connected to it (past)", action: () => expand(n.id(), "in", "before") },
+      { label: "Expand outbound: who it connected to (future)", action: () => expand(n.id(), "out", "after") },
+      { label: "Expand outbound: who it connected to (past)", action: () => expand(n.id(), "out", "before") },
+      { label: "Expand inbound: who connected to it (future)", action: () => expand(n.id(), "in", "after") },
       "-",
       ...(cfg.soc_pivots === false ? [] :
         [{ label: "Open host in SOC dashboard", action: () => openPivot(n.id(), null, null) }]),
@@ -1218,7 +1228,7 @@
   const HIGHLIGHTS = ["up", "down", "line-selected", "faded", "attack", "route"];
   const SETTINGS = ["ip", "ts", "direction", "window", "range-from", "range-to", "order", "limit",
                     "route-src", "route-src-time", "route-dst", "route-dst-time"];
-  const QUERY_FIELDS = ["op", "ip", "ts", "direction", "anchor", "window", "limit", "order", "a", "b", "from", "to",
+  const QUERY_FIELDS = ["op", "ip", "ts", "direction", "time", "anchor", "window", "limit", "order", "a", "b", "from", "to",
                         "src", "dst", "src_time", "dst_time", "id", "source", "target"];
 
   function pick(from, fields) {

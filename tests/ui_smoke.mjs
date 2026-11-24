@@ -92,7 +92,8 @@ try {
   await page.mouse.click(peer.x, peer.y, { button: "right" });
   assert.deepEqual(await menuItems(), [
     `${peer.id} @ ${peerAnchor}`, "Expand inbound: who connected to it (past)",
-    "Expand outbound: who it connected to (future)", "", "Open host in SOC dashboard",
+    "Expand outbound: who it connected to (future)", "Expand outbound: who it connected to (past)",
+    "Expand inbound: who connected to it (future)", "", "Open host in SOC dashboard",
     `Mark compromised at ${peerAnchor}`, "Mark compromised (time unknown)", "Remove from map",
     "Add to shared exclude list"]);
   await page.click("text=Expand outbound");

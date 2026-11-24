@@ -19,7 +19,7 @@ from .jsonstore import StoreError
 from .local import MIN_TOKEN, LocalAccess, install as install_local
 from .model import SourceError
 from .query import (DIRECTIONS, ORDERS, ValidationError, clip, fmt_time, parse_direction,
-                    parse_es_id, parse_exclude, parse_ip, parse_order, parse_time, parse_window,
+                    parse_es_id, parse_exclude, parse_ip, parse_order, parse_time, parse_time_side, parse_window,
                     soc_host_query, soc_pivot_query, soc_url, time_range)
 from .sessions import Conflict, NotFound, SessionStore
 from .soc import SocClient
@@ -297,15 +297,16 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
         a = args()
         ip = parse_ip(a.get("ip"))
         direction = parse_direction(a.get("direction", "in"))
+        side = parse_time_side(a.get("time"), direction)
         anchor = parse_time(a.get("ts"))
         window = window_arg(a.get("window"))
         limit = max(1, min(int_arg("limit", cfg.default_limit), cfg.max_limit))
         order = parse_order(a.get("order"))
 
-        start, end = clip(*time_range(anchor, direction, window), range_arg())
+        start, end = clip(*time_range(anchor, direction, window, side), range_arg())
         res = (backend.neighbors(ip, direction, start, end, limit, order, exclusions(), scope_arg())
                if start <= end else {"peers": [], "distinct_peers": 0, "truncated": False})
-        return jsonify(ip=ip, direction=direction, order=order, anchor=fmt_time(anchor),
+        return jsonify(ip=ip, direction=direction, time=side, order=order, anchor=fmt_time(anchor),
                        start=fmt_time(start), end=fmt_time(end), **res)
 
     @app.route("/api/flows", methods=["GET", "POST"])

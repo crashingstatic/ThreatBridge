@@ -72,8 +72,24 @@ def fmt_time(dt):
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
-def time_range(anchor, direction, window):
-    if direction == "in":
+TIMES = ("before", "after")
+
+
+def default_time(direction):
+    """Inbound looks back from the anchor and outbound forward, unless told otherwise."""
+    return "before" if direction == "in" else "after"
+
+
+def parse_time_side(value, direction):
+    """`time` of an expansion: "before" or "after" the anchor; blank: the direction's default."""
+    value = (value or "").strip().lower() or default_time(direction)
+    if value not in TIMES:
+        raise ValidationError("time must be 'before' or 'after'")
+    return value
+
+
+def time_range(anchor, direction, window, time=None):
+    if (time or default_time(direction)) == "before":
         return anchor - window, anchor
     return anchor, anchor + window
 

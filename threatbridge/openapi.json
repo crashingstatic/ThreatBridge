@@ -924,11 +924,23 @@
      {
       "name": "direction",
       "in": "query",
-      "description": "in (the default): who connected to it before the anchor; out: who it connected to after",
+      "description": "in (the default): who connected to it; out: who it connected to",
       "schema": {
        "enum": [
         "in",
         "out"
+       ],
+       "type": "string"
+      }
+     },
+     {
+      "name": "time",
+      "in": "query",
+      "description": "before or after the anchor; blank: before for in, after for out",
+      "schema": {
+       "enum": [
+        "before",
+        "after"
        ],
        "type": "string"
       }
@@ -3856,6 +3868,9 @@
      "direction": {
       "type": "string"
      },
+     "time": {
+      "type": "string"
+     },
      "window": {
       "type": "string"
      },
@@ -4176,6 +4191,7 @@
        }
       ],
       "start": "2024-04-30T13:00:00.000Z",
+      "time": "before",
       "truncated": false
      }
     ],
@@ -4187,6 +4203,14 @@
       "enum": [
        "in",
        "out"
+      ],
+      "type": "string"
+     },
+     "time": {
+      "description": "whether the window is before or after the anchor",
+      "enum": [
+       "before",
+       "after"
       ],
       "type": "string"
      },
@@ -4235,6 +4259,7 @@
     "required": [
      "ip",
      "direction",
+     "time",
      "order",
      "anchor",
      "start",
@@ -4260,6 +4285,16 @@
       ]
      },
      "direction": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "time": {
       "anyOf": [
        {
         "type": "string"

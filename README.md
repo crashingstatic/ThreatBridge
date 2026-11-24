@@ -5,7 +5,7 @@ A companion tool for **Security Onion 2.4**. When an analyst finds an IOC in SOC
 - **Inbound (past)**: hosts that connected **to** the IOC host in the window **before** the event.
 - **Outbound (future)**: hosts the IOC host connected **to** in the window **after** the event.
 
-Click any host to expand it. Hops are *time-chained*: an outbound peer's next hop starts at the time it was first contacted, and an inbound peer's next hop ends at the time it was last seen. This lets you follow a lateral-movement chain forward or an entry path backward.
+Click any host to expand it. Hops are *time-chained*: a peer found after a host's time is anchored at the time it was first contacted, and one found before it at the time it was last seen. This lets you follow a lateral-movement chain forward or an entry path backward. A host's menu expands four ways: inbound and outbound, each in the past or the future. Outbound in the past shows what a host connected to before it was reached, as a phished host or a reverse shell does.
 
 **Click a connection (edge)** to list its flows in time order; in Security Onion mode each flow can fetch its packets from the sensor that saw it. **Right-click it** → *Filter SOC Dashboards*. This opens SOC Dashboards filtered to every conversation between those two hosts, in either direction, **up to the IOC time**.
 

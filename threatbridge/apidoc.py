@@ -43,6 +43,7 @@ def example(doc):
 Time = Annotated[str, Field(pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")]   # as answers give it
 Backend = Literal["elastic", "case", "demo"]
 Direction = Literal["in", "out"]
+TimeSide = Literal["before", "after"]
 Order = Literal["top", "bottom"]
 Protocols = Annotated[list[str], Field(description=(
     "every protocol the flows carry, sorted: named as Zeek names its services (`dns`, `http`, `smb`, `ssl` "
@@ -198,13 +199,14 @@ class Peer(Shape):
 
 class Neighbors(Shape):
     model_config = example({
-        "ip": "10.0.0.9", "direction": "in", "order": "top", "anchor": "2024-05-01T13:00:00.000Z",
+        "ip": "10.0.0.9", "direction": "in", "time": "before", "order": "top", "anchor": "2024-05-01T13:00:00.000Z",
         "start": "2024-04-30T13:00:00.000Z", "end": "2024-05-01T13:00:00.000Z",
         "peers": [{"peer": "10.0.0.5", "count": 1, "first_seen": "2024-05-01T12:10:00.000Z",
                    "last_seen": "2024-05-01T12:10:00.000Z", "ports": [445], "protocols": ["smb"]}],
         "distinct_peers": 2, "truncated": False})
     ip: str
     direction: Direction
+    time: TimeSide = Field(description="whether the window is before or after the anchor")
     order: Order
     anchor: Time
     start: Time = Field(description="the window's start; after end when the window and the time range don't overlap")
@@ -560,6 +562,7 @@ class MapQuery(Shape):
     ip: str = None
     ts: str = None
     direction: str = None
+    time: str = None
     window: str = None
     limit: str = None
     order: str = None
@@ -627,7 +630,9 @@ class ResolveQuery(BaseModel):
 
 class NeighborsQuery(BaseModel):
     ip: str = Field(description="the host")
-    direction: Direction = Field(None, description="in (the default): who connected to it before the anchor; out: who it connected to after")
+    direction: Direction = Field(None, description="in (the default): who connected to it; out: who it connected to")
+    time: TimeSide = Field(None, description=(
+        "before or after the anchor; blank: before for in, after for out"))
     ts: str = Field(None, description="the anchor; blank: now")
     window: Window = None
     limit: int = Field(None, description="peers to return, 1 to max_limit (larger values are capped); default default_limit")

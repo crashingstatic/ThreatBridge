@@ -191,9 +191,14 @@ try {
     await page.mouse.click(p.x, p.y, { button: "right" });
     return p;
   };
+  await cyEval(() => {                                       // the host near the top, where its menu fits
+    const cy = window.threatbridge.cy, p = cy.getElementById("10.0.0.5").renderedPosition();
+    cy.panBy({ x: cy.width() / 2 - p.x, y: 40 - p.y });
+  });
   const m5 = await openMenu("10.0.0.5");
   assert.deepEqual(await menuItems(), ["10.0.0.5 @ 2024-05-01T12:10:00.000Z",
-    "Expand inbound: who connected to it (past)", "Expand outbound: who it connected to (future)", "",
+    "Expand inbound: who connected to it (past)", "Expand outbound: who it connected to (future)",
+    "Expand outbound: who it connected to (past)", "Expand inbound: who connected to it (future)", "",
     "Mark compromised at 2024-05-01T12:10:00.000Z", "Mark compromised (time unknown)",
     "Find paths from this host…", "Find paths to this host…", "Remove from map", "Add to shared exclude list"]);
   const box = await page.locator("#menu").boundingBox();
@@ -643,7 +648,8 @@ try {
   }, markup);
   await page.mouse.click(mp.x, mp.y, { button: "right" });
   assert.deepEqual(await menuItems(), [`${markup} @ now`, "Expand inbound: who connected to it (past)",
-    "Expand outbound: who it connected to (future)", "", "Mark compromised (time unknown)",
+    "Expand outbound: who it connected to (future)", "Expand outbound: who it connected to (past)",
+    "Expand inbound: who connected to it (future)", "", "Mark compromised (time unknown)",
     "Find paths from this host…", "Find paths to this host…", "Remove from map", "Add to shared exclude list"]);
   assert.equal(await page.textContent("#detail-body dd"), markup);
   await page.keyboard.press("Escape");

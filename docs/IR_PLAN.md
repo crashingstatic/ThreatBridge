@@ -23,6 +23,9 @@ that list:
 
 ## How the work is done
 
+- The map's text stays plain: no explanatory hints in menus or labels (the owner's preference,
+  2026-11-24).
+
 - For each item: ask the owner the open decisions (listed per item, each with a
   recommendation), write the requirement into `docs/REQUIREMENTS.md`, write the tests, then the
   code. Nothing below is decided until the owner answers.
@@ -152,9 +155,8 @@ first internal host. And there is no way to start from an outside address.
 2. **Outbound before, and inbound after.** Today "inbound" means peers that connected to the
    host before the anchor time, and "outbound" means hosts it connected to after it. The
    neighbours query gets a `time` parameter (`before` or `after`), so all four combinations
-   exist. The host menu gains "Outbound before (how it got in)" and "Inbound after". The
-   attack-path and threat-line rules stay as they are (each hop opened by the host the
-   attacker is on).
+   exist. The host menu gains "Outbound before" and "Inbound after". The attack-path and
+   threat-line rules stay as they are (each hop opened by the host the attacker is on).
 3. **Who talked to it.** Given an outside address, a network, or a domain name, list every
    inside host that exchanged traffic with it, in either direction, over the whole time range:
    first and last seen, number of flows, bytes each way. They can be added to the map.
@@ -181,15 +183,13 @@ IOC time, then moves laterally:
 
 Plus API, OpenAPI and browser tests.
 
-**Decisions.**
-1. Inside networks: a setting with the private ranges above as default (recommended), or
-   required at start-up?
-2. Outbound before: a `time` parameter and two new menu items (recommended), or a single
-   "both directions" expansion?
-3. Who talked to it: add the hosts to the map (recommended, at most N with the rest in a list),
-   or only list them?
-4. Beacon scores computed when the case is built (recommended; existing cases are rebuilt once)
-   or on request? Long-connection threshold: 1 hour by default (recommended)?
+**Decided 2026-11-24.**
+1. Inside networks: a setting, with the private ranges above as default.
+2. Outbound before: a `time` parameter and two menu items, "Outbound before" and "Inbound
+   after", with no explanatory hints in the menu (the owner finds them clutter).
+3. Who talked to it: up to N hosts added to the map, the rest in a list.
+4. Beacon scores computed when the case is built (existing cases are rebuilt once); a
+   connection is long from 1 hour (a setting).
 
 ## 5. Track which machine had which IP address over time
 
@@ -349,8 +349,8 @@ From the review, each reproduced in a browser:
 |---|---|---|---|---|---|
 | 11. Login and Host check | decided | done (D23, SEC-1, SEC-2) | done | done | green |
 | 12. Pin and sign | decided | done (D24, SEC-3 to SEC-5) | done | done | green |
-| 6. Formats | decided | done (D6, ING-6 to ING-8) | done | done | |
-| 2. How they got in | | | | | |
+| 6. Formats | decided | done (D6, ING-6 to ING-8) | done | done | green |
+| 2. How they got in | decided | | | | |
 | 5. Machines behind addresses | | | | | |
 | 4. Accounts on hops | | | | | |
 | 9. Deliverables | | | | | |

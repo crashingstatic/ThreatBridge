@@ -14,6 +14,9 @@ what a schema can't say.
 
 ## Changes
 
+- **Expansions either side of the anchor (ATK-10).** `GET`/`POST /api/neighbors` takes `time`
+  (`before` or `after`; default `before` for `in`, `after` for `out`) and answers with it. A
+  saved map's `expand` queries may carry it. An addition, so `api_version` stays 1.
 - **Community ID (ING-8).** Each flow in `GET`/`POST /api/flows`, and each flow row of
   `POST /api/export`, has `community_id`: the flow's Community ID (version 1, seed 0), or null
   for ICMP and SCTP. An addition, so `api_version` stays 1.

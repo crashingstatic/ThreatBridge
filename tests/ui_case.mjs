@@ -237,6 +237,29 @@ try {
   assert.match(page.url(), /range_from=2024-05-01T12%3A20%3A00Z/);
   await shot("time-range");
 
+  // Outbound in the past and inbound in the future: 10.0.0.20 at 12:17 connected out to
+  // 10.0.0.30 at 11:50, and 10.0.0.9 connected to it at 12:20. Each new host is anchored at
+  // the connection's time on that side: the last seen going back, the first going forward.
+  await page.fill("#range-from", "");
+  await page.fill("#ip", "10.0.0.20");
+  await page.fill("#ts", "2024-05-01T12:17:00Z");
+  await page.selectOption("#direction", "in");
+  await page.click("#go");
+  await waitStatus(/^10\.0\.0\.20: showing top 1 of 1 distinct peer\(s\)/);
+  const anchorOf = (id) => cyEval((i) => window.threatbridge.cy.getElementById(i).data("anchor"), id);
+  for (const [item, edge, peer, anchor, span] of [
+    ["Expand outbound: who it connected to (past)", "10.0.0.20->10.0.0.30", "10.0.0.30", "2024-05-01T11:50:00.000Z",
+     "2024-04-30T12:17:00.000Z → 2024-05-01T12:17:00.000Z"],
+    ["Expand inbound: who connected to it (future)", "10.0.0.9->10.0.0.20", "10.0.0.9", "2024-05-01T12:20:00.000Z",
+     "2024-05-01T12:17:00.000Z → 2024-05-02T12:17:00.000Z"]]) {
+    const host = await at("node#10\\.0\\.0\\.20");
+    await page.mouse.click(host.x, host.y, { button: "right" });
+    await menuClick(item);
+    await waitStatus(new RegExp(`^10\\.0\\.0\\.20: showing top 1 of 1 distinct peer\\(s\\), ${span}$`));
+    assert.ok(await cyEval((id) => window.threatbridge.cy.getElementById(id).nonempty(), edge), edge);
+    assert.equal(await anchorOf(peer), anchor);
+  }
+
   assert.deepEqual(errors, [], "browser console errors");
   console.log("Case-mode UI test passed");
 } finally {
