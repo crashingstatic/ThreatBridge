@@ -34,17 +34,24 @@
     wheelSensitivity: 0.3,
     maxZoom: 1.6,
     style: [
+      // Labels too small to read once zoomed out are left out, and shown again on hover and
+      // selection; the IOC host's and the compromised hosts' always show (D34).
       { selector: "node", style: {
           "background-color": COLORS.node, label: "data(id)", color: "#d8dee9",
-          "font-size": 10, "text-valign": "bottom", "text-margin-y": 4, width: 18, height: 18 } },
-      { selector: "node[?root]", style: { "background-color": COLORS.root, width: 28, height: 28 } },
+          "font-size": 10, "text-valign": "bottom", "text-margin-y": 4, width: 18, height: 18,
+          "min-zoomed-font-size": 8 } },
+      // The IOC host: a diamond with a white border, not only its red (D34); an
+      // expanded host's border, below, still says how it was expanded.
+      // (round-diamond: this Cytoscape misses a click at the centre of a plain diamond.)
+      { selector: "node[?root]", style: { "background-color": COLORS.root, shape: "round-diamond", width: 32, height: 32,
+                                          "border-width": 2, "border-color": "#fff" } },
       { selector: "node[?expandedIn], node[?expandedOut]", style: { "border-width": 2, "border-color": "#d8dee9" } },
       { selector: "node[?expandedIn][?expandedOut]", style: { "border-width": 3, "border-color": "#fff" } },
       { selector: "edge", style: {
           width: "mapData(logCount, 0, 4, 1, 7)", "curve-style": "bezier",
           "target-arrow-shape": "triangle", "arrow-scale": 0.9, label: "data(label)",
           "font-size": 8, color: "#8a94a6", "text-rotation": "autorotate", "text-background-color": "#11151c",
-          "text-background-opacity": 0.8, "text-background-padding": 1 } },
+          "text-background-opacity": 0.8, "text-background-padding": 1, "min-zoomed-font-size": 7 } },
       { selector: "edge[direction = 'in']", style: { "line-color": COLORS.in, "target-arrow-color": COLORS.in } },
       { selector: "edge[direction = 'out']", style: { "line-color": COLORS.out, "target-arrow-color": COLORS.out } },
       { selector: "node[?compromised]", style: {
@@ -86,10 +93,14 @@
       // Hidden by the marks: restored when they change (D16). Hiding comes before any dimming.
       { selector: ".mark-hidden", style: { display: "none" } },
       { selector: ":selected", style: { "overlay-color": "#fff", "overlay-opacity": 0.15 } },
+      { selector: ".hover, :selected, node[?root], node[?compromised]", style: { "min-zoomed-font-size": 0 } },
     ],
   });
 
   window.threatbridge = { cy }; // handle for debugging / UI tests
+  cy.on("mouseover", "node, edge", (e) => e.target.addClass("hover"));
+  cy.on("mouseout", "node, edge", (e) => e.target.removeClass("hover"));
+  $("cy").addEventListener("mouseleave", () => cy.elements(".hover").removeClass("hover"));   // off the map at once
 
   // Protocols as the server names them (Zeek's service names), as the map shows them (D14).
   const PROTOCOL_ALIASES = { "ftp-data": "ftp", krb_tcp: "krb" };
@@ -117,9 +128,14 @@
     return b;
   }
 
+  // Text with each timestamp in it kept on one line (D34).
+  const TIMESTAMP = /(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z)/;
+  const withTimes = (text) => String(text).split(TIMESTAMP)
+    .map((part, i) => (i % 2 ? el("span", { className: "nowrap", textContent: part }) : part)).filter((p) => p !== "");
+
   // A list entry: its text, a note in small type under it (if any), and a button.
   function listEntry(text, note, label, action) {
-    const span = el("span", { textContent: text });
+    const span = el("span", {}, ...withTimes(text));
     if (note) span.append(el("small", { className: "resolved", textContent: note }));
     return el("li", {}, span, button(label, action));
   }
@@ -236,9 +252,11 @@
   function tidy() {
     const shown = cy.elements().not(".mark-hidden");
     const root = shown.nodes("[?root]");
+    // More hosts, more room between them (D34): labels of a big map overlap less.
+    const spacing = 1.1 * Math.min(3, Math.max(1, Math.sqrt(shown.nodes().length / 25)));
     shown.layout({
       name: "breadthfirst", circle: false, directed: false, roots: root.length ? root : undefined,
-      animate: false, fit: true, padding: 40, spacingFactor: 1.1, avoidOverlap: true,
+      animate: false, fit: true, padding: 40, spacingFactor: spacing, avoidOverlap: true,
     }).run();
     setPlaced(shown.nodes());
   }
@@ -634,7 +652,7 @@
     flowsFor = null;
     lastFlows = null;
     const dl = el("dl");
-    for (const [k, v] of rows) dl.append(el("dt", { textContent: k }), el("dd", { textContent: v == null ? "—" : String(v) }));
+    for (const [k, v] of rows) dl.append(el("dt", { textContent: k }), el("dd", {}, ...withTimes(v == null ? "—" : String(v))));
     $("detail-body").replaceChildren(dl);
   }
 
@@ -673,7 +691,7 @@
     const dl = $("detail-body").querySelector("dl");
     for (const m of r.held_by) {
       dl.append(el("dt", { textContent: "Held by" }),
-                el("dd", { textContent: `${machineText(m)}, ${m.from} → ${m.until || "end"}` }));
+                el("dd", {}, ...withTimes(`${machineText(m)}, ${m.from} → ${m.until || "end"}`)));
     }
   }
 
@@ -1974,16 +1992,18 @@ code { font-size: 12px; } img { max-width: 100%; border: 1px solid #bbb; }
     return out;
   }
 
+  const kept = (x) => x.classes().filter((c) => c !== "hover");   // the pointer's place isn't saved
+
   function mapDocument() {
     return {
       version: MAP_VERSION, iocTime,
       settings: Object.fromEntries(SETTINGS.map((id) => [id, $(id).value])),
-      nodes: cy.nodes().map((n) => Object.assign({ id: n.id(), position: n.position(), classes: n.classes() },
+      nodes: cy.nodes().map((n) => Object.assign({ id: n.id(), position: n.position(), classes: kept(n) },
                                                  pick(n.data(), NODE_FIELDS))),
       edges: cy.edges().map((e) => Object.assign({ source: e.data("source"), target: e.data("target"),
                                                    direction: e.data("direction"), count: e.data("full").count,
                                                    ports: e.data("full").ports, protocols: e.data("full").protocols,
-                                                   classes: e.classes() },
+                                                   classes: kept(e) },
                                                  pick(e.data("full"), EDGE_FIELDS))),
       view: { zoom: cy.zoom(), pan: cy.pan() },
       filters: filters.slice(),

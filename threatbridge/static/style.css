@@ -43,7 +43,8 @@ main { display: flex; flex: 1; min-height: 300px; }
   overflow-y: auto; }
 #details h2 { font-size: 13px; margin: 0 0 8px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
 #details dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; margin: 0; }
-#details dt { color: var(--muted); } #details dd { margin: 0; word-break: break-all; }
+#details dt { color: var(--muted); } #details dd { margin: 0; overflow-wrap: anywhere; }
+.nowrap { white-space: nowrap; }
 .hint { color: var(--muted); }
 .hint code { color: var(--text); }
 #excludes, #compromised-section, #paths, #routes, #sessions { margin-top: 18px; }
@@ -55,7 +56,7 @@ main { display: flex; flex: 1; min-height: 300px; }
   border-radius: 4px; padding: 5px 7px; font: inherit; }
 .entries { list-style: none; margin: 8px 0 0; padding: 0; }
 .entries li { display: flex; justify-content: space-between; align-items: center; gap: 6px; padding: 3px 0;
-  border-bottom: 1px solid var(--line); word-break: break-all; }
+  border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
 .entries button { padding: 1px 8px; flex-shrink: 0; }
 .entries .resolved { display: block; color: var(--muted); font-size: 11px; }
 .entries li.path { cursor: pointer; display: block; word-break: normal; }
@@ -95,7 +96,7 @@ ol.flows .actions button { padding: 0 6px; font-size: 11px; }
 .legend { margin-top: 16px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px 14px; }
 .legend > span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .sw { display: inline-block; width: 12px; height: 12px; border-radius: 50%; }
-.sw.root { background: var(--root); } .sw.in { background: var(--in); } .sw.out { background: var(--out); }
+.sw.root { background: var(--root); border-radius: 0; transform: rotate(45deg) scale(.8); box-shadow: 0 0 0 1.5px #fff; } .sw.in { background: var(--in); } .sw.out { background: var(--out); }
 .sw.compromised { background: var(--compromised); box-shadow: 0 0 0 2px #ff8a8a; }
 .sw.marked-line, .sw.suspect-line { width: 18px; height: 4px; border-radius: 2px; box-shadow: 0 0 0 1px #ff8a8a; }
 .sw.marked-line { background: var(--compromised); }

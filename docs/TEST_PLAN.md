@@ -528,6 +528,7 @@ generated case) and `ui_mtls.mjs` (the container). *Manual* names the tests abov
 | GRA-2 Hosts and connections displayed | `ui_smoke.mjs`, `ui_case.mjs`, `ui_actions.mjs` (elements, labels, layout) | VIS-01 |
 | GRA-3 Temporal ordering | `test_case.py`, `test_analysis.py`; `ui_actions.mjs` (time-chained hops, flows paged oldest first) | SO-02 (10,000-flow limit) |
 | GRA-4 Interactive, clickable | `ui_smoke.mjs`, `ui_case.mjs`, `ui_actions.mjs` (clicks, menus, details) | VIS-01, XB-01 (other browsers) |
+| GRA-5 Readable maps | `ui_case.mjs` (the IOC host's shape and border; labels' zoom rule, on hover and off; timestamps on one line), `ui_actions.mjs` (the hover isn't saved with a map) | VIS-01 (how it looks) |
 | GRA-S2 Time-range filtering | `test_case.py`, `test_api.py`; `ui_smoke.mjs`, `ui_case.mjs`, `ui_actions.mjs` | |
 | GRA-S3 Connection metadata | `test_sources.py`, `test_backends.py`; `ui_case.mjs`, `ui_actions.mjs` | REAL-01, REAL-02, SO-02 |
 | Bottom N exact (README, *Peer selection*) | `test_backends.py` (the paged scan, the cap), `test_case.py`; `ui_smoke.mjs` (rarest and the cap warning in the status) | SO-02 steps 6, 7 |

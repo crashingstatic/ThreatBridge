@@ -306,7 +306,7 @@ try {
   assert.equal(await page.textContent("#path-list li.pair span"), "10.0.2.1 → 10.0.2.2: first 10 paths");
   assert.equal(await page.$$eval("#path-list li.path", (l) => l.length), 10);
   assert.ok((await ids()).includes("10.0.2.2") && (await ids()).includes("10.0.2.10"), "paths add their hosts");
-  assert.deepEqual(await othersSee("#compromised-list li span"),
+  assert.deepEqual(await othersSee("#compromised-list li"),
                    ["10.0.2.1 @ time unknown", "10.0.2.2 @ 2024-05-01T13:00:00.000Z"]);
   // Attack paths answered out of order: an earlier answer that arrives last is ignored.
   const attackDrawn = () => cyEval(() => window.threatbridge.cy.edges(".attack").nonempty());
@@ -506,7 +506,7 @@ try {
   await waitStatus(/^Threat line/);
   const elements = () => cyEval(() => window.threatbridge.cy.elements().map((e) => [
     e.id(), e.isNode() ? e.position() : [e.data("count"), e.data("ports"), e.data("first_seen"), e.data("protocols")],
-    e.data("anchor") ?? null, e.data("root") ?? null, e.classes().sort()]).sort());
+    e.data("anchor") ?? null, e.data("root") ?? null, e.classes().filter((c) => c !== "hover").sort()]).sort());
   const settings = () => page.evaluate(() => ["ip", "ts", "direction", "window", "range-from", "range-to", "order",
     "limit", "route-src", "route-src-time", "route-dst", "route-dst-time"].map((id) => document.getElementById(id).value));
   const view = () => cyEval(() => [window.threatbridge.cy.zoom(), window.threatbridge.cy.pan()]);
@@ -787,9 +787,13 @@ try {
   const unnamed = await page.$$eval("input, select", (l) => l.filter((x) => !x.labels?.length && !x.getAttribute("aria-label"))
     .map((x) => x.id));
   assert.deepEqual(unnamed, []);
+  await page.evaluate(() => {
+    window.fileAsked = 0;
+    document.getElementById("session-file").addEventListener("click", (e) => { e.preventDefault(); window.fileAsked += 1; });
+  });
   await page.focus("#session-open");
-  const [chooser] = await Promise.all([page.waitForEvent("filechooser"), page.keyboard.press("Enter")]);
-  assert.ok(chooser, "Open file from the keyboard");
+  await page.keyboard.press("Enter");
+  assert.equal(await page.evaluate(() => window.fileAsked), 1, "Open file from the keyboard");
   await map("10.0.0.9", "in");
   const selected = () => cyEval(() => window.threatbridge.cy.$(":selected").map((x) => x.id()));
   const focused = () => page.evaluate(() => document.activeElement.id || document.activeElement.textContent);
