@@ -3,7 +3,8 @@
 // details panel, the layout, the host menu and how menus close, connections without a menu,
 // the compromised form, attack paths answered out of order, CIDRs, "Show all" paths, paging a
 // connection's flows, time-chained hops, the time range from the URL, a slow request cancelled,
-// threat lines, saved maps (shared and as a file), clicks after a resize or scroll, Fit, Clear.
+// threat lines, saved maps (shared and as a file), clicks after a resize or scroll, Fit, Clear,
+// hosts keeping their places as the map grows, and Tidy.
 //   python tests/make_case.py DIR
 //   TB_MAX_PATHS=11 python -m threatbridge --case DIR --port 5056
 //   TB_URL=http://127.0.0.1:5056 node tests/ui_actions.mjs [screenshot-dir]
@@ -578,6 +579,7 @@ try {
   await openFile("no-view.json", noView);
   await waitStatus(/^Opened no-view\.json: /);
   // Only what a map holds is taken from a file: hosts need a name, connections two known ends.
+  // A host saved without a place goes next to the host it is connected to (D29): below it.
   await openFile("odd.json", { version: 1,
     nodes: [{ id: "10.0.0.1", position: { x: 1, y: 2 } }, { id: "10.0.0.1" }, { id: "" }, { id: 5 }, { position: "x" },
             { id: "10.0.0.2", position: "here" }],
@@ -589,7 +591,7 @@ try {
     const cy = window.threatbridge.cy, e = cy.edges()[0];
     return [e.id(), e.data("count"), e.data("ports"), e.data("direction"), e.data("label"), e.data("protocols"),
             cy.getElementById("10.0.0.1").position(), cy.getElementById("10.0.0.2").position()];
-  }), ["10.0.0.1->10.0.0.2", 0, [80], "out", "0 · 80", ["quic"], { x: 1, y: 2 }, { x: 0, y: 0 }]);
+  }), ["10.0.0.1->10.0.0.2", 0, [80], "out", "0 · 80", ["quic"], { x: 1, y: 2 }, { x: 1, y: 112 }]);
   // A protocol ThreatBridge has no name for is shown as it came, in capitals.
   await page.waitForFunction(() => document.querySelector("#protocol option:nth-child(2)")?.value === "quic");
   assert.equal(await page.textContent("#protocol option:nth-child(2)"), "QUIC");
@@ -720,6 +722,33 @@ try {
   const shownBefore = await ids();
   await page.click("#clear");
   assert.deepEqual(await ids(), shownBefore);
+
+  // 13b. Hosts keep their places (D29): one dragged aside stays there when the map grows, and
+  // the new host goes next to the host it came from, on the side away from that host's own
+  // connection, clear of the others. Tidy lays the map out again as a tree.
+  await map("10.0.0.9", "in");
+  const place = (ip) => cyEval((i) => window.threatbridge.cy.getElementById(i).position(), ip);
+  const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  const tidy77 = await place("10.0.0.77");
+  const grab = await at(node("10.0.0.77"));
+  await page.mouse.move(grab.x, grab.y);
+  await page.mouse.down();
+  await page.mouse.move(grab.x + 120, grab.y + 60, { steps: 6 });
+  await page.mouse.up();
+  const kept = { "10.0.0.9": await place("10.0.0.9"), "10.0.0.5": await place("10.0.0.5"), "10.0.0.77": await place("10.0.0.77") };
+  assert.ok(dist(kept["10.0.0.77"], tidy77) > 20, "dragged aside");
+  assert.ok(!(await cyEval(() => window.threatbridge.cy.getElementById("10.0.0.77").data("expandedIn"))), "a drag doesn't expand");
+  await menu(node("10.0.0.5"), "Expand inbound: who connected to it (past)");
+  await waitStatus(/^10\.0\.0\.5: showing/);
+  for (const [ip, pos] of Object.entries(kept)) assert.deepEqual(await place(ip), pos, `${ip} kept its place`);
+  const p66 = await place("203.0.113.66");
+  assert.ok(Math.abs(dist(p66, kept["10.0.0.5"]) - 110) < 0.5, `next to 10.0.0.5: ${JSON.stringify(p66)}`);
+  assert.ok(Object.values(kept).every((pos) => dist(pos, p66) >= 80), "clear of the other hosts");
+  assert.ok(p66.y > kept["10.0.0.5"].y, "below 10.0.0.5, away from 10.0.0.9 above it");
+  await shot("placed");
+  await page.click("#tidy");
+  const rowsY = await Promise.all(["10.0.0.9", "10.0.0.5", "10.0.0.77", "203.0.113.66"].map(async (ip) => (await place(ip)).y));
+  assert.ok(rowsY[0] < rowsY[1] && rowsY[1] === rowsY[2] && rowsY[2] < rowsY[3], `a tree again: ${JSON.stringify(rowsY)}`);
 
   assert.deepEqual(errors, [], "browser console errors");
   console.log("UI actions test passed");

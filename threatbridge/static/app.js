@@ -206,17 +206,138 @@
     setTimeout(() => URL.revokeObjectURL(a.href), 60000);
   }
 
+  // ---- placing hosts (D29): hosts on the map keep their places, wherever the analyst moved
+  // them; hosts new to it go in free space next to the host they came from. Tidy lays the
+  // whole map out again.
+  const PLACE_RING = 110;    // between the rings of places around a host (model units)
+  const PLACE_GAP = 80;      // the least distance from a new host to any other
+  const PLACE_RINGS = 8;
+  const PLACE_CLEAR = 20;    // the least distance between a host and a connection from its parent
+  const isPlaced = (n) => n.scratch("_placed") === true;
+  const setPlaced = (nodes) => nodes.forEach((n) => { n.scratch("_placed", true); });
+
   // Tree by hop distance from the IOC host (top row), each host's peers placed under it.
-  // What the marks hide is left out.
-  function relayout() {
+  // What the marks hide is left out (and keeps its place).
+  function tidy() {
     const shown = cy.elements().not(".mark-hidden");
     const root = shown.nodes("[?root]");
     shown.layout({
       name: "breadthfirst", circle: false, directed: false, roots: root.length ? root : undefined,
       animate: false, fit: true, padding: 40, spacingFactor: 1.1, avoidOverlap: true,
     }).run();
+    setPlaced(shown.nodes());
+  }
+
+  // After the map changed: place its new hosts, or lay it all out when none was placed yet.
+  function relayout() {
+    const fresh = cy.nodes().filter((n) => !isPlaced(n));
+    if (fresh.nonempty()) {
+      if (fresh.length === cy.nodes().length) tidy();
+      placeNew(cy.nodes().filter((n) => !isPlaced(n)));
+    }
     markFlags();
     refreshMachines().catch(() => {});
+  }
+
+  // Distance from point p to the segment a-b.
+  function segmentDistance(p, a, b) {
+    const dx = b.x - a.x, dy = b.y - a.y, len2 = dx * dx + dy * dy;
+    const t = len2 ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2)) : 0;
+    return Math.hypot(p.x - a.x - t * dx, p.y - a.y - t * dy);
+  }
+
+  // Each new host goes on the nearest free place around a host already placed that it is
+  // connected to (the one fewest hops from the IOC host), first on the side away from that
+  // host's own connections; hosts connected to none go to the right of the map. A place is
+  // free if no host is near it, and neither its connection to the parent nor the parent's
+  // other connections pass near a host. The view follows when a new host lands outside it.
+  function placeNew(fresh) {
+    if (fresh.empty()) return;
+    const cell = (v) => Math.floor(v / PLACE_GAP);
+    const grid = new Map();
+    const box = { x1: Infinity, y1: Infinity, x2: -Infinity };
+    const put = (pos) => {
+      const k = `${cell(pos.x)},${cell(pos.y)}`;
+      if (!grid.has(k)) grid.set(k, []);
+      grid.get(k).push(pos);
+      box.x1 = Math.min(box.x1, pos.x); box.y1 = Math.min(box.y1, pos.y); box.x2 = Math.max(box.x2, pos.x);
+    };
+    const free = (pos) => {
+      for (let i = cell(pos.x) - 1; i <= cell(pos.x) + 1; i++) {
+        for (let j = cell(pos.y) - 1; j <= cell(pos.y) + 1; j++) {
+          for (const q of grid.get(`${i},${j}`) || []) if (Math.hypot(q.x - pos.x, q.y - pos.y) < PLACE_GAP) return false;
+        }
+      }
+      return true;
+    };
+    const before = new Set();
+    cy.nodes().forEach((n) => { if (isPlaced(n)) { before.add(n.id()); put(n.position()); } });
+    // Away from the parent's connections placed before; straight down if it has none.
+    const away = new Map();
+    const direction = (parent) => {
+      if (!away.has(parent.id())) {
+        const old = parent.neighborhood("node").filter((m) => before.has(m.id()));
+        const p = parent.position();
+        let dx = 0, dy = 0;
+        old.forEach((m) => { dx += p.x - m.position("x"); dy += p.y - m.position("y"); });
+        away.set(parent.id(), Math.hypot(dx, dy) > 1e-6 ? Math.atan2(dy, dx) : Math.PI / 2);
+      }
+      return away.get(parent.id());
+    };
+    // The places of each parent's connected hosts: its connections run to them.
+    const spokes = new Map();
+    const spokesOf = (parent) => {
+      if (!spokes.has(parent.id())) {
+        spokes.set(parent.id(), parent.neighborhood("node").filter((m) => before.has(m.id())).map((m) => m.position()));
+      }
+      return spokes.get(parent.id());
+    };
+    const clear = (pos, parent) => {
+      const c = parent.position();
+      return spokesOf(parent).every((q) => segmentDistance(q, c, pos) >= PLACE_CLEAR &&
+                                           segmentDistance(pos, c, q) >= PLACE_CLEAR);
+    };
+    const near = (parent) => {
+      const p = parent.position(), want = direction(parent), spots = [];
+      for (let k = 1; k <= PLACE_RINGS; k++) {
+        const r = PLACE_RING * k, count = Math.max(8, Math.round((2 * Math.PI * r) / PLACE_GAP));
+        for (let i = 0; i < count; i++) {
+          const a = want + (2 * Math.PI * i) / count;
+          const off = Math.abs(Math.atan2(Math.sin(a - want), Math.cos(a - want)));
+          const round = (v) => Math.round(v * 100) / 100;
+          spots.push({ x: round(p.x + r * Math.cos(a)), y: round(p.y + r * Math.sin(a)),
+                       rank: [off > Math.PI * 0.55 ? 1 : 0, k, off] });
+        }
+      }
+      spots.sort((u, v) => u.rank[0] - v.rank[0] || u.rank[1] - v.rank[1] || u.rank[2] - v.rank[2]);
+      return spots.find((pos) => free(pos) && clear(pos, parent));
+    };
+    const aside = () => {
+      if (!Number.isFinite(box.x2)) return { x: 0, y: 0 };
+      const pos = { x: box.x2 + PLACE_RING, y: box.y1 };
+      while (!free(pos)) pos.y += PLACE_GAP;
+      return pos;
+    };
+    let left = fresh;
+    const added = [];
+    while (left.nonempty()) {
+      const ready = left.filter((n) => n.neighborhood("node").some(isPlaced));
+      for (const n of (ready.nonempty() ? ready : left.slice(0, 1))) {
+        const parents = n.neighborhood("node").filter(isPlaced);
+        const parent = parents.empty() ? null : parents.min((m) => m.data("depth") ?? 1e9).ele;
+        const pos = (parent && near(parent)) || aside();
+        n.position({ x: pos.x, y: pos.y });
+        n.scratch("_placed", true);
+        put(pos);
+        if (parent) spokesOf(parent).push({ x: pos.x, y: pos.y });
+        added.push(n);
+      }
+      left = left.filter((n) => !isPlaced(n));
+    }
+    const view = cy.extent();
+    if (added.some((n) => { const q = n.position(); return q.x < view.x1 || q.x > view.x2 || q.y < view.y1 || q.y > view.y2; })) {
+      cy.fit(cy.elements().not(".mark-hidden"), 40);
+    }
   }
 
   // ---- machines behind addresses (D27): from the case's DHCP evidence, the machine each host
@@ -436,6 +557,7 @@
   async function requery() {
     const log = queries.slice();
     const keep = cy.nodes().filter((n) => compromised.has(n.id())).map((n) => [n.id(), n.data("anchor")]);
+    const places = new Map(cy.nodes().filter(isPlaced).map((n) => [n.id(), Object.assign({}, n.position())]));
     cy.elements().remove();
     setStatus(`Re-running ${log.length} quer${log.length === 1 ? "y" : "ies"} with ${filters.length} filter(s)…`);
     let skipped = 0;
@@ -450,6 +572,10 @@
     for (const [ip, anchor] of keep) addNode(ip, anchor, {});
     if (filters.length) {
       cy.nodes().filter((n) => n.degree() === 0 && !compromised.has(n.id()) && !n.data("root")).remove();
+    }
+    for (const [ip, pos] of places) {                 // the hosts still on the map keep their places
+      const n = cy.getElementById(ip);
+      if (n.nonempty()) { n.position(pos); setPlaced(n); }
     }
     markEdges();
     relayout();
@@ -758,6 +884,7 @@
 
   $("go").addEventListener("click", start);
   $("fit").addEventListener("click", () => cy.fit(cy.elements().not(".mark-hidden"), 40));
+  $("tidy").addEventListener("click", tidy);
   // Clear resets the protocol preview, nothing else (D18).
   $("clear").addEventListener("click", () => { protocolSelect.value = ""; refreshProtocols(); });
   for (const id of ["ip", "ts", "window", "limit", "range-from", "range-to"]) {
@@ -1517,6 +1644,7 @@
     localMap = what;
     showLocal();
     setMarks(...savedMarks(doc));
+    placeNew(cy.nodes().filter((n) => !isPlaced(n)));   // hosts saved without a place
     restoreView(doc.view || {});
     const root = cy.nodes("[?root]");
     if (root.nonempty()) rememberInUrl(root.id());
@@ -1539,7 +1667,10 @@
     const data = pick(n, NODE_FIELDS);
     const p = n.position || {};
     const node = addNode(n.id, data.anchor || null, data);
-    node.position(Number.isFinite(p.x) && Number.isFinite(p.y) ? { x: p.x, y: p.y } : { x: 0, y: 0 });
+    if (Number.isFinite(p.x) && Number.isFinite(p.y)) {
+      node.position({ x: p.x, y: p.y });
+      setPlaced(node);
+    }
     highlight(node, n.classes);
   }
 

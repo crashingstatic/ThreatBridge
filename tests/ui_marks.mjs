@@ -150,7 +150,7 @@ try {
   assert.ok(!(await page.$eval("#filter", (i) => i.classList.contains("invalid"))));
 
   // A filter re-runs the map's queries: without RDP, the threat line stops at X; B, marked,
-  // stays with no connection; F goes. The map is laid out again (FIL-S7, INT-10).
+  // stays with no connection; F goes. The hosts still on the map keep their places (FIL-S7, INT-10).
   await typeFilter("NOT RDP");
   await waitStatus(/^Re-ran 3 of 3 queries with 1 filter\(s\): 8 host\(s\), 5 connection\(s\)$/);
   assert.equal(await page.inputValue("#filter"), "");

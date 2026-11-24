@@ -281,6 +281,11 @@ escapes what it shows (addresses and notes come from evidence and analysts).
    but hashing gigabytes takes time. Recommended: compute them when the case is built and keep
    them in the case database (existing cases are rebuilt once).
 
+**Decided 2026-11-24.**
+1. Placement: our own code; no new library.
+2. Report format: both, a self-contained HTML file and a Markdown file.
+3. Evidence hashes: computed when the report is made, not when the case is built.
+
 ## 14. Usability fixes
 
 From the review, each reproduced in a browser:
@@ -311,6 +316,13 @@ From the review, each reproduced in a browser:
 **Tests.** In the browser suites, one per fix. How it looks is checked by hand.
 
 **Decisions.** Each proposal above, accept or change.
+
+**Decided 2026-11-24.**
+1. Enter, asking before discarding, restoring after a reload: as proposed.
+2. Confirm *Remove* on a marked host (naming the marked flows that go with it). *Add to shared
+   exclude list* stays as it is.
+3. Keyboard and labels: as proposed.
+4. and 5. The IOC host's shape, labels and timestamps: as proposed.
 
 ## 13. Measure it
 
@@ -354,7 +366,7 @@ From the review, each reproduced in a browser:
 | 6. Formats | decided | done (D6, ING-6 to ING-8) | done | done | green |
 | 2. How they got in | decided | done (D25, D26, ATK-10 to ATK-12) | done | done | green |
 | 5. Machines behind addresses | decided | done (D27, ING-9, ING-10) | done | done | green |
-| 4. Accounts on hops | decided | done (D28, ING-11, ATK-13) | done | done | |
-| 9. Deliverables | | | | | |
-| 14. Usability | | | | | |
+| 4. Accounts on hops | decided | done (D28, ING-11, ATK-13) | done | done | green |
+| 9. Deliverables | decided | | | | |
+| 14. Usability | decided | | | | |
 | 13. Measure it | | | | | |

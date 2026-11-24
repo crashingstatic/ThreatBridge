@@ -552,7 +552,7 @@ generated case) and `ui_mtls.mjs` (the container). *Manual* names the tests abov
 | INT-7 Marked and suspect connections drawn; hidden count | `ui_marks.mjs` (classes, line styles, colours, legend, status), `ui_case.mjs` | VIS-02 step 2, VIS-03 |
 | INT-8 Mark and unmark flows | `ui_marks.mjs`, `ui_actions.mjs` (the single-flow menu) | VIS-03 step 3 |
 | INT-9 Confirmation before replacing the shared marks | `ui_marks.mjs` (Cancel, then OK) | XB-01 step 7b |
-| INT-10 Laid out again after re-querying | `ui_marks.mjs` | |
+| INT-10 Places kept as the map grows or is re-queried; *Tidy* | `ui_actions.mjs` (a dragged host stays, the new host next to its parent, clear of the others; *Tidy*; a saved host without a place), `ui_marks.mjs` (every host its own place after a re-query) | |
 | INT-S2 Save and restore sessions | `test_sessions.py`; `ui_actions.mjs` (shared and as a file; an opened map's own marks), `ui_marks.mjs` (filters, marks and queries saved; version 1 maps; Share), `ui_smoke.mjs` (the URL) | XB-01 (dialogs and files in other browsers), SO-07 (kept across a redeploy) |
 | INT-S3 Export (JSON maps, CSV) | `test_marks.py` (`/api/export`, its limit); `ui_marks.mjs` (two CSV files, quoting, no formulas); `ui_actions.mjs` (map files) | XB-01 step 7b |
 | FIL-1 IP exclude list | `test_api.py`, `test_query.py`; `ui_smoke.mjs`, `ui_actions.mjs` | SO-02 |
