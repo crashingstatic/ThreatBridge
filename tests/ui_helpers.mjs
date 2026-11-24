@@ -56,6 +56,20 @@ async function saveCoverage(page, name) {
 
 // Before loading the page again: coverage of the page loaded so far is lost on navigation,
 // so save it under `name` and start afresh.
+// Do `action`, saying yes to any confirmation it asks (D32: discarding a worked map, unmarking a host).
+export async function accepting(page, action) {
+  const yes = (d) => d.accept().catch(() => {});
+  page.on("dialog", yes);
+  try {
+    return await action();
+  } finally {
+    page.off("dialog", yes);
+  }
+}
+
+// Click Map, saying yes if it asks before discarding the map.
+export const clickMap = (page) => accepting(page, () => page.click("#go"));
+
 export async function checkpoint(page, name) {
   if (!COVERAGE_DIR) return;
   await saveCoverage(page, name);

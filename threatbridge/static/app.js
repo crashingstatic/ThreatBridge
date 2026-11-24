@@ -512,10 +512,17 @@
     return msg;
   }
 
-  // Map: a fresh map, with the shared marks again (D19) and the filters still applied.
+  // Map: a fresh map, with the shared marks again (D19) and the filters still applied. A map
+  // worked on beyond its first expansion (or opened from a file or the saved maps) goes only
+  // once the analyst says so (D32).
   async function start() {
     const ip = $("ip").value.trim();
     if (!ip) { setStatus("Enter an IP address", true); return; }
+    const hosts = cy.nodes().length;
+    if (hosts && (queries.length > 1 || localMap) &&
+        !window.confirm(`Discard this map (${hosts} host${hosts === 1 ? "" : "s"}) and start a new one from ${ip}?`)) {
+      return;
+    }
     cy.elements().remove();
     queries = [];
     if (localMap) leaveLocal();
@@ -535,6 +542,7 @@
     const q = withRange(new URLSearchParams({ ip, ts: iocTime || "", dir: $("direction").value,
                                               window: $("window").value.trim(), order: $("order").value }));
     history.replaceState(null, "", `?${q}`);
+    keepWorking();                             // the working map is kept with the address it has now
   }
 
   async function rootWith(q, say) {
@@ -893,14 +901,20 @@
   $("tidy").addEventListener("click", tidy);
   // Clear resets the protocol preview, nothing else (D18).
   $("clear").addEventListener("click", () => { protocolSelect.value = ""; refreshProtocols(); });
-  for (const id of ["ip", "ts", "window", "limit", "range-from", "range-to"]) {
+  // Enter in the host or its time maps it. In the Window, N or the time range it changes only
+  // what is asked next, and the attack paths, which follow every change (D32).
+  for (const id of ["ip", "ts"]) {
     $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") start(); });
+  }
+  for (const id of ["window", "range-from", "range-to"]) {
+    $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") refreshPaths(true).catch(fail); });
   }
 
   // ---- filters (D17): typed expressions, applied with Enter, each removable -----------------
   const filterInput = $("filter");
 
   function renderFilters() {
+    keepWorking();
     $("filter-list").replaceChildren(...filters.map((f, i) => el("li", {}, el("span", { textContent: f }),
       button("×", () => removeFilter(i), { title: `Remove the filter ${f}` }))));
   }
@@ -1074,6 +1088,7 @@
 
   function setMarks(hosts, flows) {
     marks = { hosts: hosts.map((h) => ({ ip: h.ip, time: h.time, note: h.note || "" })), flows: flows.slice() };
+    keepWorking();
     const rows = markedHosts(marks.hosts, marks.flows);
     compromised = new Map(rows.map((h) => [h.ip, h]));
     markedFlows = new Map(marks.flows.map((f) => [flowKey(f), f]));
@@ -1109,7 +1124,7 @@
       const through = h.count - (h.direct ? 1 : 0);
       return listEntry(`${h.ip} @ ${h.time || "time unknown"}`,
                        through && `${h.direct ? "marked, and " : ""}through ${through} marked flow(s)`,
-                       "Remove", () => unmarkCompromised(h.ip));
+                       "Remove", () => confirmUnmark(h.ip));
     }));
     $("marked-flow-list").replaceChildren(...marks.flows.map((f) => listEntry(
       `${f.src} → ${f.dst} @ ${f.start}`, `${f.proto} ${f.sport} → ${f.dport}`, "Remove", () => unmarkFlow(f))));
@@ -1137,6 +1152,14 @@
                       () => { marks.hosts = marks.hosts.filter((h) => h.ip !== local.ip).concat([local]); });
     refreshDetails(ip);
     setStatus(`Marked ${ip} compromised${time ? " at " + time : " (time unknown)"}`);
+  }
+
+  // The side panel's Remove: asks first, naming the marked flows that go with the host (D32).
+  async function confirmUnmark(ip) {
+    const flows = marks.flows.filter((f) => f.src === ip || f.dst === ip).length;
+    const what = flows ? `${ip} and its ${flows} marked flow${flows === 1 ? "" : "s"}` : ip;
+    if (!window.confirm(`Unmark ${what} ${localMap ? "in this map" : "for everyone"}?`)) return;
+    await unmarkCompromised(ip);
   }
 
   async function unmarkCompromised(ip) {
@@ -1912,7 +1935,7 @@ code { font-size: 12px; } img { max-width: 100%; border: 1px solid #bbb; }
 
   // Open a map document: draw it as saved, with its toolbar, filters and queries, and its own
   // marks, shown until shared (D19).
-  async function openMap(doc, what) {
+  async function openMap(doc, what, restoring) {
     if (!isMap(doc)) throw new Error(`${what} is not a ThreatBridge map`);
     cy.elements().remove();
     const settings = doc.settings || {};
@@ -1922,16 +1945,43 @@ code { font-size: 12px; } img { max-width: 100%; border: 1px solid #bbb; }
     filters = doc.version !== 1 && Array.isArray(doc.filters) ? doc.filters.filter(isText).slice(0, maxFilters()) : [];
     renderFilters();
     queries = savedQueries(doc);
-    localMap = what;
-    showLocal();
-    setMarks(...savedMarks(doc));
+    if (!restoring || restoring.local) {       // a restored map shows the shared marks, unless it had its own
+      localMap = restoring ? restoring.local : what;
+      showLocal();
+      setMarks(...savedMarks(doc));
+    }
     placeNew(cy.nodes().filter((n) => !isPlaced(n)));   // hosts saved without a place
     restoreView(doc.view || {});
     const root = cy.nodes("[?root]");
-    if (root.nonempty()) rememberInUrl(root.id());
+    if (root.nonempty() && !restoring) rememberInUrl(root.id());
     await refreshPaths(true);
     await refreshHiding();
-    setStatus(`Opened ${what}: ${cy.nodes().length} host(s), ${cy.edges().length} connection(s)`);
+    await loadFlagged();
+    setStatus(`${restoring ? "Restored the map" : `Opened ${what}`}: ${cy.nodes().length} host(s), ` +
+              `${cy.edges().length} connection(s)`);
+  }
+
+  // ---- the working map, kept for a reload (D32): in this tab's session storage, with the
+  // page's address. Reloading the same address restores it; another address starts afresh.
+  const WORKING = "threatbridge-working-map";
+  let keepTimer = null;
+  function keepWorking() {
+    clearTimeout(keepTimer);
+    keepTimer = setTimeout(() => {
+      try {
+        if (cy.nodes().empty()) sessionStorage.removeItem(WORKING);
+        else sessionStorage.setItem(WORKING, JSON.stringify({ url: location.search, local: localMap, map: mapDocument() }));
+      } catch (_) { /* storage full or blocked: a reload starts afresh */ }
+    }, 300);
+  }
+  cy.on("add remove position viewport", keepWorking);
+
+  async function restoreWorking() {
+    let saved = null;
+    try { saved = JSON.parse(sessionStorage.getItem(WORKING) || "null"); } catch (_) { return false; }
+    if (!saved || !location.search || saved.url !== location.search || !isMap(saved.map)) return false;
+    await openMap(saved.map, "the working map", { local: isText(saved.local) ? saved.local : null });
+    return true;
   }
 
   // A saved map's hosts, where they were, and its connections, with their highlights; what
@@ -2073,7 +2123,7 @@ code { font-size: 12px; } img { max-width: 100%; border: 1px solid #bbb; }
     try { showShared(await getJSON("/api/compromised"), true); } catch (_) { /* none */ }
     setInterval(pollMarks, (cfg.marks_poll || 5) * 1000);
     getJSON("/api/sessions").then((r) => renderSessions(r.sessions)).catch(() => {});
-    openLinked();
+    if (!(await restoreWorking().catch((e) => { fail(e); return false; }))) openLinked();
   })();
 
   function applyConfig(config) {

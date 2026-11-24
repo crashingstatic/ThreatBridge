@@ -10,7 +10,7 @@
 //   TB_URL=http://127.0.0.1:5056 node tests/ui_actions.mjs [screenshot-dir]
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { checkpoint, finish, keepMap, launch } from "./ui_helpers.mjs";
+import { accepting, checkpoint, clickMap, finish, keepMap, launch } from "./ui_helpers.mjs";
 
 const BASE = process.env.TB_URL || "http://127.0.0.1:5056";
 const SHOTS = process.argv[2];
@@ -37,7 +37,7 @@ const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const map = async (ip, direction = "in") => {
   await page.fill("#ip", ip);
   await page.selectOption("#direction", direction);
-  await page.click("#go");
+  await clickMap(page);
   await waitStatus(new RegExp(`^${esc(ip)}: showing`));
 };
 const rows = () => page.$$eval("#detail-body dl > *", (l) => l.map((x) => x.textContent));
@@ -92,7 +92,7 @@ try {
 
   // 2. Errors reach the status line, marked as errors.
   await page.fill("#ip", "not-an-ip");
-  await page.click("#go");
+  await clickMap(page);
   await waitStatus(/invalid IP address/);
   assert.equal(await status(), "invalid IP address: 'not-an-ip'");
   assert.ok(await statusIs("error"));
@@ -318,9 +318,9 @@ try {
   }));
   await page.fill("#ip", "10.0.2.1");
   await page.selectOption("#direction", "out");
-  await page.click("#go");                                   // its paths are held back
+  await clickMap(page);                                   // its paths are held back
   await holding;
-  await page.click("#go");                                   // its paths are answered
+  await clickMap(page);                                   // its paths are answered
   await page.waitForFunction(() => window.threatbridge.cy.edges(".attack").nonempty());
   await held.fulfill({ json: { pairs: [] } });
   await page.waitForTimeout(300);
@@ -333,7 +333,7 @@ try {
   await waitStatus(/^Excluded 10\.0\.2\.0\/24 for everyone; re-expand hosts to apply CIDRs$/);
   await page.waitForSelector("#path-list li.hint >> text=No time-consistent path between the marked hosts.");
   assert.ok((await ids()).includes("10.0.2.10"), "still on the map");
-  await page.click("#go");
+  await clickMap(page);
   await waitStatus(/^10\.0\.2\.1: showing top 0 of 0 distinct peer/);
   assert.ok(!(await ids()).includes("10.0.2.10"), "gone once expanded again");
   await page.click("#exclude-list li:has-text('10.0.2.0/24') button");
@@ -346,7 +346,7 @@ try {
   assert.ok(await statusIs("warn"));
   await shot("show-all");
   for (const ip of ["10.0.2.1", "10.0.2.2"]) {
-    await page.click(`#compromised-list li:has-text('${ip}') button`);
+    await accepting(page, () => page.click(`#compromised-list li:has-text('${ip}') button`));
   }
   await page.waitForSelector("#compromised-list li", { state: "detached" });
   await clearRouteFields();
@@ -424,7 +424,7 @@ try {
   await page.fill("#range-from", "2024-05-01T12:00:00Z");
   await page.fill("#ts", "2024-05-01T11:00:00Z");
   await page.fill("#ip", "10.0.0.9");
-  await page.click("#go");
+  await clickMap(page);
   await waitStatus(/^10\.0\.0\.9: showing top 0 of 0 distinct peer\(s\) — the window is outside the time range$/);
   assert.deepEqual(Object.fromEntries(new URL(page.url()).searchParams), {
     ip: "10.0.0.9", ts: "2024-05-01T11:00:00.000Z", dir: "in", window: "24h", order: "top",
@@ -626,15 +626,15 @@ try {
   assert.ok(pathsDoc.edges.some((e) => e.classes.includes("attack")));
   assert.deepEqual(pathsDoc.marks.hosts.map((h) => [h.ip, h.time]),
                    [["203.0.113.66", null], ["10.0.0.20", "2024-05-01T12:20:00.000Z"]]);
-  await page.click("#compromised-list li:has-text('203.0.113.66') button");
+  await accepting(page, () => page.click("#compromised-list li:has-text('203.0.113.66') button"));
   await page.waitForSelector("#path-list li.hint >> text=Mark at least two hosts as compromised.");
   assert.ok(!(await attackDrawn()));
   await openFile("with-paths.json", pathsDoc);              // its marks, so its paths, come back
   await waitStatus(/^Opened with-paths\.json: /);
   await page.waitForFunction(() => window.threatbridge.cy.edges(".attack").nonempty());
   assert.equal(await page.locator("#compromised-list li").count(), 2);
-  await page.click("#compromised-list li:has-text('10.0.0.20') button");
-  await page.click("#compromised-list li:has-text('203.0.113.66') button");
+  await accepting(page, () => page.click("#compromised-list li:has-text('10.0.0.20') button"));
+  await accepting(page, () => page.click("#compromised-list li:has-text('203.0.113.66') button"));
   await page.waitForSelector("#compromised-list li", { state: "detached" });
   // Names and hosts from saved maps and files are shown as text, never run as HTML.
   const markup = '<img src=x onerror="window.injected=1">';
@@ -752,6 +752,32 @@ try {
   await page.click("#tidy");
   const rowsY = await Promise.all(["10.0.0.9", "10.0.0.5", "10.0.0.77", "203.0.113.66"].map(async (ip) => (await place(ip)).y));
   assert.ok(rowsY[0] < rowsY[1] && rowsY[1] === rowsY[2] && rowsY[2] < rowsY[3], `a tree again: ${JSON.stringify(rowsY)}`);
+
+  // 13c. Enter in the Window changes only what is asked next: the map stays. Map asks before
+  // discarding a map worked on, and Cancel keeps it. A reload restores the working map as it
+  // was, hosts in their places (D32).
+  const worked = await ids();
+  await page.fill("#window", "2h");
+  await page.press("#window", "Enter");
+  await sleep(300);
+  assert.deepEqual(await ids(), worked);
+  await page.fill("#window", "24h");
+  let discardAsked = null;
+  page.once("dialog", (d) => { discardAsked = d.message(); d.dismiss(); });
+  await page.click("#go");
+  assert.equal(discardAsked, "Discard this map (4 hosts) and start a new one from 10.0.0.9?");
+  assert.deepEqual(await ids(), worked);
+  const placesNow = () => cyEval(() => Object.fromEntries(window.threatbridge.cy.nodes().map((n) => [n.id(), n.position()])));
+  const beforeReload = await placesNow();
+  await sleep(400);                                // the working map is kept 300 ms after the last change
+  await page.reload();
+  await waitStatus(/^Restored the map: 4 host\(s\), 3 connection\(s\)$/);
+  assert.deepEqual(await placesNow(), beforeReload);
+  // The bare address starts afresh.
+  await page.goto(BASE);
+  await page.waitForFunction(() => window.threatbridge && window.threatbridge.cy);
+  await sleep(300);
+  assert.deepEqual(await ids(), []);
 
   assert.deepEqual(errors, [], "browser console errors");
   console.log("UI actions test passed");

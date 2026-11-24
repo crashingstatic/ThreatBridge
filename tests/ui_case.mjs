@@ -3,7 +3,7 @@
 //   python tests/make_case.py DIR && python -m threatbridge --case DIR --port 5056
 //   TB_URL=http://127.0.0.1:5056 node tests/ui_case.mjs [screenshot-dir]
 import assert from "node:assert/strict";
-import { finish, launch } from "./ui_helpers.mjs";
+import { accepting, clickMap, finish, launch } from "./ui_helpers.mjs";
 
 const BASE = process.env.TB_URL || "http://127.0.0.1:5056";
 const SHOTS = process.argv[2];
@@ -44,7 +44,7 @@ const findRoutes = async (src, srcTime, dst, dstTime) => {
     .includes(` from ${s} to ${d}.`), [src, dst]);
 };
 const remap = async () => {          // Map again; its attack paths are recomputed too
-  await page.click("#go");
+  await clickMap(page);
   await waitStatus(/^10\.0\.0\.9: showing/);
 };
 const TWO_PATHS = [
@@ -246,7 +246,7 @@ try {
   await page.waitForFunction(() => document.querySelectorAll("#path-list li.path").length === 2);
 
   // Unmarking recomputes: no path left.
-  await page.locator("#compromised-list li", { hasText: "10.0.0.20" }).locator("button").click();
+  await accepting(page, () => page.locator("#compromised-list li", { hasText: "10.0.0.20" }).locator("button").click());
   await page.waitForFunction(() => !document.querySelector("#path-list li.path"));
   assert.equal(await cyEval(() => window.threatbridge.cy.edges(".attack").length), 0);
 
@@ -304,7 +304,7 @@ try {
 
   // A time range limits the map: from 12:20 only the later inbound connection is left.
   await page.fill("#range-from", "2024-05-01T12:20:00Z");
-  await page.press("#range-from", "Enter");
+  await clickMap(page);
   await page.waitForFunction(() => /showing top/.test(document.getElementById("status").textContent));
   assert.match(await page.textContent("#status"),
     /^10\.0\.0\.9: showing top 1 of 1 distinct peer\(s\), 2024-05-01T12:20:00\.000Z → /);
@@ -320,7 +320,7 @@ try {
   await page.fill("#ip", "10.0.0.20");
   await page.fill("#ts", "2024-05-01T12:17:00Z");
   await page.selectOption("#direction", "in");
-  await page.click("#go");
+  await clickMap(page);
   await waitStatus(/^10\.0\.0\.20: showing top 1 of 1 distinct peer\(s\)/);
   const anchorOf = (id) => cyEval((i) => window.threatbridge.cy.getElementById(i).data("anchor"), id);
   for (const [item, edge, peer, anchor, span] of [

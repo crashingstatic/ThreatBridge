@@ -4,7 +4,7 @@
 //   TB_URL=http://127.0.0.1:5055 node tests/ui_smoke.mjs [screenshot-dir]
 // Needs the `playwright` npm package (see ui_helpers.mjs).
 import assert from "node:assert/strict";
-import { checkpoint, finish, launch } from "./ui_helpers.mjs";
+import { accepting, checkpoint, clickMap, finish, launch } from "./ui_helpers.mjs";
 
 const BASE = process.env.TB_URL || "http://127.0.0.1:5055";
 const SHOTS = process.argv[2];
@@ -70,7 +70,7 @@ try {
   assert.ok(await page.locator("#paths").isHidden());
   assert.ok(await page.locator("#routes").isHidden());
   await page.unroute("**/api/config");
-  await page.click("#go");
+  await clickMap(page);
   await waitStatus(/^Enter an IP address$/);
   assert.ok(await statusIs("error"));
   await checkpoint(page, "smoke-0");
@@ -195,13 +195,13 @@ try {
   await waitStatus(new RegExp(`^Marked ${esc(victim.id)} compromised at ${esc(victimAnchor)}$`));
   assert.equal(await detail("Compromised"), victimAnchor);
   assert.equal(await page.textContent("#compromised-list li span"), `${victim.id} @ ${victimAnchor}`);
-  await page.click("#compromised-list li button");
+  await accepting(page, () => page.click("#compromised-list li button"));
   await waitStatus(new RegExp(`^Unmarked ${esc(victim.id)}$`));
   await page.waitForSelector("#compromised-list li", { state: "detached" });
 
   // 5. A time range narrows the next map.
   await page.fill("#range-from", "2024-05-01T11:00:00Z");
-  await page.press("#range-from", "Enter");
+  await clickMap(page);
   await page.waitForFunction(() => document.getElementById("status").textContent
     .includes("2024-05-01T11:00:00.000Z → 2024-05-01T12:00:00.000Z"));
 
@@ -216,11 +216,11 @@ try {
     "10.0.0.5: showing rarest 5 of 5 distinct peer(s), 2024-04-29T12:00:00.000Z → 2024-05-01T11:00:00.000Z");
   const counts = () => page.evaluate(() => window.threatbridge.cy.edges().map((e) => e.data("count")).sort());
   await page.fill("#limit", "2");
-  await page.click("#go");
+  await clickMap(page);
   await waitStatus(/^10\.0\.0\.5: showing rarest 2 of 5 distinct peer/);
   assert.deepEqual(await counts(), [1, 1]);
   await page.selectOption("#order", "top");
-  await page.click("#go");
+  await clickMap(page);
   await waitStatus(/^10\.0\.0\.5: showing top 2 of 5 distinct peer/);
   assert.deepEqual(await counts(), [2, 2]);
   assert.deepEqual(Object.fromEntries(new URL(page.url()).searchParams), {
@@ -236,7 +236,7 @@ try {
     const r = await route.fetch();
     await route.fulfill({ response: r, json: Object.assign(await r.json(), { distinct_peers: null, truncated: true }) });
   });
-  await page.click("#go");
+  await clickMap(page);
   await waitStatus(/WARNING/);
   assert.equal(await status(), "10.0.0.5: showing top 5, 2024-04-30T12:00:00.000Z → 2024-05-01T12:00:00.000Z" +
                                " — WARNING: scan hit the peer cap; rarest list may be incomplete");
@@ -244,7 +244,7 @@ try {
   await page.unroute("**/api/neighbors?*");
   await page.route("**/api/neighbors?*", (route) => route.fulfill(
     { status: 502, contentType: "text/html", body: "<html><body>Bad gateway</body></html>" }));
-  await page.click("#go");
+  await clickMap(page);
   await waitStatus(/^HTTP 502$/);
   assert.ok(await statusIs("error"));
   await page.unroute("**/api/neighbors?*");
@@ -260,13 +260,13 @@ try {
     await route.continue().catch(() => {});
   });
   await slowNeighbors(400);
-  await page.click("#go");
+  await clickMap(page);
   await waitStatus(/^Querying inbound \(past\) for 10\.0\.0\.5…$/);
   await waitStatus(/^10\.0\.0\.5: showing top/);
   assert.equal(await page.evaluate(() => window.busySeen), false);
   await page.unroute("**/api/neighbors?*");
   await slowNeighbors(1800);
-  await page.click("#go");
+  await clickMap(page);
   await page.waitForFunction(() => !document.getElementById("busy").hidden &&
     document.getElementById("busy-text").textContent === "Working… 1 s");
   await waitStatus(/^10\.0\.0\.5: showing top/);

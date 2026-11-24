@@ -6,7 +6,7 @@
 //   TB_URL=http://127.0.0.1:5056 node tests/ui_marks.mjs [screenshot-dir]
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { finish, keepMap, launch } from "./ui_helpers.mjs";
+import { accepting, clickMap, finish, keepMap, launch } from "./ui_helpers.mjs";
 
 const BASE = process.env.TB_URL || "http://127.0.0.1:5056";
 const SHOTS = process.argv[2];
@@ -57,7 +57,7 @@ try {
   await page.fill("#ts", "2024-05-01T12:00:00Z");
   await page.selectOption("#direction", "out");
   await page.fill("#window", "1h");
-  await page.click("#go");
+  await clickMap(page);
   await waitStatus(/^10\.9\.0\.2: showing top 2 of 2 distinct peer/);
   let p = await at(edge(A, X), "edge");
   await page.mouse.click(p.x, p.y);
@@ -285,7 +285,7 @@ try {
   await page.click("#compromised-form button");
   await other.waitForSelector(`#compromised-list li >> text=${C} @ time unknown`, { timeout: 8000 });
   assert.equal(await hiddenNote(), "1 connection(s) hidden by marks");          // X -> C is on C's line
-  await other.click(`#compromised-list li:has-text('${C}') button`);
+  await accepting(other, () => other.click(`#compromised-list li:has-text('${C}') button`));
   await page.waitForFunction(() => document.getElementById("hidden-note").textContent === "2 connection(s) hidden by marks",
                              null, { timeout: 8000 });
   assert.deepEqual(await listed("#compromised-list li"), [[`${B} @ time unknown`, "Remove"]]);
@@ -331,7 +331,7 @@ try {
   await page.click("#session-list .session >> text=story");
   await waitStatus(/^Opened "story"/);
   assert.ok(await page.locator("#local-marks").isVisible());
-  await page.click("#go");
+  await clickMap(page);
   await waitStatus(/^10\.9\.0\.2: showing/);
   assert.ok(await page.locator("#local-marks").isHidden());
   assert.deepEqual((await listed("#compromised-list li")).map((r) => r[0]).sort(),
@@ -357,7 +357,7 @@ try {
   await typeFilter("SMB");
   await waitStatus(/^Re-ran 5 of 5 queries with 1 filter\(s\): 3 host\(s\), 1 connection\(s\)$/);
   assert.deepEqual(await nodeIds(), [A, X, Y]);          // Y, marked, stays with no connection
-  await page.click(`#compromised-list li:has-text('${Y}') button`);
+  await accepting(page, () => page.click(`#compromised-list li:has-text('${Y}') button`));
   await page.waitForFunction(() => window.threatbridge.cy.nodes().length === 2);   // then it goes (C2)
   await menu(edge(A, X), "Mark compromised", "edge");
   await page.waitForSelector(`#marked-flow-list li >> text=${A} → ${X} @ ${T1}`);
@@ -370,6 +370,13 @@ try {
   await page.waitForSelector("#marked-flow-list li", { state: "detached" });
   await menu(edge(A, X), "Mark compromised", "edge");
   await page.waitForSelector("#marked-flow-list li");
+  // Remove on a marked host asks first, naming the marked flows that go with it (D32); Cancel
+  // keeps both.
+  let unmarkAsked = null;
+  page.once("dialog", (d) => { unmarkAsked = d.message(); d.dismiss(); });
+  await page.click(`#compromised-list li:has-text('${X}') button`);
+  assert.equal(unmarkAsked, `Unmark ${X} and its 1 marked flow in this map?`);
+  assert.equal(await page.locator("#marked-flow-list li").count(), 1);
   const [v2File] = await Promise.all([page.waitForEvent("download"), page.click("#session-download")]);
   const v2 = JSON.parse(await readFile(await v2File.path(), "utf8"));
   keepMap("marked-flow", v2);
@@ -391,11 +398,11 @@ try {
   assert.deepEqual(await listed("#filter-list li"), [["SMB", "×"]]);
   await page.click("#filter-list li button");
   await waitStatus(/^Re-ran 6 of 6 queries/);             // a query it doesn't know does nothing
-  await page.click("#go");
+  await clickMap(page);
   await waitStatus(/^10\.9\.0\.2: showing/);
 
   // Clean up for the next test on this server.
-  for (const ip of [B, Y]) await page.click(`#compromised-list li:has-text('${ip}') button`);
+  for (const ip of [B, Y]) await accepting(page, () => page.click(`#compromised-list li:has-text('${ip}') button`));
   await page.waitForSelector("#compromised-list li", { state: "detached" });
   page.once("dialog", (d) => d.accept());
   await page.click("#session-list li:has-text('story') button");
