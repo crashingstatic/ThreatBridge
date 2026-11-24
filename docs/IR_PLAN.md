@@ -380,4 +380,4 @@ report (a PDF), and its flows are Zeek logs, which the case backend doesn't read
 | 4. Accounts on hops | decided | done (D28, ING-11, ATK-13) | done | done | green |
 | 9. Deliverables | decided | done (D29 to D31, INT-10, INT-11, ATK-14) | done | done | green |
 | 14. Usability | decided | done (D32 to D34, INT-12 to INT-14, GRA-5) | done | done | green |
-| 13. Measure it | decided | done (D35, EVA-1, EVA-2) | done | done | |
+| 13. Measure it | decided | done (D35, EVA-1, EVA-2) | done | done | green |
