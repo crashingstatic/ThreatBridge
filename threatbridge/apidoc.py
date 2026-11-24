@@ -87,6 +87,7 @@ class Limits(Shape):
     map_bytes: int = Field(description="bytes in a saved map")
     map_name: int = Field(description="characters in a saved map's name")
     contacts: int = Field(description="inside hosts /api/contacts lists")
+    flagged: int = Field(description="beacons, and host pairs with long flows, /api/flagged lists at most")
 
 
 class FilterField(Shape):
@@ -123,6 +124,7 @@ class FilterVocabulary(Shape):
     operators: FilterOperators
     protocols: list[str] = Field(description=(
         "the protocol names, as the map shows them; any other Zeek service in capitals works too"))
+    flags: dict[str, str] = Field(description="the words that stand for a setting's test, each with what it tests")
     grammar: str = Field(description="the grammar, in EBNF")
 
 
@@ -166,6 +168,10 @@ class Config(Shape):
     pcap_download: bool = Field(description="whether POST /api/pcap is available")
     internal_nets: list[str] = Field(description="the client's own networks: inside hosts (TB_INTERNAL_NETS)")
     contacts: bool = Field(description="whether /api/contacts is available (case backend)")
+    flagged: bool = Field(description="whether /api/flagged is available (case backend)")
+    beacon_score: float = Field(description="the score from which a scored group is a beacon (TB_BEACON_SCORE)")
+    beacon_min: int = Field(description="the flows a beacon needs at least (TB_BEACON_MIN)")
+    long_connection: float = Field(description="seconds from which a flow is long (TB_LONG_CONNECTION)")
     case: Optional[CaseSummary] = Field(description="the case backend's evidence; otherwise null")
 
 
@@ -198,6 +204,50 @@ class Peer(Shape):
     last_seen: Optional[Time]
     ports: Ports
     protocols: Protocols
+
+
+class Beacon(Shape):
+    src: str
+    dst: str
+    dport: Optional[int]
+    proto: str
+    flows: int
+    first_seen: Time
+    last_seen: Time
+    interval: float = Field(description="the median seconds between the flows' starts")
+    jitter: float = Field(description="the median absolute deviation of those intervals, as a share of interval")
+    size_jitter: float = Field(description="the same for the flows' bytes, as a share of their median")
+    score: float = Field(description="0 to 1: how regular the intervals and sizes are")
+
+
+class LongPair(Shape):
+    src: str
+    dst: str
+    flows: int = Field(description="its long flows")
+    longest: float = Field(description="seconds")
+    first_seen: Time = Field(description="the first long flow's start")
+    last_seen: Time = Field(description="the last long flow's start")
+
+
+class Flagged(Shape):
+    model_config = example({
+        "start": None, "end": None, "beacon_score": 0.8, "beacon_min": 10, "long_connection": 3600.0,
+        "beacons": [{"src": "10.8.0.5", "dst": "198.51.100.9", "dport": 443, "proto": "tcp", "flows": 30,
+                     "first_seen": "2024-05-01T13:23:20.000Z", "last_seen": "2024-05-01T13:52:21.000Z",
+                     "interval": 60.012, "jitter": 0.0512, "size_jitter": 0.0, "score": 0.9462}],
+        "long": [{"src": "10.8.0.6", "dst": "198.51.100.10", "flows": 1, "longest": 7250.0,
+                  "first_seen": "2024-05-01T13:40:00.000Z", "last_seen": "2024-05-01T13:40:00.000Z"}],
+        "truncated": False})
+    start: Optional[Time] = Field(description="the time range; null: open")
+    end: Optional[Time]
+    beacon_score: float
+    beacon_min: int
+    long_connection: float = Field(description="seconds")
+    beacons: list[Beacon] = Field(description=(
+        "beacons active in the time range, best first; scored on all the case's flows, so filters don't change them"))
+    long: list[LongPair] = Field(description="host pairs with long flows that started in the time range and pass the "
+                                             "filters, the longest first")
+    truncated: bool = Field(description="whether either list stops at limit")
 
 
 class Neighbors(Shape):
@@ -709,6 +759,13 @@ class ContactsQuery(BaseModel):
     filter: Filter = None
 
 
+class FlaggedQuery(BaseModel):
+    limit: int = Field(None, description="the most of each list, 1 to limits.flagged; default 100")
+    range_from: RangeFrom = None
+    range_to: RangeTo = None
+    filter: Filter = None
+
+
 class FilterQuery(BaseModel):
     filter: str = Field(description="the expression")
 
@@ -796,6 +853,11 @@ ENDPOINTS = {
             "Every inside host (internal_nets) that exchanged flows with the target in either direction, in the "
             "time range (the whole case without one), with its flows passing the filters. Hosts on the exclude "
             "list, and the target's own addresses, are left out. Case backend only.")),
+    "api_flagged": Endpoint(
+        "Beacons and long connections (ATK-12)", Flagged, FlaggedQuery, errors=(400, 500, 501), description=(
+            "Beacons: a source, destination, port and protocol whose flows score at least beacon_score over at "
+            "least beacon_min flows, active in the time range. Long connections: host pairs with flows lasting "
+            "long_connection or more. Hosts on the exclude list are left out. Case backend only.")),
     "api_neighbors": Endpoint(
         "One hop: who connected to a host, or who it connected to, before or after the anchor", Neighbors,
         NeighborsQuery, errors=(400, 500, 502), description=(

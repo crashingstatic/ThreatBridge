@@ -290,6 +290,31 @@ try {
   await page.click("#contact-form button");
   await waitStatus(/^nothing\.example: no inside host talked to it \(no address for it in the capture's DNS answers\)$/);
 
+  // Beacons and long connections (ATK-12): listed, added from the list, marked halfway along the
+  // connection, and described in its details.
+  const entries = (id) => page.$$eval(`#${id} li`, (l) => l.map((x) => x.innerText.split("\n")));
+  // The 120 connections ten seconds apart are a beacon too, and a more regular one: first.
+  const beacons = await entries("beacon-list");
+  assert.deepEqual(beacons.map((e) => e[0]), ["10.0.1.1 → 10.0.1.2", "10.8.0.5 → 198.51.100.9"]);
+  assert.equal(beacons[0][1], "every 10 s (±0%) to 8443/tcp, 120 flows, score 1.00");
+  assert.match(beacons[1][1], /^every (5[4-9]|6[0-6]) s \(±\d+%\) to 443\/tcp, 30 flows, score 0\.9\d$/);
+  assert.deepEqual(await entries("long-list"), [["10.8.0.6 → 198.51.100.10", "1 long flow(s), the longest 2 h", "Add"]]);
+  await page.locator("#beacon-list li", { hasText: "10.8.0.5" }).locator("button").click();
+  await waitStatus(/^Added 10\.8\.0\.5 → 198\.51\.100\.9$/);
+  await page.locator("#long-list li button").click();
+  await waitStatus(/^Added 10\.8\.0\.6 → 198\.51\.100\.10$/);
+  const marker = (id) => cyEval((i) => window.threatbridge.cy.getElementById(i).style("mid-target-arrow-shape"), id);
+  assert.equal(await marker("10.8.0.5->198.51.100.9"), "diamond");
+  assert.equal(await marker("10.8.0.6->198.51.100.10"), "square");
+  assert.equal(await marker("10.0.0.20->10.0.0.30"), "none");
+  const b = await at("edge#10\\.8\\.0\\.5-\\>198\\.51\\.100\\.9", "edge");
+  await page.mouse.click(b.x, b.y);
+  await page.waitForFunction(() => [...document.querySelectorAll("#detail-body dt")].some((d) => d.textContent === "Beacon"));
+  assert.match(await page.$eval("#detail-body", (d) => {
+    const dt = [...d.querySelectorAll("dt")].find((x) => x.textContent === "Beacon");
+    return dt.nextElementSibling.textContent;
+  }), /^every (5[4-9]|6[0-6]) s \(±\d+%\) to 443\/tcp, 30 flows, score 0\.9\d$/);
+
   assert.deepEqual(errors, [], "browser console errors");
   console.log("Case-mode UI test passed");
 } finally {

@@ -8,23 +8,27 @@ import json
 import sqlite3
 import threading
 
+from . import beacons
 from .filters import in_network
 from .model import Flow
 from .progress import QUIET, counted
 
-VERSION = "8"   # changes when flows are read differently, so older stores are rebuilt
+VERSION = "9"   # changes when flows are read or scored differently, so older stores are rebuilt
 _SCHEMA = """
 CREATE TABLE flow (src TEXT, dst TEXT, sport INTEGER, dport INTEGER, proto TEXT,
                    start_ts REAL, end_ts REAL, packets INTEGER, bytes INTEGER, source TEXT,
                    service TEXT);
 CREATE TABLE dns (name TEXT, ip TEXT, first_ts REAL, last_ts REAL);
+CREATE TABLE beacon (src TEXT, dst TEXT, dport INTEGER, proto TEXT, connections INTEGER, first_ts REAL,
+                     last_ts REAL, interval REAL, jitter REAL, size_jitter REAL, score REAL);
 CREATE TABLE evidence (path TEXT, size INTEGER, mtime_ns INTEGER);
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
 """
 _INDEXES = """
 CREATE INDEX flow_pair ON flow (src, dst, start_ts);
 """
-_TABLES = {"flow", "dns", "evidence", "meta"}
+_BEACON_INDEX = "CREATE INDEX beacon_group ON beacon (src, dst, dport, proto);"
+_TABLES = {"flow", "dns", "beacon", "evidence", "meta"}
 _FAR = 1e18  # seconds
 _DROP = "".join(f"DROP TABLE IF EXISTS {t};" for t in sorted(_TABLES))
 _COLUMNS = "f.src, f.dst, f.sport, f.dport, f.proto, f.start_ts, f.end_ts, f.packets, f.bytes, f.source, f.service"
@@ -113,6 +117,14 @@ class FlowStore:
             db.executemany("INSERT INTO evidence VALUES (?,?,?)", evidence)
         with progress.stage("Indexing the flows"):
             db.executescript(_INDEXES)
+        with db, progress.stage("Scoring beacons", len(flows)) as stage:
+            rows = db.execute("SELECT src, dst, dport, proto, start_ts, bytes FROM flow "
+                              "ORDER BY src, dst, dport, proto, start_ts")
+            db.executemany("INSERT INTO beacon VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                           ((src, dst, dport, proto, n, first, last, s["interval"], s["jitter"], s["size_jitter"],
+                             s["score"]) for src, dst, dport, proto, n, first, last, s
+                            in beacons.groups(counted(rows, stage))))
+            db.execute(_BEACON_INDEX)
         with db:   # last: a build that stopped before here is never reused
             db.execute("INSERT INTO meta VALUES ('version', ?)", (VERSION,))
 
@@ -133,6 +145,25 @@ class FlowStore:
         sql, params = _where(where)
         query = f"SELECT f.src, f.dst, f.start_ts FROM flow AS f WHERE {sql}"   # nosec B608 (_where)
         return self._db().execute(query, params)
+
+    def beacons(self, lo, hi, min_connections, min_score, limit):
+        """The scored groups (beacons.py) with at least `min_connections` flows and a score of at
+        least `min_score`, active within [lo, hi], best first: (src, dst, dport, proto, flows,
+        first start, last start, interval, jitter, size jitter, score)."""
+        return self._db().execute(
+            "SELECT src, dst, dport, proto, connections, first_ts, last_ts, interval, jitter, size_jitter, score "
+            "FROM beacon WHERE connections >= ? AND score >= ? AND last_ts >= ? AND first_ts <= ? "
+            "ORDER BY score DESC, connections DESC, src, dst, dport LIMIT ?",
+            (min_connections, min_score, max(lo, -_FAR), min(hi, _FAR), limit)).fetchall()
+
+    def long_connections(self, seconds, lo, hi, where, limit):
+        """Host pairs with flows lasting at least `seconds` that started within [lo, hi] and pass
+        `where`, the longest first: (src, dst, such flows, longest, first start, last start)."""
+        sql, params = _where(where)
+        query = ("SELECT f.src, f.dst, count(*), max(f.end_ts - f.start_ts), min(f.start_ts), max(f.start_ts) "  # nosec B608 (_where)
+                 f"FROM flow AS f WHERE f.end_ts - f.start_ts >= ? AND f.start_ts BETWEEN ? AND ? AND ({sql}) "
+                 "GROUP BY f.src, f.dst ORDER BY max(f.end_ts - f.start_ts) DESC, f.src, f.dst LIMIT ?")
+        return self._db().execute(query, (seconds, max(lo, -_FAR), min(hi, _FAR), *params, limit)).fetchall()
 
     def dns(self):
         out = {}

@@ -14,6 +14,10 @@ what a schema can't say.
 
 ## Changes
 
+- **Beacons and long connections (ATK-12).** `GET`/`POST /api/flagged` lists them. Filters take
+  two more words, `beacon` and `long` (`filter.flags` in `GET /api/config`). `GET /api/config`
+  has `flagged`, `beacon_score`, `beacon_min`, `long_connection` and `limits.flagged`. Additions,
+  so `api_version` stays 1.
 - **Who talked to it (ATK-11).** `GET`/`POST /api/contacts`: the inside hosts that exchanged flows
   with an address, a network or a domain name. `GET /api/config` has `internal_nets` (the inside
   networks), `contacts` (whether the endpoint is available) and `limits.contacts`. Additions, so
@@ -96,6 +100,7 @@ Mapping connections:
 |---|---|---|
 | `/api/resolve` | GET | Check an IP and settle the anchor time a map starts from |
 | `/api/neighbors` | GET, POST | One hop: who connected to a host, or who it connected to, before or after the anchor |
+| `/api/flagged` | GET, POST | Beacons and long connections (case backend) |
 | `/api/contacts` | GET, POST | The inside hosts that talked to an address, a network or a domain name (case backend) |
 | `/api/flows` | GET, POST | One page of a connection's flows, oldest first |
 | `/api/edge` | GET, POST | One connection, as it would be drawn |
@@ -139,7 +144,8 @@ expression  = disjunction ;
 disjunction = conjunction , { ( "OR" | "||" ) , conjunction } ;
 conjunction = negation , { ( "AND" | "&&" ) , negation } ;
 negation    = ( "NOT" | "!" ) , negation | term ;
-term        = "(" , disjunction , ")" | comparison | protocol ;
+term        = "(" , disjunction , ")" | comparison | flag | protocol ;
+flag        = "beacon" | "long" ;
 comparison  = field , [ "==" | "!=" | "<" | ">" | "<=" | ">=" ] , value ;   (* none: == *)
 value       = number | number , "-" , number | address | transport | time ;
 protocol    = a name in "protocols", or another Zeek service in capitals ;

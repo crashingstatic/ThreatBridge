@@ -93,6 +93,12 @@ class Config:
     threat_max_hosts: int = 300
     max_paths: int = 500
 
+    # Beacons (beacons.py): a scored group counts with at least beacon_min flows and a score of
+    # at least beacon_score (0 to 1). A flow lasting long_connection or more is long.
+    beacon_score: float = 0.8
+    beacon_min: int = 10
+    long_connection: str = "1h"
+
     # The client's own networks: "inside" hosts, e.g. those listed as having talked to an
     # outside address. Default: the private, shared and link-local ranges.
     internal_nets: list = field(default_factory=lambda: list(INTERNAL_NETS))

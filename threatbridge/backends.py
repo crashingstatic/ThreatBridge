@@ -63,14 +63,15 @@ class Scope:
     `filter` (a filters.Filter), plus the marked flows (compromised.parse_flow), which always
     do."""
 
-    def __init__(self, filter, marked=()):
+    def __init__(self, filter, marked=(), flags=None):
         self.filter = filter
         self.marked = list(marked)
+        self.flags = flags          # filters.flag_limits(), for "long" and "beacon"
 
     def passes(self, flow, src, dst):
         """Whether a flow (as matches() reads it, start in epoch seconds) between src and dst
         passes: it matches the filter, or it is marked."""
-        if filters.matches(self.filter.core, flow):
+        if filters.matches(self.filter.core, flow, self.flags):
             return True
         key = (src, dst, fmt_time(_utc(flow["start"])), flow.get("sport"), flow.get("dport"),
                str(flow.get("proto")))
@@ -392,7 +393,7 @@ class DemoBackend:
         for port in self.PORTS:
             name = protocols.name("tcp", 0, port, 0)
             flow = {"protocols": [name], "dport": port, "proto": "tcp"}
-            if scope is None or filters.matches(scope.filter.core, flow):
+            if scope is None or filters.matches(scope.filter.core, flow, scope.flags):
                 counts[name] = counts.get(name, 0) + rng.randint(1, 500)
         return start, end, counts
 
@@ -456,6 +457,7 @@ class CaseBackend:
     GRAPHS_KEPT = 4   # filtered graphs kept for reuse (D17)
 
     def __init__(self, cfg, flows=None, dns=None, progress=None):
+        self.cfg, self.flags = cfg, filters.flag_limits(cfg)
         self._tmp = None
         self._graphs, self._graphs_lock = OrderedDict(), threading.Lock()
         path = cfg.case_db
@@ -528,7 +530,7 @@ class CaseBackend:
         or are marked. None (every flow) without a scope."""
         if scope is None:
             return None
-        sql, params = filters.to_sql(scope.filter.core, "f.")
+        sql, params = filters.to_sql(scope.filter.core, "f.", self.flags)
         rows = sorted({r for found in self._marked(scope.marked).values() for r, _ in found})
         if rows:
             return f"({sql}) OR f.rowid IN (SELECT value FROM json_each(?))", [*params, json.dumps(rows)]  # nosec B608
@@ -583,6 +585,27 @@ class CaseBackend:
             "distinct_peers": len(peers),
             "truncated": False,
         }
+
+    def flagged(self, start, end, exclude, limit, scope=None):
+        """Beacons (beacons.py; active in [start, end], None: open) and host pairs with long flows
+        (started in it, passing the filters), each at most `limit`, leaving out excluded hosts.
+        Beacon scores are of all the case's flows: filters don't change them."""
+        lo = start.timestamp() - TIME_SLACK if start else float("-inf")
+        hi = end.timestamp() + TIME_SLACK if end else float("inf")
+        excluded, f = _Excluded(exclude), self.flags
+        found = [row for row in self.store.beacons(lo, hi, f["beacon_min"], f["beacon_score"], 4 * limit + 1)
+                 if row[0] not in excluded and row[1] not in excluded]
+        beacons = [{"src": src, "dst": dst, "dport": dport, "proto": proto, "flows": n,
+                    "first_seen": fmt_time(_utc(first)), "last_seen": fmt_time(_utc(last)),
+                    "interval": round(interval, 3), "jitter": round(jitter, 4), "size_jitter": round(size_jitter, 4),
+                    "score": score}
+                   for src, dst, dport, proto, n, first, last, interval, jitter, size_jitter, score in found[:limit]]
+        pairs = [row for row in self.store.long_connections(f["long"], lo, hi, self._where(scope), 4 * limit + 1)
+                 if row[0] not in excluded and row[1] not in excluded]
+        long_ = [{"src": src, "dst": dst, "flows": n, "longest": round(longest, 3),
+                  "first_seen": fmt_time(_utc(first)), "last_seen": fmt_time(_utc(last))}
+                 for src, dst, n, longest, first, last in pairs[:limit]]
+        return {"beacons": beacons, "long": long_, "truncated": len(found) > limit or len(pairs) > limit}
 
     def contacts(self, addresses, network, start, end, inside, exclude, limit, cap, scope=None):
         """The inside hosts that exchanged flows with any of `addresses`, or with any host in

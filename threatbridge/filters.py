@@ -11,8 +11,13 @@ Elasticsearch, so the three agree.
 
 A flow here is a mapping with "src", "dst", "sport", "dport", "proto" ("tcp", "udp", "icmp"
 or a number), "start" (epoch seconds), "duration" (seconds), "packets", "bytes" and
-"protocols" (service names, protocols.py); any but src, dst, start and protocols may be None,
-and a comparison on a missing value is false.
+"protocols" (service names, protocols.py), and optionally "beacon" (whether its group is a
+beacon); any but src, dst, start and protocols may be None, and a comparison on a missing value
+is false.
+
+Two words stand for a setting's test (FLAGS): "long" (duration at least TB_LONG_CONNECTION)
+and "beacon" (its group's beacon score, beacons.py, is at least TB_BEACON_SCORE over at least
+TB_BEACON_MIN flows). The settings come in as `flags` (flag_limits()).
 """
 import ipaddress
 import re
@@ -21,7 +26,7 @@ from functools import lru_cache
 from typing import NamedTuple
 
 from . import protocols
-from .query import ValidationError, parse_time
+from .query import ValidationError, parse_time, parse_window
 
 MAX_LENGTH = 500      # characters in one expression
 MAX_FILTERS = 20      # expressions applied at once
@@ -38,6 +43,9 @@ KIND_TEXT = {"port": "a whole number, 0 to 65535", "count": "a whole number",
              "transport": "tcp, udp, icmp or an IP protocol number (0 to 255)",
              "time": "ISO-8601 (UTC unless it says), or epoch seconds or milliseconds; to the millisecond"}
 _EITHER = {"port": ("sport", "dport"), "host": ("src", "dst")}
+FLAGS = {"beacon": "its source, destination, port and protocol are a beacon (TB_BEACON_SCORE, TB_BEACON_MIN); "
+                   "post-mortem cases only",
+         "long": "it lasted at least TB_LONG_CONNECTION"}
 _COMPARISONS = ("==", "!=", "<", ">", "<=", ">=")
 _EQUALITY = ("==", "!=")
 _AND, _OR, _NOT = ("AND", "&&"), ("OR", "||"), ("NOT", "!")
@@ -60,7 +68,8 @@ expression  = disjunction ;
 disjunction = conjunction , { ( "OR" | "||" ) , conjunction } ;
 conjunction = negation , { ( "AND" | "&&" ) , negation } ;
 negation    = ( "NOT" | "!" ) , negation | term ;
-term        = "(" , disjunction , ")" | comparison | protocol ;
+term        = "(" , disjunction , ")" | comparison | flag | protocol ;
+flag        = "beacon" | "long" ;
 comparison  = field , [ "==" | "!=" | "<" | ">" | "<=" | ">=" ] , value ;   (* none: == *)
 value       = number | number , "-" , number | address | transport | time ;
 protocol    = a name in "protocols", or another Zeek service in capitals ;
@@ -72,6 +81,15 @@ _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 class FilterError(ValidationError):
     pass
+
+
+def flag_limits(cfg):
+    """The settings the flags test against, from the configuration."""
+    return {"long": parse_window(cfg.long_connection).total_seconds(), "beacon_score": cfg.beacon_score,
+            "beacon_min": cfg.beacon_min}
+
+
+_DEFAULT_FLAGS = {"long": 3600.0, "beacon_score": 0.8, "beacon_min": 10}   # the settings' defaults
 
 
 class Filter(NamedTuple):
@@ -174,6 +192,9 @@ class _Parser:
             self.fail(f"expected a protocol, a field or '(' instead of {token!r}")
         if token in FIELDS:
             return self.comparison()
+        if token in FLAGS:
+            self.take()
+            return ("flag", token)
         return self.protocol()
 
     def comparison(self):
@@ -204,7 +225,7 @@ class _Parser:
             raise FilterError(f"{where}: protocol names are case-sensitive: write {hint}")
         if low in _HINTS:
             raise FilterError(f"{where}: write {_HINTS[low]} for {word}")
-        if low in FIELDS:
+        if low in FIELDS or low in FLAGS:
             raise FilterError(f"{where}: fields are in lower case: write {low}")
         if low in ("and", "or", "not"):
             raise FilterError(f"{where}: operators are in capitals: write {word.upper()}")
@@ -282,7 +303,7 @@ def vocabulary():
     fields = [{"name": f, "kind": k, "comparisons": list(_EQUALITY if k in ("address", "transport") else _COMPARISONS),
                "ranges": k in ("port", "count", "seconds"), "either_end": f in _EITHER} for f, k in KINDS.items()]
     return {"fields": fields, "kinds": KIND_TEXT, "operators": {"not": list(_NOT), "and": list(_AND), "or": list(_OR)},
-            "protocols": sorted(NAMES), "grammar": GRAMMAR}
+            "protocols": sorted(NAMES), "flags": dict(FLAGS), "grammar": GRAMMAR}
 
 
 # ---- the tests a comparison stands for ------------------------------------------------------
@@ -297,7 +318,7 @@ def _core(node):
         return (kind, [_core(n) for n in node[1]])
     if kind == "not":
         return ("not", _core(node[1]))
-    if kind == "service":
+    if kind in ("service", "flag"):
         return node
     _, field, op, _, value = node
     if op == "!=":
@@ -333,7 +354,7 @@ def _text(node):
         return f" {kind.upper()} ".join(_text(n) for n in node[1])
     if kind == "not":
         return f"NOT {_text(node[1])}"
-    if kind == "service":
+    if kind in ("service", "flag"):
         return node[1]
     _, field, op, raw, value = node
     if isinstance(value, (ipaddress.IPv4Network, ipaddress.IPv6Network)):
@@ -391,16 +412,20 @@ def _in(value, lo, lo_open, hi, hi_open):
     return True
 
 
-def matches(core, flow):
+def matches(core, flow, flags=None):
     """Whether `flow` passes the tests `core` (a Filter's core): a branch per kind of node, as
-    in to_sql and to_es."""
+    in to_sql and to_es. `flags`: flag_limits()."""
     kind = core[0]
     if kind == "and":
-        return all(matches(c, flow) for c in core[1])
+        return all(matches(c, flow, flags) for c in core[1])
     if kind == "or":
-        return any(matches(c, flow) for c in core[1])
+        return any(matches(c, flow, flags) for c in core[1])
     if kind == "not":
-        return not matches(core[1], flow)
+        return not matches(core[1], flow, flags)
+    if kind == "flag":
+        if core[1] == "beacon":
+            return bool(flow.get("beacon"))
+        return flow.get("duration") is not None and flow["duration"] >= (flags or _DEFAULT_FLAGS)["long"]
     if kind == "service":
         return any(p in core[2] for p in flow["protocols"])
     if kind == "proto":
@@ -431,18 +456,27 @@ def _network(text):
     return ipaddress.ip_network(text)
 
 
-def to_sql(core, prefix=""):
+def to_sql(core, prefix="", flags=None):
     """(SQL condition, parameters) on the flow table's columns, each prefixed with `prefix`
     (e.g. "f."): a branch per kind of node, as in matches(). It needs ip_in_net (in_network)
-    registered on the connection."""
+    registered on the connection, and for "beacon" the case store's beacon table. `flags`:
+    flag_limits()."""
     kind = core[0]
     if kind in ("and", "or"):
-        parts = [to_sql(c, prefix) for c in core[1]]
+        parts = [to_sql(c, prefix, flags) for c in core[1]]
         return (f" {kind.upper()} ".join(f"({sql})" for sql, _ in parts),
                 [p for _, params in parts for p in params])
     if kind == "not":
-        sql, params = to_sql(core[1], prefix)
+        sql, params = to_sql(core[1], prefix, flags)
         return f"NOT ({sql})", params
+    if kind == "flag":
+        limits = flags or _DEFAULT_FLAGS
+        if core[1] == "long":
+            return f"({prefix}end_ts - {prefix}start_ts) >= ?", [limits["long"]]
+        # Column names and placeholders only (prefix comes from the code); the values are bound.
+        return (f"EXISTS (SELECT 1 FROM beacon AS b WHERE b.src = {prefix}src AND b.dst = {prefix}dst "  # nosec B608
+                f"AND b.dport = {prefix}dport AND b.proto = {prefix}proto AND b.score >= ? AND b.connections >= ?)",
+                [limits["beacon_score"], limits["beacon_min"]])
     if kind == "service":
         return (f"coalesce({prefix}service IN ({', '.join('?' * len(core[2]))}), 0)", list(core[2]))
     if kind == "proto":
@@ -524,6 +558,10 @@ def to_es(core, cfg):
         return _any([to_es(c, cfg) for c in core[1]])
     if kind == "not":
         return _none(to_es(core[1], cfg))
+    if kind == "flag":
+        if core[1] == "beacon":
+            raise FilterError("beacon needs a case's beacon scores; Security Onion data has none")
+        return {"range": {cfg.f_duration: {"gte": parse_window(cfg.long_connection).total_seconds()}}}
     if kind == "service":
         return _service(cfg, core[2])
     if kind == "proto":

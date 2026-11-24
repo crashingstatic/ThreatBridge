@@ -157,7 +157,7 @@ try {
   await page.keyboard.press("Escape");
   q = await at(node("10.0.0.9"));
   await page.mouse.click(q.x, q.y, { button: "right" });
-  assert.deepEqual(await rows(), ["Host", "10.0.0.9", "Anchor", "2024-05-01T13:09:50.001Z", "IOC root", "yes",
+  assert.deepEqual(await rows(), ["Host", "10.0.0.9", "Anchor", "2024-05-01T15:40:00.000Z", "IOC root", "yes",
     "Compromised", "no", "Hops from IOC", "0", "Inbound expanded", "yes", "Outbound expanded", "no", "Degree", "2"]);
   await page.keyboard.press("Escape");
 

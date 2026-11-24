@@ -195,7 +195,8 @@ def test_building_a_case_shows_each_stage(tmp_path):
     for done in ("Reading 1 evidence file(s): 100%", "Saving the flows: 100%", "Building the graph: 100%"):
         assert done in out.getvalue(), done                         # each stage counted to its total
     stages = [line.split(":")[0] for line in out.screen() if line]
-    assert stages == ["Reading 1 evidence file(s)", "Saving the flows", "Indexing the flows", "Building the graph"]
+    assert stages == ["Reading 1 evidence file(s)", "Saving the flows", "Indexing the flows", "Scoring beacons",
+                      "Building the graph"]
     assert "Reading 1 evidence file(s): done in 2 s (file 1 of 1, 2 packets)" in out.screen()
     out = Terminal()
     CaseBackend(cfg, progress=Progress(out))                      # reused: only the graph

@@ -36,6 +36,7 @@ MAX_WITHIN = 100_000  # intervals a flow list may be limited to (a kept connecti
 MAX_EXPORT = 200_000  # flows in an export
 MARKS_POLL = 5       # seconds between the map's checks for other analysts' marks (D15)
 MAX_CONTACTS = 1000  # inside hosts listed as having talked to an address (ATK-11)
+MAX_FLAGGED = 1000   # beacons, and pairs with long flows, listed at once (ATK-12)
 
 
 class _Body:
@@ -80,6 +81,7 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
         soc = SocClient(cfg)
 
     max_window = parse_window(cfg.max_window)
+    flags = filters.flag_limits(cfg)       # also checks TB_LONG_CONNECTION
     internal_nets = []
     for net in cfg.internal_nets:
         try:
@@ -140,7 +142,7 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
             found = filters.combine(json_body().get("filters"))
         else:
             found = filters.combine(request.args.getlist("filter"))
-        return Scope(found, marks_arg()[1]) if found else None
+        return Scope(found, marks_arg()[1], flags) if found else None
 
     def within_arg():
         """POST "within": [[from, to], ...], the intervals a kept connection's flows are in
@@ -250,7 +252,8 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
               "filter_length": filters.MAX_LENGTH, "filter_depth": filters.MAX_DEPTH, "edges": MAX_EDGES,
               "within": MAX_WITHIN, "export_flows": MAX_EXPORT, "marks": compromised_mod.MAX_MARKS,
               "note": compromised_mod.MAX_NOTE, "saved_maps": sessions_mod.MAX_SESSIONS,
-              "map_bytes": sessions_mod.MAX_BYTES, "map_name": sessions_mod.MAX_NAME, "contacts": MAX_CONTACTS}
+              "map_bytes": sessions_mod.MAX_BYTES, "map_name": sessions_mod.MAX_NAME, "contacts": MAX_CONTACTS,
+              "flagged": MAX_FLAGGED}
 
     @app.get("/api/config")
     def api_config():
@@ -265,7 +268,9 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
                        suspects=hasattr(backend, "suspects"), marks_poll=MARKS_POLL,
                        protocol_names=protocols.DISPLAY, max_filters=filters.MAX_FILTERS,
                        live_dns=cfg.live_dns, pcap_download=soc is not None, internal_nets=internal_nets,
-                       contacts=hasattr(backend, "contacts"),
+                       contacts=hasattr(backend, "contacts"), flagged=hasattr(backend, "flagged"),
+                       beacon_score=flags["beacon_score"], beacon_min=flags["beacon_min"],
+                       long_connection=flags["long"],
                        case=summary() if summary else None)
 
     @app.get("/api/openapi.json")
@@ -335,6 +340,17 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
                                scope_arg())
         return jsonify(target=target, kind=kind, start=fmt_time(start) if start else None,
                        end=fmt_time(end) if end else None, **res)
+
+    @app.route("/api/flagged", methods=["GET", "POST"])
+    def api_flagged():
+        """Beacons and long connections in the time range (ATK-12)."""
+        require("flagged")
+        start, end = range_arg()
+        limit = max(1, min(int_arg("limit", 100), MAX_FLAGGED))
+        res = backend.flagged(start, end, exclusions(), limit, scope_arg())
+        return jsonify(start=fmt_time(start) if start else None, end=fmt_time(end) if end else None,
+                       beacon_score=flags["beacon_score"], beacon_min=flags["beacon_min"],
+                       long_connection=flags["long"], **res)
 
     @app.route("/api/flows", methods=["GET", "POST"])
     def api_flows():

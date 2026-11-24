@@ -350,7 +350,7 @@ From the review, each reproduced in a browser:
 | 11. Login and Host check | decided | done (D23, SEC-1, SEC-2) | done | done | green |
 | 12. Pin and sign | decided | done (D24, SEC-3 to SEC-5) | done | done | green |
 | 6. Formats | decided | done (D6, ING-6 to ING-8) | done | done | green |
-| 2. How they got in | decided | | | | |
+| 2. How they got in | decided | done (D25, D26, ATK-10 to ATK-12) | done | done | |
 | 5. Machines behind addresses | | | | | |
 | 4. Accounts on hops | | | | | |
 | 9. Deliverables | | | | | |

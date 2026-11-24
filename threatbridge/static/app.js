@@ -18,6 +18,7 @@
   let detailsFor = null;       // host shown in the details panel
   let flowsFor = null;         // connection whose flows the details panel lists
   let lastFlows = null;        // the page of flows listed, to redraw when marks change
+  let flagged = { beacons: new Map(), long: new Map() };   // "src->dst" -> its best beacon, its long flows (ATK-12)
   const FLOW_PAGE = 50;
   const WRITE_HEADERS = { "Content-Type": "application/json", "X-ThreatBridge": "1" };
   const COLORS = { root: "#e5484d", in: "#3e9bff", out: "#f5a524", node: "#9aa7bd",
@@ -71,6 +72,9 @@
       { selector: "edge.proto-hit", style: {
           opacity: 1, "underlay-color": COLORS.protocol, "underlay-opacity": 0.55, "underlay-padding": 4,
           "z-index": 20 } },
+      // Beacons and long connections (ATK-12): a marker halfway along.
+      { selector: "edge[?long]", style: { "mid-target-arrow-shape": "square", "mid-target-arrow-color": "#d8dee9" } },
+      { selector: "edge[?beacon]", style: { "mid-target-arrow-shape": "diamond", "mid-target-arrow-color": "#d8dee9" } },
       // Hidden by the marks: restored when they change (D16). Hiding comes before any dimming.
       { selector: ".mark-hidden", style: { display: "none" } },
       { selector: ":selected", style: { "overlay-color": "#fff", "overlay-opacity": 0.15 } },
@@ -207,6 +211,7 @@
       name: "breadthfirst", circle: false, directed: false, roots: root.length ? root : undefined,
       animate: false, fit: true, padding: 40, spacingFactor: 1.1, avoidOverlap: true,
     }).run();
+    markFlags();
   }
 
   function addNode(ip, anchor, extra) {
@@ -363,6 +368,7 @@
       const res = await rootWith(q, true);
       rememberInUrl(res.ip);
       await refreshPaths(true);
+      await loadFlagged();
     } catch (err) { fail(err); }
   }
 
@@ -416,6 +422,7 @@
     markEdges();
     relayout();
     await refreshPaths(true);
+    await loadFlagged();
     await refreshHiding();
     setStatus(`Re-ran ${log.length - skipped} of ${log.length} quer${log.length === 1 ? "y" : "ies"} with ` +
               `${filters.length} filter(s): ${cy.nodes().length} host(s), ${cy.edges().length} connection(s)` +
@@ -483,6 +490,9 @@
       ["Protocols", e.data("protocols").map(protocolName).join(", ")],
       ["First seen", e.data("first_seen")], ["Last seen", e.data("last_seen")],
     ];
+    const beacon = flagged.beacons.get(e.id()), long = flagged.long.get(e.id());
+    if (beacon) rows.push(["Beacon", beaconText(beacon)]);
+    if (long) rows.push(["Long flows", `${long.flows}, the longest ${duration(long.longest)}`]);
     if (e.data("kept")) rows.push(["Marks keep", `${e.data("kept").marked} marked, ${e.data("kept").suspect} suspect ` +
                                                  `of ${e.data("full").count}`]);
     showDetails(rows);
@@ -1194,6 +1204,51 @@
     findRoutes().catch((err) => fail(err));
   });
 
+  // ---- beacons and long connections (ATK-12): listed in the side panel, and marked on the
+  // connections drawn. Loaded with each map and each change of filters or time range.
+  function duration(seconds) {
+    if (seconds < 90) return `${Math.round(seconds)} s`;
+    if (seconds < 5400) return `${Math.round(seconds / 60)} min`;
+    const h = Math.floor(seconds / 3600), m = Math.round((seconds % 3600) / 60);
+    return m ? `${h} h ${m} min` : `${h} h`;
+  }
+
+  const beaconText = (b) => `every ${duration(b.interval)} (±${Math.round(b.jitter * 100)}%) to ` +
+    `${b.dport == null ? b.proto : `${b.dport}/${b.proto}`}, ${b.flows} flows, score ${b.score.toFixed(2)}`;
+
+  async function loadFlagged() {
+    if (!cfg.flagged) return;
+    const r = await ask("/api/flagged", withRange(new URLSearchParams({ limit: "200" })));
+    flagged = { beacons: new Map(), long: new Map() };
+    for (const b of r.beacons) if (!flagged.beacons.has(`${b.src}->${b.dst}`)) flagged.beacons.set(`${b.src}->${b.dst}`, b);
+    for (const p of r.long) flagged.long.set(`${p.src}->${p.dst}`, p);
+    const add = (src, dst, from, to) => addFlaggedConnection(src, dst, from, to);
+    $("beacon-list").replaceChildren(...(r.beacons.length ? r.beacons.map((b) => listEntry(
+      `${b.src} → ${b.dst}`, beaconText(b), "Add", () => add(b.src, b.dst, b.first_seen, b.last_seen)))
+      : [hintItem("None")]));
+    $("long-list").replaceChildren(...(r.long.length ? r.long.map((p) => listEntry(
+      `${p.src} → ${p.dst}`, `${p.flows} long flow(s), the longest ${duration(p.longest)}`, "Add",
+      () => add(p.src, p.dst, p.first_seen, p.last_seen)))
+      : [hintItem("None")]));
+    markFlags();
+  }
+
+  function markFlags() {
+    cy.batch(() => cy.edges().forEach((e) => {
+      e.data("beacon", flagged.beacons.has(e.id()));
+      e.data("long", flagged.long.has(e.id()));
+    }));
+  }
+
+  async function addFlaggedConnection(source, target, from, to) {
+    const q = { op: "edge", source, target, direction: "out", from, to };
+    queries.push(q);
+    await edgeWith(q);
+    relayout();
+    hidingDue();
+    setStatus(`Added ${source} → ${target}`);
+  }
+
   // ---- who talked to it (ATK-11): the inside hosts that exchanged flows with an address, a
   // network or a domain name. The first N (the toolbar's) go on the map; the rest are listed.
   async function findContacts(target) {
@@ -1510,6 +1565,8 @@
     $("paths").hidden = !cfg.analysis;
     $("routes").hidden = !cfg.analysis;
     $("contacts").hidden = !cfg.contacts;
+    $("flagged").hidden = !cfg.flagged;
+    loadFlagged().catch(() => {});
     try { showShared(await getJSON("/api/compromised"), true); } catch (_) { /* none */ }
     setInterval(pollMarks, (cfg.marks_poll || 5) * 1000);
     getJSON("/api/sessions").then((r) => renderSessions(r.sessions)).catch(() => {});

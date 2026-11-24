@@ -873,6 +873,127 @@
     }
    }
   },
+  "/api/flagged": {
+   "get": {
+    "summary": "Beacons and long connections (ATK-12)",
+    "description": "Beacons: a source, destination, port and protocol whose flows score at least beacon_score over at least beacon_min flows, active in the time range. Long connections: host pairs with flows lasting long_connection or more. Hosts on the exclude list are left out. Case backend only.",
+    "parameters": [
+     {
+      "name": "limit",
+      "in": "query",
+      "description": "the most of each list, 1 to limits.flagged; default 100",
+      "schema": {
+       "type": "integer"
+      }
+     },
+     {
+      "name": "range_from",
+      "in": "query",
+      "description": "the start of the analyst's time range: only flows that started in it count",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "range_to",
+      "in": "query",
+      "description": "the end of the analyst's time range",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "filter",
+      "in": "query",
+      "description": "a filter expression (D17); repeat for several, combined with AND",
+      "schema": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "style": "form",
+      "explode": true
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Flagged"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/E400"
+     },
+     "401": {
+      "$ref": "#/components/responses/E401"
+     },
+     "421": {
+      "$ref": "#/components/responses/E421"
+     },
+     "500": {
+      "$ref": "#/components/responses/E500"
+     },
+     "501": {
+      "$ref": "#/components/responses/E501"
+     }
+    }
+   },
+   "post": {
+    "summary": "Beacons and long connections (ATK-12)",
+    "description": "Beacons: a source, destination, port and protocol whose flows score at least beacon_score over at least beacon_min flows, active in the time range. Long connections: host pairs with flows lasting long_connection or more. Hosts on the exclude list are left out. Case backend only.",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/write"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/FlaggedQueryBody"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Flagged"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/E400"
+     },
+     "401": {
+      "$ref": "#/components/responses/E401"
+     },
+     "403": {
+      "$ref": "#/components/responses/E403"
+     },
+     "421": {
+      "$ref": "#/components/responses/E421"
+     },
+     "500": {
+      "$ref": "#/components/responses/E500"
+     },
+     "501": {
+      "$ref": "#/components/responses/E501"
+     }
+    }
+   }
+  },
   "/api/flows": {
    "get": {
     "summary": "One page of a connection's flows, oldest first",
@@ -2155,6 +2276,71 @@
     ],
     "type": "object"
    },
+   "Beacon": {
+    "additionalProperties": false,
+    "properties": {
+     "src": {
+      "type": "string"
+     },
+     "dst": {
+      "type": "string"
+     },
+     "dport": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "proto": {
+      "type": "string"
+     },
+     "flows": {
+      "type": "integer"
+     },
+     "first_seen": {
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+      "type": "string"
+     },
+     "last_seen": {
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+      "type": "string"
+     },
+     "interval": {
+      "description": "the median seconds between the flows' starts",
+      "type": "number"
+     },
+     "jitter": {
+      "description": "the median absolute deviation of those intervals, as a share of interval",
+      "type": "number"
+     },
+     "size_jitter": {
+      "description": "the same for the flows' bytes, as a share of their median",
+      "type": "number"
+     },
+     "score": {
+      "description": "0 to 1: how regular the intervals and sizes are",
+      "type": "number"
+     }
+    },
+    "required": [
+     "src",
+     "dst",
+     "dport",
+     "proto",
+     "flows",
+     "first_seen",
+     "last_seen",
+     "interval",
+     "jitter",
+     "size_jitter",
+     "score"
+    ],
+    "type": "object"
+   },
    "CaseSummary": {
     "additionalProperties": false,
     "description": "The case's evidence.",
@@ -2326,6 +2512,22 @@
       "description": "whether /api/contacts is available (case backend)",
       "type": "boolean"
      },
+     "flagged": {
+      "description": "whether /api/flagged is available (case backend)",
+      "type": "boolean"
+     },
+     "beacon_score": {
+      "description": "the score from which a scored group is a beacon (TB_BEACON_SCORE)",
+      "type": "number"
+     },
+     "beacon_min": {
+      "description": "the flows a beacon needs at least (TB_BEACON_MIN)",
+      "type": "integer"
+     },
+     "long_connection": {
+      "description": "seconds from which a flow is long (TB_LONG_CONNECTION)",
+      "type": "number"
+     },
      "case": {
       "anyOf": [
        {
@@ -2361,6 +2563,10 @@
      "pcap_download",
      "internal_nets",
      "contacts",
+     "flagged",
+     "beacon_score",
+     "beacon_min",
+     "long_connection",
      "case"
     ],
     "type": "object"
@@ -3147,6 +3353,13 @@
       },
       "type": "array"
      },
+     "flags": {
+      "additionalProperties": {
+       "type": "string"
+      },
+      "description": "the words that stand for a setting's test, each with what it tests",
+      "type": "object"
+     },
      "grammar": {
       "description": "the grammar, in EBNF",
       "type": "string"
@@ -3157,8 +3370,158 @@
      "kinds",
      "operators",
      "protocols",
+     "flags",
      "grammar"
     ],
+    "type": "object"
+   },
+   "Flagged": {
+    "additionalProperties": false,
+    "examples": [
+     {
+      "beacon_min": 10,
+      "beacon_score": 0.8,
+      "beacons": [
+       {
+        "dport": 443,
+        "dst": "198.51.100.9",
+        "first_seen": "2024-05-01T13:23:20.000Z",
+        "flows": 30,
+        "interval": 60.012,
+        "jitter": 0.0512,
+        "last_seen": "2024-05-01T13:52:21.000Z",
+        "proto": "tcp",
+        "score": 0.9462,
+        "size_jitter": 0.0,
+        "src": "10.8.0.5"
+       }
+      ],
+      "end": null,
+      "long": [
+       {
+        "dst": "198.51.100.10",
+        "first_seen": "2024-05-01T13:40:00.000Z",
+        "flows": 1,
+        "last_seen": "2024-05-01T13:40:00.000Z",
+        "longest": 7250.0,
+        "src": "10.8.0.6"
+       }
+      ],
+      "long_connection": 3600.0,
+      "start": null,
+      "truncated": false
+     }
+    ],
+    "properties": {
+     "start": {
+      "anyOf": [
+       {
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "the time range; null: open"
+     },
+     "end": {
+      "anyOf": [
+       {
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "beacon_score": {
+      "type": "number"
+     },
+     "beacon_min": {
+      "type": "integer"
+     },
+     "long_connection": {
+      "description": "seconds",
+      "type": "number"
+     },
+     "beacons": {
+      "description": "beacons active in the time range, best first; scored on all the case's flows, so filters don't change them",
+      "items": {
+       "$ref": "#/components/schemas/Beacon"
+      },
+      "type": "array"
+     },
+     "long": {
+      "description": "host pairs with long flows that started in the time range and pass the filters, the longest first",
+      "items": {
+       "$ref": "#/components/schemas/LongPair"
+      },
+      "type": "array"
+     },
+     "truncated": {
+      "description": "whether either list stops at limit",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "start",
+     "end",
+     "beacon_score",
+     "beacon_min",
+     "long_connection",
+     "beacons",
+     "long",
+     "truncated"
+    ],
+    "type": "object"
+   },
+   "FlaggedQueryBody": {
+    "additionalProperties": false,
+    "description": "The query's parameters as a JSON object (text or numbers), plus filters and marks.",
+    "properties": {
+     "limit": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "range_from": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "range_to": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "filters": {
+      "description": "filter expressions (D17), combined with AND",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "marks": {
+      "$ref": "#/components/schemas/Marks"
+     }
+    },
     "type": "object"
    },
    "Flow": {
@@ -3897,6 +4260,10 @@
      "contacts": {
       "description": "inside hosts /api/contacts lists",
       "type": "integer"
+     },
+     "flagged": {
+      "description": "beacons, and host pairs with long flows, /api/flagged lists at most",
+      "type": "integer"
      }
     },
     "required": [
@@ -3916,7 +4283,8 @@
      "saved_maps",
      "map_bytes",
      "map_name",
-     "contacts"
+     "contacts",
+     "flagged"
     ],
     "type": "object"
    },
@@ -4023,6 +4391,44 @@
      "role",
      "time",
      "hops"
+    ],
+    "type": "object"
+   },
+   "LongPair": {
+    "additionalProperties": false,
+    "properties": {
+     "src": {
+      "type": "string"
+     },
+     "dst": {
+      "type": "string"
+     },
+     "flows": {
+      "description": "its long flows",
+      "type": "integer"
+     },
+     "longest": {
+      "description": "seconds",
+      "type": "number"
+     },
+     "first_seen": {
+      "description": "the first long flow's start",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+      "type": "string"
+     },
+     "last_seen": {
+      "description": "the last long flow's start",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+      "type": "string"
+     }
+    },
+    "required": [
+     "src",
+     "dst",
+     "flows",
+     "longest",
+     "first_seen",
+     "last_seen"
     ],
     "type": "object"
    },

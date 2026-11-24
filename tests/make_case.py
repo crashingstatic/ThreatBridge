@@ -10,7 +10,12 @@ Apart from the chain (no connection to it): 10.0.1.1 -> 10.0.1.2, 120 connection
 apart, to page through; 12 two-hop routes 10.0.2.1 -> 10.0.2.10..21 -> 10.0.2.2; and, for marks
 and filters (ui_marks.mjs), the timeline E -> A -> X -> B, X -> C, B -> F, A -> Y (10.9.0.1-7),
 with 10.9.1.1 -> 10.9.1.2 on its own.
+
+And on hosts of their own: a beacon, 10.8.0.5 -> 198.51.100.9 (443) about every minute (10%
+jitter, 30 times, from 13:23:20), and a long connection, 10.8.0.6 -> 198.51.100.10 (22), kept
+alive for two hours from 13:40.
 """
+import random
 import os
 import sys
 
@@ -39,11 +44,23 @@ STORY = [("10.9.0.1", "10.9.0.2", 443, T + 100),    # E -> A, TLS
          ("10.9.1.1", "10.9.1.2", 445, T + 500)]    # a part of the map of its own
 
 
+def beacon():
+    rng, t, out = random.Random(5), T + 5000, []
+    for _ in range(30):
+        out.append(("10.8.0.5", "198.51.100.9", 443, t))
+        t += 60 * (1 + rng.uniform(-0.1, 0.1))
+    return out
+
+
 def main(outdir):
     os.makedirs(outdir, exist_ok=True)
     packets = []
-    for i, (c, s, port, t) in enumerate(CONNECTIONS + BUSY + FAN + STORY):
+    for i, (c, s, port, t) in enumerate(CONNECTIONS + BUSY + FAN + STORY + beacon()):
         packets += [(t, tcp(c, s, 50000 + i, port, SYN)), (t + 0.001, tcp(s, c, port, 50000 + i, SYN | ACK))]
+    # The long connection: a keep-alive every 4 minutes, under TCP's 5-minute idle timeout.
+    long_c, long_s, start = "10.8.0.6", "198.51.100.10", T + 6000
+    packets += [(start, tcp(long_c, long_s, 41000, 22, SYN)), (start + 0.001, tcp(long_s, long_c, 22, 41000, SYN | ACK))]
+    packets += [(start + 240 * k, tcp(long_c, long_s, 41000, 22, ACK, b"k")) for k in range(1, 31)]
     # Before the chain, so it is not on any threat line.
     packets += [(T - 1200, udp("10.0.0.9", "10.0.0.53", 40000, 53, b"q")),
                 (T - 1199.99, udp("10.0.0.53", "10.0.0.9", 53, 40000, dns_answer(
