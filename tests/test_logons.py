@@ -247,6 +247,26 @@ def test_a_case_labels_each_hop_with_its_account(tmp_path):
         CaseBackend(cfg)
 
 
+def test_each_connection_of_a_threat_line_has_its_accounts(tmp_path):
+    from threatbridge import filters
+    from threatbridge.backends import Scope
+    d, hosts = case_dir(tmp_path)
+    backend = CaseBackend(Config(backend="case", case_paths=[str(d)], hosts_file=str(hosts)))
+    when = datetime.fromtimestamp(T + 60, timezone.utc)
+
+    def line(scope=None):
+        r = backend.threat_line(WS, FS, when, when, timedelta(hours=1), 6, [], 300, scope=scope)
+        return {(e["source"], e["target"]): (e["role"], e["count"], e["accounts"]) for e in r["edges"]}
+
+    assert line() == {(WS, FS): ("selected", 1, ["CORP\\alice"]), (FS, DC): ("down", 2, ["CORP\\admin"])}
+    # Only the flows that pass the filters count: without the labelled session, no account.
+    assert line(Scope(filters.parse("NOT sport 50100")))[(FS, DC)] == ("down", 1, [])
+    # A case without Windows events: no accounts field.
+    plain = CaseBackend(Config(backend="case"), flows=[Flow(WS, FS, 50000, 445, "tcp", T + 60, T + 61, 2, 120, "x", "smb")])
+    [edge] = plain.threat_line(WS, FS, when, when, timedelta(hours=1), 6, [], 300)["edges"]
+    assert "accounts" not in edge
+
+
 def test_a_tighter_tolerance_labels_fewer_flows(tmp_path):
     d, hosts = case_dir(tmp_path)
     cfg = Config(backend="case", case_paths=[str(d)], hosts_file=str(hosts), logon_tolerance="3s")

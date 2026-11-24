@@ -4892,6 +4892,13 @@
        "down"
       ],
       "type": "string"
+     },
+     "accounts": {
+      "description": "case backend with Windows events: the accounts on those flows (D28)",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
      }
     },
     "required": [

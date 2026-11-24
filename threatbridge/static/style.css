@@ -68,6 +68,17 @@ main { display: flex; flex: 1; min-height: 300px; }
 #route-summary { margin: 8px 0 0; }
 #flows { margin-top: 14px; }
 #flows h3 { font-size: 12px; margin: 0 0 6px; color: var(--muted); font-weight: 600; }
+#line-timeline { margin-top: 12px; }
+#line-timeline summary { cursor: pointer; font-size: 12px; color: var(--muted); font-weight: 600; }
+.timeline-title { font-size: 12px; margin: 0 0 6px; color: var(--muted); font-weight: 600; word-break: break-word; }
+ol.timeline { margin: 6px 0; padding-left: 2.4em; max-height: 45vh; overflow-y: auto; }
+ol.timeline li { padding: 3px 0 3px 5px; border-bottom: 1px solid var(--line); border-left: 3px solid transparent; }
+ol.timeline li.up { border-left-color: var(--up); }
+ol.timeline li.down { border-left-color: var(--down); }
+ol.timeline li.selected { border-left-color: var(--text); }
+ol.timeline .time { white-space: nowrap; }
+ol.timeline .gap { margin-left: 6px; color: var(--muted); white-space: nowrap; }
+ol.timeline small { display: block; color: var(--muted); }
 .pager { display: flex; align-items: center; gap: 3px; color: var(--muted); font-size: 11px; }
 .pager button { padding: 1px 5px; font-size: 11px; }
 .pager button:disabled { opacity: .4; cursor: default; }

@@ -16,7 +16,8 @@ what a schema can't say.
 
 - **Accounts on flows (D28).** `GET`/`POST /api/accounts` lists the accounts that made a
   connection's flows. In the case backend each flow of `/api/flows` has `accounts`, each hop of a
-  path `accounts`, and each export row `accounts`; the case summary has `logons`. Additions, so
+  path `accounts`, each connection of a threat line `accounts` (with Windows events), and each
+  export row `accounts`; the case summary has `logons`. Additions, so
   `api_version` stays 1.
 - **Machines behind addresses (ING-9).** `GET /api/machines` lists every machine (MAC address,
   host name) that held an address, from DHCP; `POST /api/machines` gives, for each host, the one

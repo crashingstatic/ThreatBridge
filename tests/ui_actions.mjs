@@ -41,6 +41,7 @@ const map = async (ip, direction = "in") => {
   await waitStatus(new RegExp(`^${esc(ip)}: showing`));
 };
 const rows = () => page.$$eval("#detail-body dl > *", (l) => l.map((x) => x.textContent));
+const setStatusText = (text) => page.evaluate((t) => { document.getElementById("status").textContent = t; }, text);
 const anchor = (ip) => cyEval((i) => window.threatbridge.cy.getElementById(i).data("anchor"), ip);
 const pager = () => page.textContent("#flows .pager span");
 const shot = (name) => SHOTS && page.screenshot({ path: `${SHOTS}/${name}.png` });
@@ -726,7 +727,9 @@ try {
   // 13b. Hosts keep their places (D29): one dragged aside stays there when the map grows, and
   // the new host goes next to the host it came from, on the side away from that host's own
   // connection, clear of the others. Tidy lays the map out again as a tree.
+  await setStatusText("");                     // the same map as before: wait for the new one
   await map("10.0.0.9", "in");
+  await page.waitForFunction(() => window.threatbridge.cy.nodes().length === 3);
   const place = (ip) => cyEval((i) => window.threatbridge.cy.getElementById(i).position(), ip);
   const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
   const tidy77 = await place("10.0.0.77");

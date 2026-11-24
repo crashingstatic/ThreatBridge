@@ -51,6 +51,12 @@ _EDGE = "SELECT count(*), min(f.start_ts), max(f.start_ts) " + _IN_INTERVALS
 _EDGE_DETAILS = "SELECT f.dport, f.proto, f.service, count(*) " + _IN_INTERVALS + \
     " GROUP BY f.dport, f.proto, f.service"
 _EDGE_ROWS = f"SELECT {_COLUMNS} " + _IN_INTERVALS + " ORDER BY f.start_ts, f.rowid LIMIT ? OFFSET ?"
+# The accounts on those flows (D28), each once.
+_EDGE_ACCOUNTS = ("SELECT DISTINCT l.account FROM json_each(?) AS j CROSS JOIN flow AS f JOIN logon AS l "
+                  "ON l.src = f.src AND l.dst = f.dst AND l.start_ts = f.start_ts AND l.sport IS f.sport "
+                  "AND l.dport IS f.dport AND l.proto = f.proto WHERE f.src = ? AND f.dst = ? "
+                  "AND f.start_ts BETWEEN json_extract(j.value, '$[0]') AND json_extract(j.value, '$[1]') "
+                  "AND ({}) ORDER BY l.account")
 
 
 def _where(where):
@@ -228,6 +234,12 @@ class FlowStore:
         args = (_intervals(intervals), src, dst, *params)
         n, first, last = db.execute(_EDGE.format(sql), args).fetchone()
         return (n, first, last, *_ports_and_protocols(db.execute(_EDGE_DETAILS.format(sql), args)))
+
+    def edge_accounts(self, src, dst, intervals, where=None):
+        """The accounts (D28) on the flows src -> dst that started within the intervals, sorted."""
+        sql, params = _where(where)
+        rows = self._db().execute(_EDGE_ACCOUNTS.format(sql), (_intervals(intervals), src, dst, *params))  # nosec B608 (_where)
+        return [account for (account,) in rows]
 
     def edge_flows(self, src, dst, intervals, where=None, limit=-1, offset=0):
         """The flows src -> dst that started within the intervals, oldest first."""

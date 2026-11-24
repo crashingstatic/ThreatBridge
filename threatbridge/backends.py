@@ -782,9 +782,16 @@ class CaseBackend:
             raise ValidationError(f"no flows from {a} to {b} in that time range")
         up, down = analysis.threat_line(g, a, b, first, last, window, max_hops,
                                         _Excluded(exclude), max_hosts, _epochs(bounds))
-        edges = [dict(self._edge(a, b, [(first, last)], where), role="selected")]
+        found = [(a, b, [(first, last)], "selected")]
         for reach, role in ((up, "up"), (down, "down")):
-            edges += [dict(self._edge(s, d, iv, where), role=role) for s, d, iv in analysis.tree_edges(reach)]
+            found += [(s, d, iv, role) for s, d, iv in analysis.tree_edges(reach)]
+        labelled = self.store.logon_count() > 0       # accounts on each connection (D28)
+        edges = []
+        for s, d, iv, role in found:
+            e = dict(self._edge(s, d, iv, where), role=role)
+            if labelled:
+                e["accounts"] = self.store.edge_accounts(s, d, iv, where)
+            edges.append(e)
         return {"nodes": _line_nodes(a, b, start, end, up, down), "edges": edges,
                 "truncated": up.truncated or down.truncated}
 

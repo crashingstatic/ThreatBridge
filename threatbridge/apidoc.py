@@ -387,6 +387,7 @@ class LineNode(Shape):
 class LineEdge(Edge):
     """A host pair's flows that fit the line."""
     role: Literal["selected", "up", "down"]
+    accounts: list[str] = Field(None, description="case backend with Windows events: the accounts on those flows (D28)")
 
 
 class ThreatLine(Shape):

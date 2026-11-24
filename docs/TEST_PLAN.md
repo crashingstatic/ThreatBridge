@@ -543,6 +543,7 @@ generated case) and `ui_mtls.mjs` (the container). *Manual* names the tests abov
 | ATK-11 Who talked to an address | `test_case.py` (`/api/contacts`); `ui_case.mjs` (the side panel, the menu item) | |
 | ATK-12 Beacons and long connections | `test_beacons.py` (scores, the store, `/api/flagged`, filter words); `ui_case.mjs` (markers, the side panel) | |
 | ATK-13 Accounts on flows and hops | `test_logons.py` (matching; `/api/accounts`; flows, paths); `ui_case.mjs` (flow list, details, path list), `ui_marks.mjs` (CSV column) | WIN-01 steps 5–7 |
+| ATK-14 Timelines | `test_logons.py` (accounts per threat-line connection, through the filters); `ui_case.mjs` (an attack path's and a threat line's timelines, the copied text) | |
 | INT-1 Threat line on edge click | `test_analysis.py`, `test_case.py`; `ui_case.mjs`, `ui_actions.mjs` | VIS-02 |
 | INT-2 Earlier and later communications | `test_analysis.py`; `ui_case.mjs`, `ui_actions.mjs` | VIS-02 |
 | INT-3 Iterative refinement | `ui_case.mjs`, `ui_actions.mjs` | |

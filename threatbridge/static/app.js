@@ -668,6 +668,7 @@
     if (e.data("kept")) rows.push(["Marks keep", `${e.data("kept").marked} marked, ${e.data("kept").suspect} suspect ` +
                                                  `of ${e.data("full").count}`]);
     showDetails(rows);
+    if (cfg.analysis) $("detail-body").append(el("section", { id: "line-timeline" }));
     flowsFor = { src: e.data("source"), dst: e.data("target"), from: e.data("first_seen"), to: e.data("last_seen"),
                  within: e.data("kept") ? e.data("kept").within : null };
     if (hasLogons()) showAccounts(flowsFor).catch(() => {});
@@ -994,7 +995,10 @@
     const q = { op: "threatline", a: e.data("source"), b: e.data("target"), from: e.data("first_seen"),
                 to: e.data("last_seen"), window: $("window").value.trim() };
     queries.push(q);
-    return threatLineWith(q, true);
+    const conn = flowsFor;                     // the connection's details, open since the click
+    const r = await threatLineWith(q, true);
+    if (r) showLineTimeline(r, conn);
+    return r;
   }
 
   async function threatLineWith(q, say) {
@@ -1028,6 +1032,7 @@
               "between hops. Click the background to clear.";
     if (r.truncated) msg += " WARNING: stopped at the host limit; the line is incomplete.";
     setStatus(msg, false, r.truncated);
+    return r;
   }
 
   // ---- marks (D15): hosts and flows marked compromised, shared or an opened map's own -----
@@ -1309,6 +1314,82 @@
     return small;
   }
 
+  // ---- timelines (D30): a path's hops, or a threat line's connections, in time order ----------
+  const gapText = (from, to) => `+${duration(Math.max(0, (Date.parse(to) - Date.parse(from)) / 1000))}`;
+  const LINE_PARTS = { up: "earlier", selected: "selected", down: "later" };
+
+  // {title, columns, rows: [{cells (the copied text), time, gap, hosts, meta, accounts, part}]}.
+  function pathTimeline(p, what) {
+    const columns = ["Time", "Gap", "From", "To", "Proto", "Src port", "Dst port", "Protocol", "Packets", "Bytes"];
+    if (hasLogons()) columns.push("Accounts");
+    const rows = p.hops.map((h, i) => {
+      const gap = i ? gapText(p.hops[i - 1].start, h.start) : "";
+      const accounts = accountNames(h.accounts);
+      const cells = [h.start, gap, h.source, h.target, h.proto, h.sport, h.dport,
+                     h.protocols.map(protocolName).join("/"), h.packets, h.bytes];
+      if (hasLogons()) cells.push(accounts.join(", "));
+      return { cells, time: h.start, gap, hosts: `${h.source} → ${h.target}`, meta: flowMeta(h), accounts };
+    });
+    const hosts = [p.hops[0].source, ...p.hops.map((h) => h.target)];
+    return { title: `${what} ${hosts.join(" → ")}`, columns, rows };
+  }
+
+  function lineTimeline(r) {
+    const columns = ["First flow", "Last flow", "Gap", "From", "To", "Part", "Flows", "Dst ports", "Protocols"];
+    const labelled = r.edges.some((e) => e.accounts);
+    if (labelled) columns.push("Accounts");
+    const edges = r.edges.filter((e) => e.count && e.first_seen)
+      .sort((x, y) => x.first_seen.localeCompare(y.first_seen) || x.source.localeCompare(y.source));
+    const rows = edges.map((e, i) => {
+      const gap = i ? gapText(edges[i - 1].first_seen, e.first_seen) : "";
+      const accounts = e.accounts || [];
+      const protocols = e.protocols.map(protocolName).join("/");
+      const cells = [e.first_seen, e.last_seen, gap, e.source, e.target, LINE_PARTS[e.role], e.count,
+                     e.ports.join(", "), protocols];
+      if (labelled) cells.push(accounts.join(", "));
+      const meta = [`${e.count.toLocaleString("en-US")} flow${e.count === 1 ? "" : "s"}`, e.ports.join(", "), protocols]
+        .filter((x) => x).join(" · ");
+      return { cells, time: e.first_seen, gap, hosts: `${e.source} → ${e.target}`, meta, accounts, part: e.role };
+    });
+    return { title: `Threat line through ${r.a} → ${r.b}`, columns, rows };
+  }
+
+  // Tab-separated, a header line first: pastes into a spreadsheet or a report.
+  const timelineText = (t) => [t.columns, ...t.rows.map((r) => r.cells)]
+    .map((cells) => cells.map((v) => String(v ?? "").replace(/[\t\r\n]+/g, " ")).join("\t")).join("\n") + "\n";
+
+  function timelineList(t) {
+    const copy = button("Copy", () => navigator.clipboard.writeText(timelineText(t))
+      .then(() => setStatus(`${t.title}: timeline copied to clipboard`)).catch(fail), { className: "copy" });
+    const list = el("ol", { className: "timeline" }, ...t.rows.map((r) => {
+      const li = el("li", { className: r.part || "" },
+                    el("span", { className: "time", textContent: r.time }),
+                    r.gap ? el("span", { className: "gap", textContent: r.gap }) : "",
+                    el("div", { textContent: r.hosts }), el("small", { textContent: r.meta }));
+      if (r.accounts.length) li.append(el("small", { className: "accounts", textContent: `Account: ${r.accounts.join(", ")}` }));
+      return li;
+    }));
+    return [list, copy];
+  }
+
+  // A path's timeline in the details panel.
+  function showPathTimeline(p, what) {
+    const t = pathTimeline(p, what);
+    detailsFor = null;
+    flowsFor = null;
+    lastFlows = null;
+    $("detail-body").replaceChildren(el("h3", { className: "timeline-title", textContent: t.title }), ...timelineList(t));
+  }
+
+  // A threat line's timeline under its connection's details, folded.
+  function showLineTimeline(r, conn) {
+    const section = $("line-timeline");
+    if (!section || flowsFor !== conn) return;          // another element was clicked meanwhile
+    const t = lineTimeline(r);
+    section.replaceChildren(el("details", {}, el("summary", { textContent: `Threat line timeline (${t.rows.length})` }),
+                                ...timelineList(t)));
+  }
+
   // "a → b → c", and below it the first and last hop's times; click to focus on the path.
   function pathItem(p, what) {
     const hosts = [p.hops[0].source, ...p.hops.map((h) => h.target)];
@@ -1324,6 +1405,7 @@
       focus(pathElements(p));
       setStatus(`${what} ${hosts[0]} → ${hosts[hosts.length - 1]}, ${p.hops.length} hop(s). ` +
                 "Click the background to clear.");
+      showPathTimeline(p, what);
     });
     return li;
   }

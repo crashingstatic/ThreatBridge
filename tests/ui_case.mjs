@@ -20,6 +20,18 @@ const status = () => page.textContent("#status");
 const waitStatus = (re) => page.waitForFunction(
   (src) => new RegExp(src).test(document.getElementById("status").textContent), re.source);
 const pathList = () => page.$$eval("#path-list li", (l) => l.map((x) => x.innerText.split("\n")));
+// A timeline's rows: [part, time, gap, hosts, flow, account] (D30).
+const timeline = (within) => page.$$eval(`${within} ol.timeline li`, (l) => l.map((li) => [
+  li.className, li.querySelector(".time").textContent, li.querySelector(".gap")?.textContent || "",
+  li.querySelector("div").textContent, li.querySelector("small").textContent,
+  li.querySelector("small.accounts")?.textContent || ""]));
+// What a Copy button puts on the clipboard.
+const copied = async (selector) => {
+  await page.evaluate(() => { window.copiedText = null; navigator.clipboard.writeText = async (t) => { window.copiedText = t; }; });
+  await page.click(selector);
+  await page.waitForFunction(() => window.copiedText !== null);
+  return page.evaluate(() => window.copiedText);
+};
 const routeList = () => page.$$eval("#route-list li", (l) => l.map((x) => x.innerText.split("\n")));
 const findRoutes = async (src, srcTime, dst, dstTime) => {
   await page.fill("#route-src", src);
@@ -147,6 +159,19 @@ try {
                "CORP\\alice: 4624 (type 3) on FS01.corp.example at 2024-05-01T12:10:01.000Z");
   await page.waitForSelector("#detail-body dd.accounts");
   assert.equal(await page.textContent("#detail-body dd.accounts"), "CORP\\alice (1 flow)");
+  // The threat line's timeline (D30), folded under the details: its connections in time order,
+  // each with the gap since the one before, its part of the line and its accounts.
+  await page.waitForSelector("#line-timeline summary");
+  assert.equal(await page.textContent("#line-timeline summary"), "Threat line timeline (3)");
+  await page.click("#line-timeline summary");
+  assert.deepEqual(await timeline("#line-timeline"), [
+    ["up", "2024-05-01T12:00:00.000Z", "", "203.0.113.66 → 10.0.0.5", "1 flow · 443 · TLS", ""],
+    ["selected", "2024-05-01T12:10:00.000Z", "+10 min", "10.0.0.5 → 10.0.0.9", "1 flow · 445 · SMB", "Account: CORP\\alice"],
+    ["down", "2024-05-01T12:20:00.000Z", "+10 min", "10.0.0.9 → 10.0.0.20", "1 flow · 3389 · RDP", "Account: CORP\\admin"]]);
+  assert.deepEqual((await copied("#line-timeline button.copy")).split("\n").slice(0, 2), [
+    "First flow\tLast flow\tGap\tFrom\tTo\tPart\tFlows\tDst ports\tProtocols\tAccounts",
+    "2024-05-01T12:00:00.000Z\t2024-05-01T12:00:00.000Z\t\t203.0.113.66\t10.0.0.5\tearlier\t1\t443\tTLS\t"]);
+  assert.equal(await status(), "Threat line through 10.0.0.5 → 10.0.0.9: timeline copied to clipboard");
   assert.equal(await page.locator("#flows a, #flows button:has-text('PCAP')").count(), 0);   // no PCAP for case files
   await shot("threat-line");
 
@@ -176,6 +201,24 @@ try {
   assert.ok((await classes("10.0.0.77")).includes("faded"));
   assert.ok(!(await classes("10.0.0.9")).includes("faded"));
   assert.equal(await status(), "Attack path 203.0.113.66 → 10.0.0.20, 3 hop(s). Click the background to clear.");
+  // Its timeline (D30) in the details panel: each hop's flow, the gap since the hop before, and
+  // its account; copied as tab-separated text.
+  assert.equal(await page.textContent("#detail-body .timeline-title"),
+               "Attack path 203.0.113.66 → 10.0.0.5 → 10.0.0.9 → 10.0.0.20");
+  const hops = await timeline("#detail-body");
+  assert.deepEqual(hops.map((h) => [h[1], h[2], h[3], h[5]]), [
+    ["2024-05-01T12:00:00.000Z", "", "203.0.113.66 → 10.0.0.5", ""],
+    ["2024-05-01T12:10:00.000Z", "+10 min", "10.0.0.5 → 10.0.0.9", "Account: CORP\\alice"],
+    ["2024-05-01T12:20:00.000Z", "+10 min", "10.0.0.9 → 10.0.0.20", "Account: CORP\\admin"]]);
+  assert.match(hops[1][4], /^SMB · tcp 50001 → 445 · 2 pkts · \d+ B$/);
+  const tsv = (await copied("#detail-body button.copy")).trimEnd().split("\n").map((l) => l.split("\t"));
+  assert.deepEqual(tsv[0], ["Time", "Gap", "From", "To", "Proto", "Src port", "Dst port", "Protocol", "Packets", "Bytes",
+                            "Accounts"]);
+  assert.deepEqual(tsv.slice(1).map((r) => [r[1], r[2], r[3], r[5], r[6], r[7], r[10]]), [
+    ["", "203.0.113.66", "10.0.0.5", "50000", "443", "TLS", ""],
+    ["+10 min", "10.0.0.5", "10.0.0.9", "50001", "445", "SMB", "CORP\\alice"],
+    ["+10 min", "10.0.0.9", "10.0.0.20", "50002", "3389", "RDP", "CORP\\admin"]]);
+  assert.ok(tsv.slice(1).every((r) => r.length === 11 && /^\d+$/.test(r[9])), "bytes as plain numbers");
   await shot("attack-path");
 
   // Excluded hosts are never crossed: without 10.0.0.5 there is no path, and back with it.
