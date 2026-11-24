@@ -13,13 +13,19 @@ with 10.9.1.1 -> 10.9.1.2 on its own.
 
 DHCP (dhcpd.leases): 10.0.0.5 was ws-042's until 12:30, then laptop-7's.
 
+Windows Security events (Security.jsonl), the servers named by DNS answers (fs01.corp.example
+is 10.0.0.9, dc01.corp.example is 10.0.0.20): CORP\\alice logged on to FS01 over SMB and to DC01
+over WinRM from 10.0.0.5, then CORP\\admin to DC01 over remote desktop from 10.0.0.9.
+
 And on hosts of their own: a beacon, 10.8.0.5 -> 198.51.100.9 (443) about every minute (10%
 jitter, 30 times, from 13:23:20), and a long connection, 10.8.0.6 -> 198.51.100.10 (22), kept
 alive for two hours from 13:40.
 """
+import json
 import random
 import os
 import sys
+from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # for threatbridge
 from evidence import ACK, SYN, dns_answer, tcp, udp, write_pcap  # noqa: E402
@@ -62,6 +68,20 @@ lease 10.0.0.5 {
 """
 
 
+def logon(computer, t, user, ip, logon_type):
+    """A 4624 record as evtx_dump writes it, one JSON line."""
+    when = datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f0Z")
+    return json.dumps({"Event": {"System": {"EventID": 4624, "TimeCreated": {"#attributes": {"SystemTime": when}},
+                                            "Computer": computer},
+                                 "EventData": {"TargetUserName": user, "TargetDomainName": "CORP",
+                                               "LogonType": logon_type, "IpAddress": ip, "IpPort": "50001"}}})
+
+
+EVENTS = [logon("FS01.corp.example", T + 601, "alice", "10.0.0.5", 3),
+          logon("DC01.corp.example", T + 901, "alice", "10.0.0.5", 3),
+          logon("DC01.corp.example", T + 1203, "admin", "10.0.0.9", 10)]
+
+
 def beacon():
     rng, t, out = random.Random(5), T + 5000, []
     for _ in range(30):
@@ -79,13 +99,16 @@ def main(outdir):
     long_c, long_s, start = "10.8.0.6", "198.51.100.10", T + 6000
     packets += [(start, tcp(long_c, long_s, 41000, 22, SYN)), (start + 0.001, tcp(long_s, long_c, 22, 41000, SYN | ACK))]
     packets += [(start + 240 * k, tcp(long_c, long_s, 41000, 22, ACK, b"k")) for k in range(1, 31)]
-    # Before the chain, so it is not on any threat line.
-    packets += [(T - 1200, udp("10.0.0.9", "10.0.0.53", 40000, 53, b"q")),
-                (T - 1199.99, udp("10.0.0.53", "10.0.0.9", 53, 40000, dns_answer(
-                    "updates.example.com", [("updates.example.com", "A", "10.0.0.77")])))]
+    # Before the chain, so it is not on any threat line: one flow of DNS questions and answers.
+    for k, (name, ip) in enumerate([("updates.example.com", "10.0.0.77"), ("fs01.corp.example", "10.0.0.9"),
+                                    ("dc01.corp.example", "10.0.0.20")]):
+        packets += [(T - 1200 + k, udp("10.0.0.9", "10.0.0.53", 40000, 53, b"q")),
+                    (T - 1199.99 + k, udp("10.0.0.53", "10.0.0.9", 53, 40000, dns_answer(name, [(name, "A", ip)])))]
     write_pcap(os.path.join(outdir, "chain.pcap"), sorted(packets, key=lambda p: p[0]))
     with open(os.path.join(outdir, "dhcpd.leases"), "w") as fh:
         fh.write(LEASES)
+    with open(os.path.join(outdir, "Security.jsonl"), "w") as fh:
+        fh.write("".join(e + "\n" for e in EVENTS))
 
 
 if __name__ == "__main__":

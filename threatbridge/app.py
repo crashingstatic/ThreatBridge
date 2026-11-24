@@ -342,6 +342,16 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
         return jsonify(target=target, kind=kind, start=fmt_time(start) if start else None,
                        end=fmt_time(end) if end else None, **res)
 
+    @app.route("/api/accounts", methods=["GET", "POST"])
+    def api_accounts():
+        """The accounts that made a connection's flows, from Windows Security events (D28)."""
+        require("accounts")
+        a = args()
+        src, dst = parse_ip(a.get("src")), parse_ip(a.get("dst"))
+        start, end = clip(*from_to_args("start of the first flow"), range_arg())
+        found = backend.accounts(src, dst, start, end) if start <= end else []
+        return jsonify(src=src, dst=dst, start=fmt_time(start), end=fmt_time(end), accounts=found)
+
     @app.get("/api/machines")
     def api_machines_of():
         """Every machine that held an address in the time range (D27)."""

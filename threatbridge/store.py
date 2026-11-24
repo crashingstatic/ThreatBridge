@@ -13,7 +13,7 @@ from .filters import in_network
 from .model import Flow
 from .progress import QUIET, counted
 
-VERSION = "10"  # changes when flows are read or scored differently, so older stores are rebuilt
+VERSION = "11"  # changes when flows are read or scored differently, so older stores are rebuilt
 _SCHEMA = """
 CREATE TABLE flow (src TEXT, dst TEXT, sport INTEGER, dport INTEGER, proto TEXT,
                    start_ts REAL, end_ts REAL, packets INTEGER, bytes INTEGER, source TEXT,
@@ -22,6 +22,8 @@ CREATE TABLE dns (name TEXT, ip TEXT, first_ts REAL, last_ts REAL);
 CREATE TABLE beacon (src TEXT, dst TEXT, dport INTEGER, proto TEXT, connections INTEGER, first_ts REAL,
                      last_ts REAL, interval REAL, jitter REAL, size_jitter REAL, score REAL);
 CREATE TABLE lease (ip TEXT, mac TEXT, name TEXT, from_ts REAL, until_ts REAL, sources TEXT);
+CREATE TABLE logon (src TEXT, dst TEXT, start_ts REAL, sport INTEGER, dport INTEGER, proto TEXT, account TEXT,
+                    event INTEGER, logon_type INTEGER, at REAL, host TEXT, source TEXT);
 CREATE TABLE evidence (path TEXT, size INTEGER, mtime_ns INTEGER);
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
 """
@@ -29,7 +31,7 @@ _INDEXES = """
 CREATE INDEX flow_pair ON flow (src, dst, start_ts);
 """
 _BEACON_INDEX = "CREATE INDEX beacon_group ON beacon (src, dst, dport, proto);"
-_TABLES = {"flow", "dns", "beacon", "lease", "evidence", "meta"}
+_TABLES = {"flow", "dns", "beacon", "lease", "logon", "evidence", "meta"}
 _FAR = 1e18  # seconds
 _DROP = "".join(f"DROP TABLE IF EXISTS {t};" for t in sorted(_TABLES))
 _COLUMNS = "f.src, f.dst, f.sport, f.dport, f.proto, f.start_ts, f.end_ts, f.packets, f.bytes, f.source, f.service"
@@ -92,10 +94,11 @@ class FlowStore:
 
     # ---- building ---------------------------------------------------------------------
 
-    def write(self, flows, dns, evidence, progress=None, leases=()):
+    def write(self, flows, dns, evidence, progress=None, leases=(), logons=None):
         """Replace the contents with `flows`, the passive DNS map, the DHCP holdings
-        (dhcp.holdings) and the evidence manifest [(path, size, mtime_ns)]. `progress` (see
-        progress.py) shows how far it has got."""
+        (dhcp.holdings) and the evidence manifest [(path, size, mtime_ns)]. `logons`, if given,
+        is called with flows_between once the flows are in, and gives the logon labels
+        (logons.match). `progress` (see progress.py) shows how far it has got."""
         progress = progress or QUIET
         db = self._db()
         try:
@@ -130,6 +133,11 @@ class FlowStore:
                              s["score"]) for src, dst, dport, proto, n, first, last, s
                             in beacons.groups(counted(rows, stage))))
             db.execute(_BEACON_INDEX)
+        if logons is not None:
+            with db, progress.stage("Matching logons"):
+                labels = list(logons(self.flows_between))      # reads the flows: before writing
+                db.executemany("INSERT INTO logon VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", labels)
+                db.execute("CREATE INDEX logon_flow ON logon (src, dst, start_ts)")
         with db:   # last: a build that stopped before here is never reused
             db.execute("INSERT INTO meta VALUES ('version', ?)", (VERSION,))
 
@@ -169,6 +177,21 @@ class FlowStore:
                  f"FROM flow AS f WHERE f.end_ts - f.start_ts >= ? AND f.start_ts BETWEEN ? AND ? AND ({sql}) "
                  "GROUP BY f.src, f.dst ORDER BY max(f.end_ts - f.start_ts) DESC, f.src, f.dst LIMIT ?")
         return self._db().execute(query, (seconds, max(lo, -_FAR), min(hi, _FAR), *params, limit)).fetchall()
+
+    def flows_between(self, src, dst, lo, hi):
+        """(start, sport, dport, proto) of every flow src -> dst that started in [lo, hi]."""
+        return self._db().execute("SELECT start_ts, sport, dport, proto FROM flow WHERE src = ? AND dst = ? "
+                                  "AND start_ts BETWEEN ? AND ?", (src, dst, lo, hi)).fetchall()
+
+    def logons(self, src, dst, lo, hi):
+        """The logon labels (logons.match) of the flows src -> dst that started in [lo, hi]:
+        (start, sport, dport, proto, account, event, logon type, time, host, source), by start."""
+        return self._db().execute(
+            "SELECT start_ts, sport, dport, proto, account, event, logon_type, at, host, source FROM logon "
+            "WHERE src = ? AND dst = ? AND start_ts BETWEEN ? AND ? ORDER BY start_ts, at", (src, dst, lo, hi)).fetchall()
+
+    def logon_count(self):
+        return self._db().execute("SELECT count(*) FROM logon").fetchone()[0]
 
     def leases(self):
         """The DHCP holdings: [(ip, mac, name, from, until or None, [sources])], by address and time."""

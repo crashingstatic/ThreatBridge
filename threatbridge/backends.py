@@ -43,7 +43,7 @@ from .graph import build_graph, count_between
 from .progress import Progress, counted
 from .query import (ValidationError, es_details_body, es_dns_body, es_flows_body, es_protocols_body,
                     es_scan_body, es_top_body, fmt_time, parse_time, parse_window, soc_pcap_url)
-from .sources import dhcp
+from .sources import dhcp, logons
 from .store import FlowStore, NotAStore
 
 log = logging.getLogger(__name__)
@@ -112,7 +112,7 @@ def _flow_row(f, status):
     return {"start": fmt_time(_utc(f.start)), "end": fmt_time(_utc(f.end)), "src": f.src,
             "sport": f.sport, "dst": f.dst, "dport": f.dport, "proto": f.proto,
             "protocols": [f.service], "packets": f.packets, "bytes": f.bytes,
-            "community_id": community_id(f.src, f.dst, f.proto, f.sport, f.dport), "status": status}
+            "community_id": community_id(f.src, f.dst, f.proto, f.sport, f.dport), "accounts": [], "status": status}
 
 
 def marked_flow_rows(backend, edges, flows, limit):
@@ -127,13 +127,14 @@ def marked_flow_rows(backend, edges, flows, limit):
         row = {"start": m["start"], "end": None, "src": m["src"], "sport": m["sport"], "dst": m["dst"],
                "dport": m["dport"], "proto": m["proto"], "protocols": [], "packets": None, "bytes": None,
                "community_id": community_id(m["src"], m["dst"], m["proto"], m["sport"], m["dport"]),
-               "status": "marked"}
+               "accounts": [], "status": "marked"}
         found = backend.flows(m["src"], m["dst"], t, t + timedelta(milliseconds=1), 0, 50)["flows"]
         for f in found:
             if (f["start"], f["sport"], f["dport"], str(f["proto"])) == (m["start"], m["sport"], m["dport"], m["proto"]):
                 end = (None if f.get("duration") is None
                        else fmt_time(parse_time(f["start"]) + timedelta(seconds=f["duration"])))
-                row.update(end=end, protocols=f["protocols"], packets=f["packets"], bytes=f["bytes"])
+                row.update(end=end, protocols=f["protocols"], packets=f["packets"], bytes=f["bytes"],
+                           accounts=sorted({a["account"] for a in f.get("accounts", [])}))
                 break
         rows.append(row)
     return rows
@@ -457,7 +458,7 @@ class CaseBackend:
 
     GRAPHS_KEPT = 4   # filtered graphs kept for reuse (D17)
 
-    def __init__(self, cfg, flows=None, dns=None, progress=None, leases=None):
+    def __init__(self, cfg, flows=None, dns=None, progress=None, leases=None, events=None):
         self.cfg, self.flags = cfg, filters.flag_limits(cfg)
         self._tmp = None
         self._graphs, self._graphs_lock = OrderedDict(), threading.Lock()
@@ -471,7 +472,9 @@ class CaseBackend:
         with _build_lock(cfg.case_db):
             if flows is not None:   # given directly (tests, scripts)
                 self.dns = dns or {}
-                self._write(flows, [], dhcp.holdings(leases or []))
+                held = dhcp.holdings(leases or [])
+                claims = [c for rec in (events or []) for c in logons.claims_of(rec, "events")]
+                self._write(flows, [], held, self._labeller(claims, held))
                 self.graph = build_graph((f.src, f.dst, f.start) for f in flows)
             else:
                 self._load(cfg.case_paths, cfg.read_workers or os.cpu_count() or 1)
@@ -484,27 +487,52 @@ class CaseBackend:
                  self.flow_count, self.graph.number_of_nodes(), self.graph.number_of_edges(),
                  len(self.dns), time.monotonic() - t)
 
+    def _labeller(self, claims, held):
+        """What writes the logon labels (D28) once the flows are stored; None without claims."""
+        if not claims:
+            return None
+        hosts = None
+        if self.cfg.hosts_file:
+            try:
+                hosts = logons.read_hosts(self.cfg.hosts_file)
+            except OSError as e:
+                raise sources.SourceError(f"TB_HOSTS_FILE: can't read {self.cfg.hosts_file} ({e.strerror})")
+        names = logons.Names(held, self.dns, hosts)
+        tolerance = parse_window(self.cfg.logon_tolerance).total_seconds()
+        return lambda flows_between: logons.match(claims, names, flows_between, tolerance)
+
     def _load(self, paths, workers):
         found = sources.find(paths)
-        evidence = sources.manifest(found)
+        files = sources.manifest(found)
+        evidence = list(files)
+        if self.cfg.hosts_file:                    # a changed hosts file rebuilds the case too
+            try:
+                st = os.stat(self.cfg.hosts_file)
+            except OSError as e:
+                raise sources.SourceError(f"TB_HOSTS_FILE: can't read {self.cfg.hosts_file} ({e.strerror})")
+            evidence.append((os.path.abspath(self.cfg.hosts_file), st.st_size, st.st_mtime_ns))
+        # The settings that change what is stored rebuild the case too.
+        evidence += [(f"setting TB_DHCP_TIMEZONE={self.cfg.dhcp_timezone}", 0, 0),
+                     (f"setting TB_LOGON_TOLERANCE={self.cfg.logon_tolerance}", 0, 0)]
         if self.store.matches(evidence):
             log.info("reusing %s: the evidence files are unchanged", self.store.path)
             self.dns = self.store.dns()
         else:
-            self.dns, observations = {}, []
+            self.dns, observations, claims = {}, [], []
             tz = dhcp.timezone_named(self.cfg.dhcp_timezone)
-            total = sum(size for _, size, _ in evidence)
-            with self.progress.stage(f"Reading {len(evidence)} evidence file(s)", total) as stage:
-                flows = sources.read(found, self.dns, workers, stage, observations, tz)
-            self._write(flows, evidence, dhcp.holdings(dhcp.named(observations)))
+            total = sum(size for _, size, _ in files)
+            with self.progress.stage(f"Reading {len(files)} evidence file(s)", total) as stage:
+                flows = sources.read(found, self.dns, workers, stage, observations, tz, claims)
+            held = dhcp.holdings(dhcp.named(observations))
+            self._write(flows, evidence, held, self._labeller(claims, held))
             del flows
         n = self.store.stats()[0]
         with self.progress.stage("Building the graph", n) as stage:
             self.graph = build_graph(counted(self.store.pairs(), stage))
 
-    def _write(self, flows, evidence, leases=()):
+    def _write(self, flows, evidence, leases=(), labeller=None):
         try:
-            self.store.write(flows, self.dns, evidence, self.progress, leases)
+            self.store.write(flows, self.dns, evidence, self.progress, leases, labeller)
         except NotAStore as e:
             raise sources.SourceError(str(e))
         except sqlite3.Error as e:
@@ -518,6 +546,7 @@ class CaseBackend:
             "end": fmt_time(self.span[1]) if self.span else None,
             "dns_names": len(self.dns),
             "leases": sum(map(len, self.leases.values())),
+            "logons": self.store.logon_count(),
         }
 
     # ---- filters (D17): what a query may use ------------------------------------------------
@@ -703,10 +732,36 @@ class CaseBackend:
         else:
             total = count_between(g[src][dst]["times"], lo, hi)[0] if g.has_edge(src, dst) else 0
         page = self.store.flows(src, dst, lo, hi, offset, limit, where, within) if offset < total else []
+        labels = self._labels(src, dst, page[0].start, page[-1].start) if page else {}
         return {"total": total, "flows": [{
             "start": fmt_time(_utc(f.start)), "duration": round(f.end - f.start, 6),
             "sport": f.sport, "dport": f.dport, "proto": f.proto, "packets": f.packets,
-            "bytes": f.bytes, "protocols": [f.service]} for f in page]}
+            "bytes": f.bytes, "protocols": [f.service],
+            "accounts": labels.get((f.start, f.sport, f.dport, f.proto), [])} for f in page]}
+
+    def _labels(self, src, dst, lo, hi):
+        """{(start, sport, dport, proto): [account label, ...]} of the flows src -> dst that
+        started in [lo, hi] (D28)."""
+        out = {}
+        for start, sport, dport, proto, account, event, logon_type, at, host, _ in self.store.logons(src, dst, lo, hi):
+            out.setdefault((start, sport, dport, proto), []).append(
+                {"account": account, "event": event, "logon_type": logon_type, "time": fmt_time(_utc(at)),
+                 "host": host})
+        return out
+
+    def accounts(self, src, dst, start, end):
+        """The accounts that made flows src -> dst that started in [start, end] (D28): each with
+        how many flows, the first and last of them, and the events that tell it, earliest first."""
+        lo, hi = start.timestamp() - TIME_SLACK, end.timestamp() + TIME_SLACK
+        found = {}
+        for flow_start, sport, dport, proto, account, event, *_ in self.store.logons(src, dst, lo, hi):
+            a = found.setdefault(account, {"account": account, "flows": set(), "events": set()})
+            a["flows"].add((flow_start, sport, dport, proto))
+            a["events"].add(event)
+        return sorted(({"account": a["account"], "flows": len(a["flows"]),
+                        "first_seen": fmt_time(_utc(min(f[0] for f in a["flows"]))),
+                        "last_seen": fmt_time(_utc(max(f[0] for f in a["flows"]))), "events": sorted(a["events"])}
+                       for a in found.values()), key=lambda a: (a["first_seen"], a["account"]))
 
     def protocols(self, start, end, scope=None):
         """(start, end, {protocol: flows}) of the flows that started in the time range (the whole
@@ -813,6 +868,7 @@ class CaseBackend:
                     truncated = True
                     break
                 row = _flow_row(f, "suspect")
+                row["accounts"] = self._flow_accounts(f)
                 if (f.src, f.dst, row["start"], f.sport, f.dport, f.proto) in keys:
                     row["status"] = "marked"
                 rows.append(row)
@@ -827,8 +883,14 @@ class CaseBackend:
             flows[h] = self.store.flow_at(h.src, h.dst, h.start, where)
         return [{"hops": [{"source": f.src, "target": f.dst, "start": fmt_time(_utc(f.start)),
                            "sport": f.sport, "dport": f.dport, "proto": f.proto,
-                           "packets": f.packets, "bytes": f.bytes, "protocols": [f.service]}
+                           "packets": f.packets, "bytes": f.bytes, "protocols": [f.service],
+                           "accounts": self._flow_accounts(f)}
                           for f in (flows[h] for h in hops)]} for hops in found]
+
+    def _flow_accounts(self, f):
+        """The accounts that made one flow (D28), sorted."""
+        return sorted({a["account"] for a in self._labels(f.src, f.dst, f.start, f.start).get(
+            (f.start, f.sport, f.dport, f.proto), [])})
 
 
 @contextmanager

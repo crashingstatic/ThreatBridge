@@ -223,6 +223,7 @@
   // was at its time, and whether its address changed hands in the time range.
   let machinesAsked = 0;
   const hasLeases = () => Boolean(cfg.case && cfg.case.leases);
+  const hasLogons = () => Boolean(cfg.case && cfg.case.logons);   // D28: accounts from Windows events
   const machineText = (m) => (m ? `${m.name || "no name"} (${m.mac})` : "unknown");
 
   async function refreshMachines() {
@@ -543,8 +544,26 @@
     showDetails(rows);
     flowsFor = { src: e.data("source"), dst: e.data("target"), from: e.data("first_seen"), to: e.data("last_seen"),
                  within: e.data("kept") ? e.data("kept").within : null };
+    if (hasLogons()) showAccounts(flowsFor).catch(() => {});
     loadFlows(flowsFor, 0).catch((err) => fail(err));
   }
+
+  // The accounts that made the connection's flows (D28), under its details when any are known.
+  async function showAccounts(conn) {
+    const r = await getJSON(`/api/accounts?${withRange(new URLSearchParams({ src: conn.src, dst: conn.dst,
+                                                                             from: conn.from, to: conn.to }))}`);
+    if (flowsFor !== conn || !r.accounts.length) return;
+    const text = r.accounts.map((a) => `${a.account} (${a.flows} flow${a.flows === 1 ? "" : "s"})`).join(", ");
+    $("detail-body").querySelector("dl").append(el("dt", { textContent: "Accounts" }),
+                                                el("dd", { className: "accounts", textContent: text }));
+  }
+
+  // The accounts of one flow or hop, each once, in order: ["CORP\\alice", ...].
+  const accountNames = (accounts) => [...new Set((accounts || []).map((a) => (typeof a === "string" ? a : a.account)))];
+
+  // Which events tell a flow's accounts: "4624 (type 10) on DC01 at 12:10:05".
+  const accountEvents = (accounts) => accounts.map((a) =>
+    `${a.account}: ${a.event}${a.logon_type ? ` (type ${a.logon_type})` : ""} on ${a.host} at ${a.time}`).join("\n");
 
   // ---- a connection's flows, oldest first, a page at a time -----------------
   async function loadFlows(conn, offset) {
@@ -579,6 +598,10 @@
                      page("Last", last, r.offset < last));
     const list = el("ol", { className: "flows", start: r.offset + 1 }, ...r.flows.map((f) => {
       const li = el("li", { textContent: f.start }, el("small", { textContent: flowMeta(f) }));
+      if (f.accounts && f.accounts.length) {
+        li.append(el("small", { className: "accounts", textContent: `Account: ${accountNames(f.accounts).join(", ")}`,
+                                title: accountEvents(f.accounts) }));
+      }
       if (f.community_id) li.append(el("code", { className: "cid", textContent: f.community_id, title: "Community ID" }));
       const actions = flowActions(conn, f);
       if (actions) li.append(actions);
@@ -1143,12 +1166,33 @@
     if (paths.length) relayout();
   }
 
+  // The accounts of each hop of a path (D28), "CORP\\alice → CORP\\admin", a hop whose account
+  // differs from the hop before it highlighted; null when no hop's account is known.
+  function pathAccounts(p) {
+    const names = p.hops.map((h) => accountNames(h.accounts));
+    if (!names.some((n) => n.length)) return null;
+    const small = el("small", { className: "accounts" });
+    let before = null;
+    names.forEach((n, i) => {
+      if (i) small.append(" → ");
+      const changed = before && n.length && !n.some((a) => before.includes(a));
+      small.append(el("span", { className: changed ? "changed" : "", textContent: n.length ? n.join("/") : "?" }));
+      if (n.length) before = n;
+    });
+    return small;
+  }
+
   // "a → b → c", and below it the first and last hop's times; click to focus on the path.
   function pathItem(p, what) {
     const hosts = [p.hops[0].source, ...p.hops.map((h) => h.target)];
     // In spans: a timestamp wraps as a whole.
     const [first, last] = [p.hops[0], p.hops[p.hops.length - 1]].map((h) => el("span", { textContent: h.start }));
     const li = el("li", { className: "path", textContent: hosts.join(" → ") }, el("small", {}, first, " → ", last));
+    const accounts = pathAccounts(p);
+    if (accounts) {
+      li.append(accounts);
+      if (accounts.querySelector(".changed")) li.classList.add("account-change");
+    }
     li.addEventListener("click", () => {
       focus(pathElements(p));
       setStatus(`${what} ${hosts[0]} → ${hosts[hosts.length - 1]}, ${p.hops.length} hop(s). ` +
@@ -1401,7 +1445,8 @@
     saveFile(new Blob([csv(["ip", "time", "note", "marked", "count"], r.hosts)], { type: "text/csv" }),
              `threatbridge-${name}-hosts.csv`);
     saveFile(new Blob([csv(["start", "end", "src", "sport", "dst", "dport", "proto", "protocols", "packets", "bytes",
-                            "community_id", "status"], r.flows)], { type: "text/csv" }), `threatbridge-${name}-flows.csv`);
+                            "community_id", "accounts", "status"], r.flows)], { type: "text/csv" }),
+             `threatbridge-${name}-flows.csv`);
     setStatus(`Exported ${r.hosts.length} marked host(s) and ${r.flows.length} marked or suspect flow(s)` +
               (r.truncated ? " (the first ones only)" : ""), false, r.truncated);
   }

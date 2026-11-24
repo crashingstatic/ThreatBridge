@@ -99,6 +99,11 @@ class Config:
     beacon_min: int = 10
     long_connection: str = "1h"
 
+    # Windows Security events (D28): how far apart in time an event and the flow it labels may
+    # be (clocks differ), and a hosts file of names and addresses besides DHCP and DNS.
+    logon_tolerance: str = "2m"
+    hosts_file: str = None
+
     # The time zone Windows DHCP server audit logs are written in (their server's), an IANA name.
     dhcp_timezone: str = "UTC"
 

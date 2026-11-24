@@ -4,7 +4,7 @@ import logging
 import os
 
 from ..model import SourceError
-from . import dhcp
+from . import dhcp, logons
 from .netflow import read_nfcapd
 from .pcap import read_pcaps
 
@@ -27,6 +27,8 @@ def _kind(path):
         return "nfcapd"
     if dhcp.kind(head):
         return "dhcp"
+    if logons.kind(head):
+        return "events"
     return None
 
 
@@ -37,7 +39,7 @@ def _being_written(path):
 def _problem(path, kind):
     """Why a file of this kind can't be read as evidence, or None if it can."""
     if not kind:
-        return "not a pcap, pcapng, nfcapd or DHCP log file"
+        return "not a pcap, pcapng, nfcapd, DHCP log or Windows event log file"
     if kind == "nfcapd" and _being_written(path):
         return "nfcapd is still being written to; use the files it has already rotated"
     return None
@@ -64,7 +66,7 @@ def find(paths):
     once however many times it is named (directly, through its directory, or through a
     symlink). A file named itself that can't be read is an error; one found in a directory is
     skipped."""
-    found, seen = {"pcap": [], "nfcapd": [], "dhcp": []}, set()
+    found, seen = {"pcap": [], "nfcapd": [], "dhcp": [], "events": []}, set()
     for path, explicit in _files(paths):
         real = os.path.realpath(path)
         if real in seen:
@@ -86,19 +88,20 @@ def find(paths):
 def manifest(found):
     """[(absolute path, size, mtime_ns)] for the files in `found`: what a case was built from."""
     out = []
-    for path in found["pcap"] + found["nfcapd"] + found.get("dhcp", []):
+    for path in found["pcap"] + found["nfcapd"] + found.get("dhcp", []) + found.get("events", []):
         st = os.stat(path)
         out.append((os.path.abspath(path), st.st_size, st.st_mtime_ns))
     return out
 
 
-def read(found, dns=None, workers=1, stage=None, dhcp_observations=None, dhcp_tz=None):
+def read(found, dns=None, workers=1, stage=None, dhcp_observations=None, dhcp_tz=None, logon_claims=None):
     """Flows from the files in `found`, sorted by start time.
 
     If `dns` is a dict, it is filled with the DNS answers seen in the pcaps:
     {name: {ip: [first seen, last seen]}}. NetFlow carries no DNS content. If
     `dhcp_observations` is a list, it gets what the DHCP logs and the DHCP messages in the
-    pcaps tell (dhcp.py), Windows logs read in zone `dhcp_tz`.
+    pcaps tell (dhcp.py), Windows logs read in zone `dhcp_tz`. If `logon_claims` is a list, it
+    gets the claims the Windows Security events make (logons.py).
     workers: how many files to read at once, in worker processes. `stage` (see progress.py)
     is told the bytes read."""
     stage = stage or (lambda amount=0, note=None: None)
@@ -107,6 +110,10 @@ def read(found, dns=None, workers=1, stage=None, dhcp_observations=None, dhcp_tz
         for path in found.get("dhcp", []):
             dhcp_observations.extend(dhcp.read_file(path, dhcp_tz or dhcp.timezone_named("UTC")))
             stage(os.path.getsize(path), f"DHCP log {os.path.basename(path)}")
+    if logon_claims is not None:
+        for path in found.get("events", []):
+            logon_claims.extend(logons.read_file(path))
+            stage(os.path.getsize(path), f"events {os.path.basename(path)}")
     if found["pcap"]:
         flows.extend(read_pcaps(found["pcap"], dns, workers, stage, dhcp_observations))
     if found["nfcapd"]:

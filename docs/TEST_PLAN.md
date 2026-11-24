@@ -21,6 +21,9 @@ plan holds only what those tests can't check, and why:
   generate. Real ones can hold what the generator doesn't, so they are compared with what Zeek,
   read independently, makes of the same traffic. NetFlow often reaches back further than full
   packet capture, so it may be the only evidence of how an incident began.
+- **A real Windows domain's logs** (WIN-01). CI reads DHCP logs and Windows Security events
+  written by hand in their formats. A real DHCP server and real `.evtx` files, matched against
+  a capture of the same activity, are only checked here.
 - **How the browser feels on a large case** (PRF-01). CI times the server's answers (PRF-3), but
   not how fast a real browser draws hundreds of hosts, or whether panning stays smooth while
   attack paths are recomputed.
@@ -179,6 +182,33 @@ zc() { docker run --rm -i -v $W:/w -w /w zeek/zeek zeek-cut "$@"; }   # zeek-cut
 TB_LIVE_DNS=false TB_EXCLUDE_FILE=$W/exclude.json TB_COMPROMISED_FILE=$W/compromised.json TB_SESSIONS_DIR=$W/sessions \
 python -m threatbridge --case $W/real.pcap --port 5056
 # open the address it prints (http://127.0.0.1:5056/?token=...) once; the browser stays logged in until the server restarts
+```
+
+### ENV-WIN: a small Windows domain, its logs and a capture of it
+
+A domain `corp.example` on one network that a Linux host can capture (a hypervisor bridge, or a
+switch's mirror port): DC01, a Windows Server domain controller with the DHCP Server role;
+FS01, a member server with a shared folder; WS01, a member workstation that gets its address
+from DC01 by DHCP. Accounts: `CORP\alice` (a domain user) and `CORP\admin` (a domain admin).
+Remote Desktop is on at FS01, and WinRM at DC01 (on by default on Windows Server). Windows logs
+successful logons and Kerberos tickets by default; check with
+`auditpol /get /category:"Logon/Logoff","Account Logon"` on each host (*Logon*, *Kerberos
+Authentication Service* and *Kerberos Service Ticket Operations*: Success).
+
+```bash
+export W=$(mktemp -d); mkdir $W/case; echo $W
+sudo tcpdump -i <interface> -s 0 -w $W/case/domain.pcap     # through WIN-01 step 3; then Ctrl+C
+sudo chown $USER $W/case/domain.pcap
+```
+
+Then, on each host, `wevtutil epl Security C:\Security-%COMPUTERNAME%.evtx`, and on DC01 also
+copy `C:\Windows\System32\dhcp\DhcpSrvLog-*.log`; put the files in `$W/case`. Note DC01's time
+zone (`tzutil /g`) as an IANA name, e.g. `Europe/Berlin` for *W. Europe Standard Time*.
+
+```bash
+TB_DHCP_TIMEZONE=<DC01's zone> TB_LIVE_DNS=false TB_EXCLUDE_FILE=$W/exclude.json \
+TB_COMPROMISED_FILE=$W/compromised.json TB_SESSIONS_DIR=$W/sessions \
+python -m threatbridge --case $W/case --port 5058
 ```
 
 ### ENV-SO: a Security Onion 2.4 deployment
@@ -375,6 +405,23 @@ NetFlow served on another port, and `http://127.0.0.1:5057/` open:
 | 3 | For one flow, from port P, list its records: `TZ=UTC nfdump -R $W/nf -N -o long 'proto tcp and host A and host B and port P'`. | Two records, one each way, with the same *Date first seen*. The flow's packets and bytes are the sums of the two records'; its start is their *Date first seen*. | The two one-way records are merged (ING-2). | |
 | 4 | Find REAL-01 step 5's FTP connections here. | The control connections, and active-mode data connections (from port 20), are `FTP`; a passive transfer's data connection, both ports high, is `Unknown`: NetFlow has no payload to follow `PASV` in. | FTP in NetFlow is named by port only (D14). | |
 
+### WIN-01 · A real Windows domain's DHCP log and Security logs name the machine behind an address and the account on each hop (ING-9, ING-10, ING-11, ATK-13, D27, D28)
+
+CI reads DHCP logs and Windows events written by hand. This test reads a real DHCP server's
+audit log and real `.evtx` files, and checks the labels against what was done.
+
+**Environment:** ENV-WIN. **Starting state:** tcpdump running.
+
+| # | Do | Expect | Proves | Result |
+|---|---|---|---|---|
+| 1 | On WS01, as `CORP\alice`: `ipconfig /release`, then `ipconfig /renew`. Note WS01's address (A), its MAC address (`getmac`), and the time. | (Checked in step 4.) | | |
+| 2 | Still as alice, open `\\FS01\<share>` in Explorer and list it. Note the time. Then `mstsc /v:FS01`, and log on as `CORP\admin`. In that session, in PowerShell: `Enter-PSSession DC01`, then `hostname`, then `exit`. Note the time. | (Checked in steps 5 and 6.) | | |
+| 3 | Stop tcpdump; collect the logs and start the server as ENV-WIN says. Open the address it prints. | The status line shows the case loaded; the server's log names no file it couldn't read. | `.evtx` files and the DHCP log are recognised by content (D27, D28). | |
+| 4 | Map A outbound; right-click A, Escape. | The details' *Machine* row names WS01 (the name as the DHCP log has it) and its MAC address. A has no dashed outline, unless another machine held A in the case's time span. | A real Windows DHCP log, in its server's time zone (ING-9, ING-10). | |
+| 5 | Left-click the arrow from A to FS01's address. | The details have an *Accounts* row naming `CORP\alice` and `CORP\admin`. In the flow list, the SMB flow (445) at step 2's first time says `Account: CORP\alice`, and its tooltip names a 4624 (type 3) on FS01, a 4769 on DC01, or both; the RDP flow (3389) says `Account: CORP\admin`, with a 4624 (type 10) on FS01. No machine account (ending in `$`) is named. | Real events matched to flows by address, name, time and port (ING-11, D28). | |
+| 6 | Mark A and DC01's address compromised (*time unknown*). | Under *Attack paths*, a path A → FS01 → DC01 has a line of accounts under it, its last hop `CORP\admin` (WinRM, 5985). An account that differs from the hop before it is in orange. | Accounts per hop; a change of account shown (ATK-13). | |
+| 7 | **Export CSV**. | The flows file has an `accounts` column; the A → FS01 and FS01 → DC01 rows name the accounts of steps 5 and 6. | Accounts in the export (D28). | |
+
 ### SO-01 · SOC actions open the map at the event's IP and time (EXT-1)
 
 **Environment:** ENV-SO. **Starting state:** logged in to SOC; ThreatBridge reachable with the analyst's certificate.
@@ -470,6 +517,12 @@ generated case) and `ui_mtls.mjs` (the container). *Manual* names the tests abov
 | ING-3 Directories of pcaps, rotated captures | `test_sources.py` | |
 | ING-4 Addresses, ports, times, protocol | `test_sources.py`, `test_case.py`, `test_backends.py` (Elasticsearch fields, configurable); flow lines in `ui_case.mjs`, `ui_actions.mjs` | REAL-01, REAL-02, SO-02 (field names on a live install) |
 | ING-5 FTP data connections, as Zeek names them | `test_sources.py` (control messages; active, passive and EPSV transfers; a non-FTP greeting, the wrong side, too late, used once; read in worker processes) | REAL-01 step 5, REAL-02 step 4 (a real FTP session against Zeek) |
+| ING-6 pcapng | `test_pcapng.py` (files written byte by byte; files written by Wireshark's `editcap` and `mergecap`) | |
+| ING-7 Two-way NetFlow records | `test_sources.py` (an IPFIX biflow through a real nfcapd) | |
+| ING-8 Community ID | `test_communityid.py` (the specification's test vectors); `ui_case.mjs` (flow list), `ui_marks.mjs` (CSV) | |
+| ING-9 DHCP leases | `test_dhcp.py` (each format, written by hand; DHCP in a capture; hand-overs, renewals, expiry) | WIN-01 steps 1, 4 |
+| ING-10 Machine behind an address | `test_dhcp.py` (`/api/machines`); `ui_case.mjs` (outline, *Machine* and *Held by* rows, legend) | WIN-01 step 4 |
+| ING-11 Windows Security events | `test_logons.py` (records written by hand; a stand-in for the `evtx` library, and the library itself on an unreadable file) | WIN-01 steps 3, 5 |
 | ING-S2 Security Onion integration | `test_domains.py`, `test_backends.py` (Zeek DNS records); `test_soc.py` (Connect API against a stand-in); `ui_smoke.mjs` (PCAP links and download) | SO-03, SO-04, SO-05 |
 | GRA-1 Directed graph | `test_case.py`, `test_backends.py`; `ui_actions.mjs` | SO-02 |
 | GRA-2 Hosts and connections displayed | `ui_smoke.mjs`, `ui_case.mjs`, `ui_actions.mjs` (elements, labels, layout) | VIS-01 |
@@ -486,6 +539,10 @@ generated case) and `ui_mtls.mjs` (the container). *Manual* names the tests abov
 | ATK-7 Hide what isn't on a line through the marks | `test_analysis.py` (the user story's timeline; against brute force), `test_marks.py` (`/api/suspect`: parts, Window, time range, filters, sent marks); `ui_marks.mjs`, `ui_case.mjs` | VIS-02 step 2, VIS-03 |
 | ATK-8 Marks shared within 5 seconds | `test_marks.py` (versions); `ui_marks.mjs` (a second analyst's page, both ways) | SO-07 step 4 (two workstations through the deployment) |
 | ATK-9 Filters in threat lines and paths | `test_marks.py` (threat line, paths between hosts, attack paths, marked flows passing) | |
+| ATK-10 Expand in the past or the future | `test_case.py` (`time=before|after`); `ui_actions.mjs` (the four menu items) | |
+| ATK-11 Who talked to an address | `test_case.py` (`/api/contacts`); `ui_case.mjs` (the side panel, the menu item) | |
+| ATK-12 Beacons and long connections | `test_beacons.py` (scores, the store, `/api/flagged`, filter words); `ui_case.mjs` (markers, the side panel) | |
+| ATK-13 Accounts on flows and hops | `test_logons.py` (matching; `/api/accounts`; flows, paths); `ui_case.mjs` (flow list, details, path list), `ui_marks.mjs` (CSV column) | WIN-01 steps 5–7 |
 | INT-1 Threat line on edge click | `test_analysis.py`, `test_case.py`; `ui_case.mjs`, `ui_actions.mjs` | VIS-02 |
 | INT-2 Earlier and later communications | `test_analysis.py`; `ui_case.mjs`, `ui_actions.mjs` | VIS-02 |
 | INT-3 Iterative refinement | `ui_case.mjs`, `ui_actions.mjs` | |
@@ -518,6 +575,9 @@ generated case) and `ui_mtls.mjs` (the container). *Manual* names the tests abov
 | EXT-S5 Self-description | `test_openapi.py` (version, limits), `test_filters.py` (the vocabulary is what the parser takes), `test_case.py`, `test_backends.py` (protocol counts) | |
 | EXT-S6 Map format | `test_openapi.py` (the format, and the maps the browser tests save) | |
 | Mutual TLS | `mtls_check.sh`, `ui_mtls.mjs` (CI Docker job) | TLS-01 (a browser's own certificate store); ENV-SO uses it |
+| SEC-1, SEC-2 Local mode: Host check, login token (D23) | `test_local.py`; the browser suites log in with the token | |
+| SEC-3, SEC-4 Locked and pinned dependencies (D24) | `test_supply_chain.py` | |
+| SEC-5 Signed releases (D24) | actionlint (CI lint job) | Not yet run on a real tag |
 | D3 Edge left-click / right-click | `ui_smoke.mjs`, `ui_case.mjs`, `ui_actions.mjs` | XB-01 (other browsers) |
 | D14 Protocols, and the highlight | `test_sources.py` (payload signatures, ports, FTP data connections, both readers), `test_case.py`, `test_backends.py`, `test_query.py` (Zeek's `network.protocol`); `ui_case.mjs`, `ui_actions.mjs`, `ui_smoke.mjs` (drop-down, highlight, saved maps) | VIS-01 step 5; REAL-01 steps 4, 5; REAL-02 steps 2, 4; SO-02 step 8 |
 | D6, D7 Inputs, connection rules; refused connections left out | `test_sources.py`; `test_query.py`, `test_config.py` (Zeek's `REJ` in Elasticsearch) | REAL-01, REAL-02 (against Zeek); SO-02 step 5 |

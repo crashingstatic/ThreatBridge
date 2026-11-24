@@ -534,6 +534,135 @@
     }
    }
   },
+  "/api/accounts": {
+   "get": {
+    "summary": "The accounts that made a connection's flows (D28)",
+    "description": "From Windows Security events 4624, 4648, 4768 and 4769 matched to the flows src -> dst that started in [from, to]. Case backend only.",
+    "parameters": [
+     {
+      "name": "src",
+      "in": "query",
+      "description": "the initiator",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "dst",
+      "in": "query",
+      "description": "the responder",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "from",
+      "in": "query",
+      "description": "the start of the first flow wanted",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "to",
+      "in": "query",
+      "description": "the start of the last; default from",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "range_from",
+      "in": "query",
+      "description": "the start of the analyst's time range: only flows that started in it count",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "range_to",
+      "in": "query",
+      "description": "the end of the analyst's time range",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Accounts"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/E400"
+     },
+     "401": {
+      "$ref": "#/components/responses/E401"
+     },
+     "421": {
+      "$ref": "#/components/responses/E421"
+     },
+     "501": {
+      "$ref": "#/components/responses/E501"
+     }
+    }
+   },
+   "post": {
+    "summary": "The accounts that made a connection's flows (D28)",
+    "description": "From Windows Security events 4624, 4648, 4768 and 4769 matched to the flows src -> dst that started in [from, to]. Case backend only.",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/write"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/AccountsQueryBody"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Accounts"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/E400"
+     },
+     "401": {
+      "$ref": "#/components/responses/E401"
+     },
+     "403": {
+      "$ref": "#/components/responses/E403"
+     },
+     "421": {
+      "$ref": "#/components/responses/E421"
+     },
+     "501": {
+      "$ref": "#/components/responses/E501"
+     }
+    }
+   }
+  },
   "/api/config": {
    "get": {
     "summary": "What a client needs to know about this server (D20)",
@@ -2363,6 +2492,219 @@
    }
   },
   "schemas": {
+   "AccountLabel": {
+    "additionalProperties": false,
+    "description": "An account a Windows Security event ties to a flow (D28).",
+    "properties": {
+     "account": {
+      "description": "DOMAIN\\user, or user@REALM for Kerberos events",
+      "type": "string"
+     },
+     "event": {
+      "description": "the event ID that tells it",
+      "enum": [
+       4624,
+       4648,
+       4768,
+       4769
+      ],
+      "type": "integer"
+     },
+     "logon_type": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "4624: the logon type (3 network, 8 network cleartext, 10 remote)"
+     },
+     "time": {
+      "description": "the event's time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+      "type": "string"
+     },
+     "host": {
+      "description": "the computer the event names: where it was logged, or the service's host",
+      "type": "string"
+     }
+    },
+    "required": [
+     "account",
+     "event",
+     "logon_type",
+     "time",
+     "host"
+    ],
+    "type": "object"
+   },
+   "AccountSummary": {
+    "additionalProperties": false,
+    "properties": {
+     "account": {
+      "type": "string"
+     },
+     "flows": {
+      "description": "the connection's flows it made",
+      "type": "integer"
+     },
+     "first_seen": {
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+      "type": "string"
+     },
+     "last_seen": {
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+      "type": "string"
+     },
+     "events": {
+      "description": "the event IDs that tell it",
+      "items": {
+       "type": "integer"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "account",
+     "flows",
+     "first_seen",
+     "last_seen",
+     "events"
+    ],
+    "type": "object"
+   },
+   "Accounts": {
+    "additionalProperties": false,
+    "examples": [
+     {
+      "accounts": [
+       {
+        "account": "CORP\\alice",
+        "events": [
+         4624
+        ],
+        "first_seen": "2024-05-01T12:10:00.000Z",
+        "flows": 1,
+        "last_seen": "2024-05-01T12:10:00.000Z"
+       }
+      ],
+      "dst": "10.0.0.9",
+      "end": "2024-05-01T13:00:00.000Z",
+      "src": "10.0.0.5",
+      "start": "2024-05-01T12:00:00.000Z"
+     }
+    ],
+    "properties": {
+     "src": {
+      "type": "string"
+     },
+     "dst": {
+      "type": "string"
+     },
+     "start": {
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+      "type": "string"
+     },
+     "end": {
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+      "type": "string"
+     },
+     "accounts": {
+      "description": "earliest first",
+      "items": {
+       "$ref": "#/components/schemas/AccountSummary"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "src",
+     "dst",
+     "start",
+     "end",
+     "accounts"
+    ],
+    "type": "object"
+   },
+   "AccountsQueryBody": {
+    "additionalProperties": false,
+    "description": "The query's parameters as a JSON object (text or numbers), plus filters and marks.",
+    "properties": {
+     "src": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "dst": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "from": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "to": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "range_from": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "range_to": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     },
+     "filters": {
+      "description": "filter expressions (D17), combined with AND",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "marks": {
+      "$ref": "#/components/schemas/Marks"
+     }
+    },
+    "type": "object"
+   },
    "AttackPaths": {
     "additionalProperties": false,
     "properties": {
@@ -2485,6 +2827,10 @@
      "leases": {
       "description": "DHCP holdings: who held which address when (D27)",
       "type": "integer"
+     },
+     "logons": {
+      "description": "flows labelled with the account that made them, from Windows Security events (D28)",
+      "type": "integer"
      }
     },
     "required": [
@@ -2493,7 +2839,8 @@
      "start",
      "end",
      "dns_names",
-     "leases"
+     "leases",
+     "logons"
     ],
     "type": "object"
    },
@@ -3258,6 +3605,13 @@
       ],
       "description": "the flow's Community ID (version 1, seed 0), as Zeek, Suricata and Arkime record it; null for ICMP and SCTP, whose type, code or ports the readers don't keep. Security Onion: the one Zeek recorded, if any"
      },
+     "accounts": {
+      "description": "the accounts that made it (D28); empty when none is known",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
      "status": {
       "enum": [
        "marked",
@@ -3278,6 +3632,7 @@
      "packets",
      "bytes",
      "community_id",
+     "accounts",
      "status"
     ],
     "type": "object"
@@ -3718,6 +4073,13 @@
       ],
       "description": "the flow's Community ID (version 1, seed 0), as Zeek, Suricata and Arkime record it; null for ICMP and SCTP, whose type, code or ports the readers don't keep. Security Onion: the one Zeek recorded, if any"
      },
+     "accounts": {
+      "description": "case backend: the accounts that made it (D28)",
+      "items": {
+       "$ref": "#/components/schemas/AccountLabel"
+      },
+      "type": "array"
+     },
      "id": {
       "description": "Security Onion: the connection log's Elasticsearch ID, for POST /api/pcap",
       "type": "string"
@@ -4096,6 +4458,13 @@
      },
      "protocols": {
       "description": "every protocol the flows carry, sorted: named as Zeek names its services (`dns`, `http`, `smb`, `ssl` for TLS, ...), plus `icmp`, and `unknown` for flows nothing identified. Security Onion gives Zeek's own; case files are identified from the payload, then by well-known port",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "accounts": {
+      "description": "case backend: the accounts that made this hop's flow (D28)",
       "items": {
        "type": "string"
       },

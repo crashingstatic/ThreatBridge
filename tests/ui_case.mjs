@@ -37,8 +37,9 @@ const remap = async () => {          // Map again; its attack paths are recomput
 };
 const TWO_PATHS = [
   ["203.0.113.66 → 10.0.0.20: 2 path(s)"],
-  ["203.0.113.66 → 10.0.0.5 → 10.0.0.20", "2024-05-01T12:00:00.000Z → 2024-05-01T12:15:00.000Z"],
-  ["203.0.113.66 → 10.0.0.5 → 10.0.0.9 → 10.0.0.20", "2024-05-01T12:00:00.000Z → 2024-05-01T12:20:00.000Z"]];
+  ["203.0.113.66 → 10.0.0.5 → 10.0.0.20", "2024-05-01T12:00:00.000Z → 2024-05-01T12:15:00.000Z", "? → CORP\\alice"],
+  ["203.0.113.66 → 10.0.0.5 → 10.0.0.9 → 10.0.0.20", "2024-05-01T12:00:00.000Z → 2024-05-01T12:20:00.000Z",
+   "? → CORP\\alice → CORP\\admin"]];
 
 const protocolOptions = () => page.$$eval("#protocol option", (l) => l.map((o) => [o.value, o.textContent]));
 const style = (id, prop) => cyEval(([i, p]) => window.threatbridge.cy.getElementById(i).style(p), [id, prop]);
@@ -140,6 +141,12 @@ try {
   assert.match(await page.textContent("#flows ol.flows li small"), /^SMB · tcp 50001 → 445 · 0\.001 s · 2 pkts · \d+ B$/);
   // Its Community ID: the string Zeek, Suricata and Arkime record for 10.0.0.5:50001 -> 10.0.0.9:445/tcp.
   assert.equal(await page.textContent("#flows ol.flows li code.cid"), "1:8MBOhLc7pAkGPTFKiKHeNLwIK0Q=");
+  // The account that made it (D28), from the Windows event on FS01, and the connection's accounts.
+  assert.equal(await page.textContent("#flows ol.flows li small.accounts"), "Account: CORP\\alice");
+  assert.equal(await page.getAttribute("#flows ol.flows li small.accounts", "title"),
+               "CORP\\alice: 4624 (type 3) on FS01.corp.example at 2024-05-01T12:10:01.000Z");
+  await page.waitForSelector("#detail-body dd.accounts");
+  assert.equal(await page.textContent("#detail-body dd.accounts"), "CORP\\alice (1 flow)");
   assert.equal(await page.locator("#flows a, #flows button:has-text('PCAP')").count(), 0);   // no PCAP for case files
   await shot("threat-line");
 
@@ -159,6 +166,10 @@ try {
   await page.waitForFunction(() => document.querySelector("#path-list li.path"));
   assert.deepEqual(await pathList(), TWO_PATHS);
   await waitStatus(/^2 attack path\(s\) between 2 compromised host\(s\)$/);
+  // The account changes on the second path's last hop: highlighted.
+  assert.deepEqual(await page.$$eval("#path-list li.path", (l) => l.map((x) => x.classList.contains("account-change"))),
+                   [false, true]);
+  assert.deepEqual(await page.$$eval("#path-list .changed", (l) => l.map((x) => x.textContent)), ["CORP\\admin"]);
   assert.equal(await cyEval(() => window.threatbridge.cy.edges(".attack").length), 4);
   assert.ok(await cyEval(() => window.threatbridge.cy.getElementById("10.0.0.20").data("compromised")));
   await page.locator("#path-list li.path").nth(1).click();
@@ -229,7 +240,8 @@ try {
   await menuClick("Find paths to this host");
   await page.waitForFunction(() => document.getElementById("route-summary").textContent.includes("to 10.0.0.9"));
   assert.deepEqual(await page.$$eval("#route-list li.path", (l) => l.map((x) => x.innerText.split("\n"))), [
-    ["203.0.113.66 → 10.0.0.5 → 10.0.0.9", "2024-05-01T12:00:00.000Z → 2024-05-01T12:10:00.000Z"]]);
+    ["203.0.113.66 → 10.0.0.5 → 10.0.0.9", "2024-05-01T12:00:00.000Z → 2024-05-01T12:10:00.000Z",
+     "? → CORP\\alice"]]);
   assert.equal(await cyEval(() => window.threatbridge.cy.edges(".route").length), 2);   // the old ones cleared
   await page.locator("#route-list li.path").click();
   assert.equal(await status(), "Path 203.0.113.66 → 10.0.0.9, 2 hop(s). Click the background to clear.");

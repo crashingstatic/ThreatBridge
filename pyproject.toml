@@ -14,6 +14,7 @@ dependencies = [
     "gunicorn>=22,<24",
     "dpkt>=1.9.8,<2",
     "networkx>=3.2,<4",
+    "evtx>=0.15,<1",
 ]
 
 [dependency-groups]

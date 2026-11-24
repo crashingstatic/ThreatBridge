@@ -137,6 +137,7 @@ class CaseSummary(Shape):
     end: Optional[Time] = Field(description="the last flow's start; null for an empty case")
     dns_names: int = Field(description="names in the evidence's DNS answers")
     leases: int = Field(description="DHCP holdings: who held which address when (D27)")
+    logons: int = Field(description="flows labelled with the account that made them, from Windows Security events (D28)")
 
 
 class Directions(Shape):
@@ -272,6 +273,15 @@ class Neighbors(Shape):
         "the rarest scan stopped at rare_scan_cap distinct peers, so the bottom list may be incomplete"))
 
 
+class AccountLabel(Shape):
+    """An account a Windows Security event ties to a flow (D28)."""
+    account: str = Field(description="DOMAIN\\user, or user@REALM for Kerberos events")
+    event: Literal[4624, 4648, 4768, 4769] = Field(description="the event ID that tells it")
+    logon_type: Optional[int] = Field(description="4624: the logon type (3 network, 8 network cleartext, 10 remote)")
+    time: Time = Field(description="the event's time")
+    host: str = Field(description="the computer the event names: where it was logged, or the service's host")
+
+
 COMMUNITY_ID = ("the flow's Community ID (version 1, seed 0), as Zeek, Suricata and Arkime record it; null for "
                 "ICMP and SCTP, whose type, code or ports the readers don't keep. Security Onion: the one Zeek "
                 "recorded, if any")
@@ -287,6 +297,7 @@ class Flow(Shape):
     bytes: Optional[int]
     protocols: Protocols
     community_id: Optional[str] = Field(description=COMMUNITY_ID)
+    accounts: list[AccountLabel] = Field(None, description="case backend: the accounts that made it (D28)")
     id: str = Field(None, description="Security Onion: the connection log's Elasticsearch ID, for POST /api/pcap")
     soc_pcap: str = Field(None, description="Security Onion: SOC's link that has the sensor extract the flow's packets")
 
@@ -396,6 +407,7 @@ class Hop(Shape):
     packets: Optional[int]
     bytes: Optional[int]
     protocols: Protocols
+    accounts: list[str] = Field(None, description="case backend: the accounts that made this hop's flow (D28)")
 
 
 class Path(Shape):
@@ -470,6 +482,7 @@ class ExportFlow(Shape):
     packets: Optional[int]
     bytes: Optional[int]
     community_id: Optional[str] = Field(description=COMMUNITY_ID)
+    accounts: list[str] = Field(description="the accounts that made it (D28); empty when none is known")
     status: Literal["marked", "suspect"]
 
 
@@ -585,6 +598,26 @@ class SaveResult(Shape):
     name: str
     saved: Time
     sessions: list[Session]
+
+
+class AccountSummary(Shape):
+    account: str
+    flows: int = Field(description="the connection's flows it made")
+    first_seen: Time
+    last_seen: Time
+    events: list[int] = Field(description="the event IDs that tell it")
+
+
+class Accounts(Shape):
+    model_config = example({"src": "10.0.0.5", "dst": "10.0.0.9", "start": "2024-05-01T12:00:00.000Z",
+                            "end": "2024-05-01T13:00:00.000Z", "accounts": [
+                                {"account": "CORP\\alice", "flows": 1, "first_seen": "2024-05-01T12:10:00.000Z",
+                                 "last_seen": "2024-05-01T12:10:00.000Z", "events": [4624]}]})
+    src: str
+    dst: str
+    start: Time
+    end: Time
+    accounts: list[AccountSummary] = Field(description="earliest first")
 
 
 class Machine(Shape):
@@ -800,6 +833,15 @@ class ContactsQuery(BaseModel):
     filter: Filter = None
 
 
+class AccountsQuery(BaseModel):
+    src: str = Field(description="the initiator")
+    dst: str = Field(description="the responder")
+    from_: From
+    to: To = None
+    range_from: RangeFrom = None
+    range_to: RangeTo = None
+
+
 class MachinesQuery(BaseModel):
     ip: str = Field(description="an IP address")
     range_from: RangeFrom = None
@@ -900,6 +942,10 @@ ENDPOINTS = {
             "Every inside host (internal_nets) that exchanged flows with the target in either direction, in the "
             "time range (the whole case without one), with its flows passing the filters. Hosts on the exclude "
             "list, and the target's own addresses, are left out. Case backend only.")),
+    "api_accounts": Endpoint(
+        "The accounts that made a connection's flows (D28)", Accounts, AccountsQuery, errors=(400, 501), description=(
+            "From Windows Security events 4624, 4648, 4768 and 4769 matched to the flows src -> dst that started "
+            "in [from, to]. Case backend only.")),
     "api_machines_of": Endpoint(
         "Every machine that held an address (D27)", MachinesOf, MachinesQuery, errors=(400, 501), description=(
             "From the case's DHCP logs and the DHCP messages in its captures. Case backend only.")),

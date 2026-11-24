@@ -14,6 +14,10 @@ what a schema can't say.
 
 ## Changes
 
+- **Accounts on flows (D28).** `GET`/`POST /api/accounts` lists the accounts that made a
+  connection's flows. In the case backend each flow of `/api/flows` has `accounts`, each hop of a
+  path `accounts`, and each export row `accounts`; the case summary has `logons`. Additions, so
+  `api_version` stays 1.
 - **Machines behind addresses (ING-9).** `GET /api/machines` lists every machine (MAC address,
   host name) that held an address, from DHCP; `POST /api/machines` gives, for each host, the one
   at its time and how many held the address in the time range. The case summary in
@@ -104,6 +108,7 @@ Mapping connections:
 |---|---|---|
 | `/api/resolve` | GET | Check an IP and settle the anchor time a map starts from |
 | `/api/neighbors` | GET, POST | One hop: who connected to a host, or who it connected to, before or after the anchor |
+| `/api/accounts` | GET, POST | The accounts that made a connection's flows, from Windows Security events (case backend) |
 | `/api/machines` | GET, POST | Which machine held an address: every one (GET), or the one at each host's time (POST) (case backend) |
 | `/api/flagged` | GET, POST | Beacons and long connections (case backend) |
 | `/api/contacts` | GET, POST | The inside hosts that talked to an address, a network or a domain name (case backend) |

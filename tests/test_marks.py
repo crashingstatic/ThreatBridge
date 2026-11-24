@@ -356,7 +356,7 @@ def test_a_filter_picks_the_flow_each_hop_of_a_path_shows():
     [path] = backend.paths_between(E, B, None, None, hour, 6, [], scope=scope)["paths"]
     assert [(h["source"], h["protocols"]) for h in path["hops"]] == [(E, ["ssl"]), (A, ["http"]), (X, ["rdp"])]
     assert path["hops"][1] == {"source": A, "target": X, "start": iso(T + 5 * M), "sport": 50001, "dport": 80,
-                               "proto": "tcp", "packets": 2, "bytes": 120, "protocols": ["http"]}
+                               "proto": "tcp", "packets": 2, "bytes": 120, "protocols": ["http"], "accounts": []}
     [pair] = backend.attack_paths({E: None, B: None}, hour, 6, [], scope=scope)["pairs"]
     assert pair["paths"] == [path]
 
@@ -534,17 +534,17 @@ def test_marked_flows_exported_with_what_the_backend_knows_of_them():
     assert rows == [
         {"start": ax["start"], "end": "2024-05-01T12:05:01.500Z", "src": A, "sport": 50000, "dst": X, "dport": 445,
          "proto": "tcp", "protocols": ["smb"], "packets": 2, "bytes": 120,
-         "community_id": community_id(A, X, "tcp", 50000, 445), "status": "marked"},
+         "community_id": community_id(A, X, "tcp", 50000, 445), "accounts": [], "status": "marked"},
         {"start": xc["start"], "end": None, "src": X, "sport": 50000, "dst": C, "dport": 445, "proto": "tcp",
          "protocols": ["smb"], "packets": 2, "bytes": 120, "community_id": community_id(X, C, "tcp", 50000, 445),
-         "status": "marked"}]
+         "accounts": [], "status": "marked"}]
     t = parse_time(ax["start"])
     assert backend.asked[0] == (A, X, t, t + timedelta(milliseconds=1), 0, 50)
     # Not found: what the mark says, the rest unknown; and no more than the limit.
     assert marked_flow_rows(FlowLists({}), drawn, [ax, xc], 1) == [
         {"start": ax["start"], "end": None, "src": A, "sport": 50000, "dst": X, "dport": 445, "proto": "tcp",
          "protocols": [], "packets": None, "bytes": None, "community_id": community_id(A, X, "tcp", 50000, 445),
-         "status": "marked"}]
+         "accounts": [], "status": "marked"}]
 
 
 def test_elasticsearch_exports_marked_hosts_and_flows(monkeypatch):
@@ -559,7 +559,7 @@ def test_elasticsearch_exports_marked_hosts_and_flows(monkeypatch):
                   {"ip": X, "time": ax["start"], "note": "", "count": 1, "marked": "flows"}],
         "flows": [{"start": ax["start"], "end": "2024-05-01T12:05:01.000Z", "src": A, "sport": 50000, "dst": X,
                    "dport": 445, "proto": "tcp", "protocols": ["smb"], "packets": 2, "bytes": 120,
-                   "community_id": community_id(A, X, "tcp", 50000, 445), "status": "marked"}],
+                   "community_id": community_id(A, X, "tcp", 50000, 445), "accounts": [], "status": "marked"}],
         "truncated": False}
 
 
@@ -575,7 +575,7 @@ def test_exports(client):
     assert r["flows"][0] == {"start": "2024-05-01T12:00:00.000Z", "end": "2024-05-01T12:00:01.000Z", "src": E,
                              "sport": 50000, "dst": A, "dport": 443, "proto": "tcp", "protocols": ["ssl"],
                              "packets": 2, "bytes": 120, "community_id": community_id(E, A, "tcp", 50000, 443),
-                             "status": "suspect"}
+                             "accounts": [], "status": "suspect"}
     assert r["truncated"] is False
     assert client.post("/api/export", json={"edges": EDGES, "window": "1h", "marks": {"hosts": [], "flows": []}},
                        headers=WRITE).get_json() == {"hosts": [], "flows": [], "truncated": False}

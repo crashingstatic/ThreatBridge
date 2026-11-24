@@ -148,6 +148,8 @@ def test_a_case_keeps_who_held_each_address(tmp_path, caplog):
     # Reopened while the evidence is unchanged: the same, without reading again; a changed DHCP
     # log rebuilds the case.
     assert CaseBackend(cfg).store.leases() == leases
+    utc = Config(**{**cfg.__dict__, "dhcp_timezone": "UTC"})            # another time zone rebuilds it
+    assert CaseBackend(utc).store.leases()[0][3] == leases[0][3] - 5 * 3600
     (d / "dhcpd.leases").write_text(ISC.replace("ws-042", "ws-043"))
     assert any(name == "ws-043" for _, _, name, *_ in CaseBackend(cfg).store.leases())
 

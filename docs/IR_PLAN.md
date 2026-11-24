@@ -244,6 +244,12 @@ time, wrong port, unknown computer); an account change flagged along a path.
 3. Time tolerance between an event and its flow: 2 minutes by default, a setting.
 4. A filter term for accounts: not asked; later.
 
+**Built.** `.evtx` reading was checked by hand on public sample logs (a WMI and a
+scheduled-task lateral movement from EVTX-ATTACK-SAMPLES): the network logons became claims,
+and machine accounts and anonymous logons were left out. Those samples have no capture, so
+matching to flows on real logs waits for TEST_PLAN WIN-01. Windows can log one logon twice at
+the same instant; such duplicates give one label.
+
 ## 9. Deliverables
 
 1. **Keep hosts where the analyst put them.** Today every expansion lays the whole map out
@@ -347,8 +353,8 @@ From the review, each reproduced in a browser:
 | 12. Pin and sign | decided | done (D24, SEC-3 to SEC-5) | done | done | green |
 | 6. Formats | decided | done (D6, ING-6 to ING-8) | done | done | green |
 | 2. How they got in | decided | done (D25, D26, ATK-10 to ATK-12) | done | done | green |
-| 5. Machines behind addresses | decided | done (D27, ING-9, ING-10) | done | done | |
-| 4. Accounts on hops | decided | | | | |
+| 5. Machines behind addresses | decided | done (D27, ING-9, ING-10) | done | done | green |
+| 4. Accounts on hops | decided | done (D28, ING-11, ATK-13) | done | done | |
 | 9. Deliverables | | | | | |
 | 14. Usability | | | | | |
 | 13. Measure it | | | | | |

@@ -165,7 +165,7 @@ def test_graph_keeps_every_flow():
 
 def test_summary(backend):
     assert backend.summary() == {"flows": 9, "hosts": 7, "start": "2024-05-01T12:00:10.000Z",
-                                 "end": "2024-05-01T13:23:21.000Z", "dns_names": 0, "leases": 0}
+                                 "end": "2024-05-01T13:23:21.000Z", "dns_names": 0, "leases": 0, "logons": 0}
 
 
 def test_neighbors_inbound(backend):
@@ -255,9 +255,9 @@ def test_flows_api_lists_a_connection_oldest_first(client):
     assert cid.startswith("1:")
     assert r["flows"] == [
         {"start": "2024-05-01T12:00:10.000Z", "duration": 1.0, "sport": 50000, "dport": 445,
-         "proto": "tcp", "packets": 2, "bytes": 120, "protocols": ["smb"], "community_id": cid},
+         "proto": "tcp", "packets": 2, "bytes": 120, "protocols": ["smb"], "community_id": cid, "accounts": []},
         {"start": "2024-05-01T12:00:20.000Z", "duration": 1.0, "sport": 50000, "dport": 445,
-         "proto": "tcp", "packets": 2, "bytes": 120, "protocols": ["smb"], "community_id": cid}]
+         "proto": "tcp", "packets": 2, "bytes": 120, "protocols": ["smb"], "community_id": cid, "accounts": []}]
     r = client.get(base + "&limit=2&offset=2").get_json()
     assert [(f["start"], f["dport"]) for f in r["flows"]] == [("2024-05-01T12:00:30.000Z", 3389)]
     assert client.get(base + "&offset=3").get_json()["flows"] == []
@@ -319,7 +319,7 @@ def test_api_neighbors_from_pcap_directory(tmp_path):
 def test_an_empty_case_works_end_to_end(tmp_path):
     c = case_client(tmp_path, [])
     assert c.get("/api/config").get_json()["case"] == {
-        "flows": 0, "hosts": 0, "start": None, "end": None, "dns_names": 0, "leases": 0}
+        "flows": 0, "hosts": 0, "start": None, "end": None, "dns_names": 0, "leases": 0, "logons": 0}
     assert c.get(f"/api/resolve?ip={H}&direction=in").status_code == 200
     assert c.get(f"/api/neighbors?ip={H}&ts=2024-05-01T12:00:00Z").get_json()["peers"] == []
     assert c.get(f"/api/flows?src=10.0.0.1&dst={H}&from=2024-05-01T12:00:00Z").get_json()["total"] == 0
