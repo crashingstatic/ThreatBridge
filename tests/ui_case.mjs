@@ -220,6 +220,10 @@ try {
     ["+10 min", "10.0.0.9", "10.0.0.20", "50002", "3389", "RDP", "CORP\\admin"]]);
   assert.ok(tsv.slice(1).every((r) => r.length === 11 && /^\d+$/.test(r[9])), "bytes as plain numbers");
   await shot("attack-path");
+  // A path from the keyboard (D33): Enter on the entry.
+  await page.locator("#path-list li.path").nth(0).focus();
+  await page.keyboard.press("Enter");
+  assert.equal(await page.textContent("#detail-body .timeline-title"), "Attack path 203.0.113.66 → 10.0.0.5 → 10.0.0.20");
 
   // Excluded hosts are never crossed: without 10.0.0.5 there is no path, and back with it.
   await page.fill("#exclude-input", "10.0.0.5");

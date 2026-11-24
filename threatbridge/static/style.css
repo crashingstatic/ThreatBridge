@@ -120,3 +120,7 @@ ol.flows .actions button { padding: 0 6px; font-size: 11px; }
   #cy { height: 70vh; }
   #details { width: auto; border-left: 0; border-top: 1px solid var(--line); }
 }
+/* The keyboard (D33): where the focus is. */
+.menu li:focus { background: var(--hover); outline: none; }
+#cy:focus-visible { outline: 2px solid var(--in); outline-offset: -2px; }
+.entries li.path:focus-visible, .session:focus-visible { outline: 2px solid var(--in); outline-offset: 1px; }

@@ -547,7 +547,8 @@ try {
   await page.fill("#limit", "50");
   await page.fill("#range-to", "");
   await clearRouteFields();
-  await page.click("#session-list .session >> text=incident 42");
+  await page.focus("#session-list .session >> text=incident 42");      // from the keyboard (D33)
+  await accepting(page, () => page.keyboard.press("Enter"));
   await waitStatus(/^Opened "incident 42" \(saved .*\): \d+ host\(s\), \d+ connection\(s\)$/);
   assert.deepEqual(await elements(), before);
   assert.deepEqual(await settings(), savedSettings);
@@ -778,6 +779,53 @@ try {
   await page.waitForFunction(() => window.threatbridge && window.threatbridge.cy);
   await sleep(300);
   assert.deepEqual(await ids(), []);
+
+  // 13d. The keyboard (D33). Every box has a name; Open file is a button; Find host selects a
+  // host and gives the map the focus; Shift+F10 or the context-menu key opens its menu, which
+  // the arrow keys, Home and End move through, Enter chooses from and Escape closes; Enter on
+  // the map acts as a left click.
+  const unnamed = await page.$$eval("input, select", (l) => l.filter((x) => !x.labels?.length && !x.getAttribute("aria-label"))
+    .map((x) => x.id));
+  assert.deepEqual(unnamed, []);
+  await page.focus("#session-open");
+  const [chooser] = await Promise.all([page.waitForEvent("filechooser"), page.keyboard.press("Enter")]);
+  assert.ok(chooser, "Open file from the keyboard");
+  await map("10.0.0.9", "in");
+  const selected = () => cyEval(() => window.threatbridge.cy.$(":selected").map((x) => x.id()));
+  const focused = () => page.evaluate(() => document.activeElement.id || document.activeElement.textContent);
+  await page.fill("#find-host", "10.0.0.7");                                  // the start of an address
+  await page.press("#find-host", "Enter");
+  assert.deepEqual(await selected(), ["10.0.0.77"]);
+  await page.fill("#find-host", "10.9.9.9");
+  await page.press("#find-host", "Enter");
+  assert.equal(await status(), "10.9.9.9 is not on the map");
+  await page.fill("#find-host", "10.0.0.5");
+  await page.press("#find-host", "Enter");
+  assert.deepEqual([await selected(), await status(), await focused()], [["10.0.0.5"], "Selected 10.0.0.5", "cy"]);
+  assert.equal(await page.textContent("#detail-body dd"), "10.0.0.5");
+  await page.keyboard.press("Shift+F10");
+  assert.ok(!(await menuHidden()));
+  assert.equal(await focused(), "Expand inbound: who connected to it (past)");
+  await page.keyboard.press("ArrowDown");
+  assert.equal(await focused(), "Expand outbound: who it connected to (future)");
+  await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("ArrowUp");                                         // round to the last
+  assert.equal(await focused(), "Add to shared exclude list");
+  await page.keyboard.press("Home");
+  assert.equal(await focused(), "Expand inbound: who connected to it (past)");
+  await page.keyboard.press("Escape");
+  assert.ok(await menuHidden());
+  assert.equal(await focused(), "cy");
+  await page.keyboard.press("ContextMenu");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");                                           // expand outbound (future)
+  await waitStatus(/^Querying outbound \(future\) for 10\.0\.0\.5|^10\.0\.0\.5: showing/);
+  await waitStatus(/^10\.0\.0\.5: showing/);
+  assert.ok(await menuHidden());
+  assert.ok(await cyEval(() => window.threatbridge.cy.getElementById("10.0.0.5").data("expandedOut")));
+  await page.focus("#cy");
+  await page.keyboard.press("Enter");                                           // a left click: expand inbound
+  await page.waitForFunction(() => window.threatbridge.cy.getElementById("10.0.0.5").data("expandedIn"));
 
   assert.deepEqual(errors, [], "browser console errors");
   console.log("UI actions test passed");

@@ -126,6 +126,17 @@
 
   const hintItem = (text) => el("li", { className: "hint", textContent: text });
 
+  // An element that acts on a click, and on Enter or Space when it has the focus (D33).
+  function clickable(node, action) {
+    node.tabIndex = 0;
+    node.setAttribute("role", "button");
+    node.addEventListener("click", action);
+    node.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); action(); }
+    });
+    return node;
+  }
+
   // The analyst's time range (toolbar): sent with every query, which it limits. Blank = open.
   function withRange(params) {
     const lo = $("range-from").value.trim(), hi = $("range-to").value.trim();
@@ -779,11 +790,14 @@
   // ---- context menu ---------------------------------------------------------
   function hideMenu() { menu.hidden = true; menu.replaceChildren(); }
 
-  function showMenu(x, y, items) {
+  // A menu at (x, y). Opened from the keyboard, its first item has the focus; the arrow keys,
+  // Home and End move it, Enter or Space chooses, Escape closes and gives the map the focus back.
+  function showMenu(x, y, items, fromKeyboard) {
     menu.replaceChildren(...items.map((it) => {
-      if (it === "-") return el("li", { className: "sep" });
+      if (it === "-") return el("li", { className: "sep", role: "separator" });
       if (it.title) return el("li", { className: "title", textContent: it.title });
-      const li = el("li", { textContent: it.label });
+      const li = el("li", { textContent: it.label, tabIndex: -1 });
+      li.setAttribute("role", "menuitem");
       li.addEventListener("click", () => { hideMenu(); Promise.resolve(it.action()).catch(fail); });
       return li;
     }));
@@ -791,7 +805,25 @@
     const r = menu.getBoundingClientRect();
     menu.style.left = `${Math.min(x, window.innerWidth - r.width - 4)}px`;
     menu.style.top = `${Math.min(y, window.innerHeight - r.height - 4)}px`;
+    if (fromKeyboard) menu.querySelector("[role=menuitem]")?.focus();
   }
+
+  menu.addEventListener("keydown", (e) => {
+    const items = [...menu.querySelectorAll("[role=menuitem]")];
+    const at = items.indexOf(document.activeElement);
+    const go = { ArrowDown: at + 1, ArrowUp: at - 1, Home: 0, End: items.length - 1 }[e.key];
+    if (go !== undefined) {
+      e.preventDefault();
+      items[(go + items.length) % items.length]?.focus();
+    } else if ((e.key === "Enter" || e.key === " ") && at >= 0) {
+      e.preventDefault();
+      items[at].click();
+    } else if (e.key === "Escape" || e.key === "Tab") {
+      e.preventDefault();
+      hideMenu();
+      $("cy").focus();
+    }
+  });
 
   async function pivot(a, b, until) {
     const params = withRange(new URLSearchParams({ a }));
@@ -812,11 +844,11 @@
     setStatus("SOC query copied to clipboard");
   }
 
-  cy.on("cxttap", "edge", (evt) => {
-    const e = evt.target;
+  cy.on("cxttap", "edge", (evt) => connectionMenu(evt.target, evt.originalEvent.clientX, evt.originalEvent.clientY));
+
+  function connectionMenu(e, x, y, fromKeyboard) {
     const [a, b, until] = [e.data("source"), e.data("target"), iocTime];
     edgeDetails(e);
-    const oe = evt.originalEvent;
     const items = [];
     if (e.data("count") === 1) {     // one flow: mark it here (D15); otherwise in the flow list
       items.push({ label: markedPairs.has(e.id()) ? "Unmark compromised" : "Mark compromised",
@@ -826,8 +858,8 @@
       items.push({ label: `Filter SOC Dashboards: all conversations up to IOC time`, action: () => openPivot(a, b, until) },
                  { label: "Copy SOC query", action: () => copyPivot(a, b, until) });
     }
-    if (items.length) showMenu(oe.clientX, oe.clientY, [{ title: `${a} ↔ ${b}` }, ...items]);
-  });
+    if (items.length) showMenu(x, y, [{ title: `${a} ↔ ${b}` }, ...items], fromKeyboard);
+  }
 
   // The flow of a single-flow connection, marked or unmarked.
   async function toggleOnlyFlow(e) {
@@ -841,11 +873,11 @@
     return markedFlows.has(flowKey(key)) ? unmarkFlow(key) : markFlow(key);
   }
 
-  cy.on("cxttap", "node", (evt) => {
-    const n = evt.target;
+  cy.on("cxttap", "node", (evt) => hostMenu(evt.target, evt.originalEvent.clientX, evt.originalEvent.clientY));
+
+  function hostMenu(n, x, y, fromKeyboard) {
     nodeDetails(n);
-    const oe = evt.originalEvent;
-    showMenu(oe.clientX, oe.clientY, [
+    showMenu(x, y, [
       { title: `${n.id()} @ ${n.data("anchor") || "now"}` },
       { label: "Expand inbound: who connected to it (past)", action: () => expand(n.id(), "in", "before") },
       { label: "Expand outbound: who it connected to (future)", action: () => expand(n.id(), "out", "after") },
@@ -861,8 +893,44 @@
         { label: "Find paths to this host…", action: () => routeEnd(n.id(), "dst") }] : []),
       { label: "Remove from map", action: () => removeHost(n) },
       { label: "Add to shared exclude list", action: () => addExclude(n.id()) },
-    ]);
+    ], fromKeyboard);
+  }
+
+  // ---- the keyboard (D33): the selected host or connection's menu with the context-menu key or
+  // Shift+F10, and Enter on the map acts as a left click on it. Find host selects a host.
+  const typing = (t) => t && (t.closest("input, textarea, select") || t.isContentEditable);
+  document.addEventListener("keydown", (e) => {
+    if (!(e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) || typing(e.target) || !menu.hidden) return;
+    const chosen = cy.$(":selected").not(".mark-hidden").first();
+    if (chosen.empty()) return;
+    e.preventDefault();
+    const box = $("cy").getBoundingClientRect();
+    const p = chosen.isNode() ? chosen.renderedPosition() : chosen.renderedMidpoint();
+    (chosen.isNode() ? hostMenu : connectionMenu)(chosen, box.left + p.x, box.top + p.y, true);
   });
+  $("cy").addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    const chosen = cy.$(":selected").not(".mark-hidden").first();
+    if (chosen.empty()) return;
+    e.preventDefault();
+    chosen.emit("tap");
+  });
+
+  function findHost() {
+    const text = $("find-host").value.trim();
+    if (!text) return;
+    const shown = cy.nodes().not(".mark-hidden");
+    const n = shown.filter((m) => m.id() === text).first().nonempty()
+      ? shown.filter((m) => m.id() === text).first() : shown.filter((m) => m.id().startsWith(text)).first();
+    if (n.empty()) { setStatus(`${text} is not on the map`); return; }
+    cy.$(":selected").unselect();
+    n.select();
+    cy.center(n);
+    nodeDetails(n);
+    $("cy").focus();
+    setStatus(`Selected ${n.id()}`);
+  }
+  $("find-host").addEventListener("keydown", (e) => { if (e.key === "Enter") findHost(); });
 
   function removeHost(n) {
     if (n.data("root")) return;
@@ -1433,7 +1501,7 @@
       li.append(accounts);
       if (accounts.querySelector(".changed")) li.classList.add("account-change");
     }
-    li.addEventListener("click", () => {
+    clickable(li, () => {
       focus(pathElements(p));
       setStatus(`${what} ${hosts[0]} → ${hosts[hosts.length - 1]}, ${p.hops.length} hop(s). ` +
                 "Click the background to clear.");
@@ -2053,7 +2121,7 @@ code { font-size: 12px; } img { max-width: 100%; border: 1px solid #bbb; }
     ul.replaceChildren(...list.map((saved) => {
       const li = listEntry(saved.name, `saved ${saved.saved}`, "Delete", () => deleteSession(saved.name));
       li.firstChild.className = "session";     // click the name to open it
-      li.firstChild.addEventListener("click", () => openSession(saved.name).catch(fail));
+      clickable(li.firstChild, () => openSession(saved.name).catch(fail));
       return li;
     }));
     if (!list.length) ul.append(hintItem("No saved maps yet."));
@@ -2101,6 +2169,7 @@ code { font-size: 12px; } img { max-width: 100%; border: 1px solid #bbb; }
     setStatus("Saved the map to a file");
   });
 
+  $("session-open").addEventListener("click", () => $("session-file").click());
   $("session-file").addEventListener("change", async (e) => {
     const file = e.target.files[0];
     e.target.value = "";
