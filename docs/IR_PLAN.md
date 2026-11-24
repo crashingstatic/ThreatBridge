@@ -355,6 +355,17 @@ From the review, each reproduced in a browser:
 2. Which public dataset first? Recommended: LANL 2015, which has labelled lateral movement.
 3. Mark untested rows *Unverified* (recommended)?
 
+**Decided 2026-11-24.**
+1. CI floor: at the first measured numbers minus a margin, raised as features land.
+2. Datasets: both; LANL 2015 first, then DARPA OpTC's network events if practical.
+3. Statuses: requirements stay *Done*; their notes say what hasn't been tried on real data.
+
+**Built.** The synthetic measurement runs in CI with floors; its first numbers are in
+`docs/RESULTS.md`. The LANL 2015 loader is tested on files written in its format but not yet run
+on the real data, which the owner downloads. OpTC is not loaded: its ground truth is a written
+report (a PDF), and its flows are Zeek logs, which the case backend doesn't read; a Zeek
+`conn.log` reader and transcribed labels would come first. The pilot kit is `docs/PILOT.md`.
+
 ---
 
 ## Status
@@ -368,5 +379,5 @@ From the review, each reproduced in a browser:
 | 5. Machines behind addresses | decided | done (D27, ING-9, ING-10) | done | done | green |
 | 4. Accounts on hops | decided | done (D28, ING-11, ATK-13) | done | done | green |
 | 9. Deliverables | decided | done (D29 to D31, INT-10, INT-11, ATK-14) | done | done | green |
-| 14. Usability | decided | done (D32 to D34, INT-12 to INT-14, GRA-5) | done | done | |
-| 13. Measure it | | | | | |
+| 14. Usability | decided | done (D32 to D34, INT-12 to INT-14, GRA-5) | done | done | green |
+| 13. Measure it | decided | done (D35, EVA-1, EVA-2) | done | done | |

@@ -301,6 +301,15 @@ npm ci && npx playwright install chromium                  # for the browser tes
 
 The nfcapd test needs `nfdump` installed (`apt install nfdump`); without it, it is skipped locally.
 
+### Measuring (D35)
+
+How well the map finds an attack, from the indicators an analyst would have: injected attack
+chains on a synthetic office case (`uv run python -m threatbridge.measure`; CI holds floors on
+it in `tests/test_detection.py`), and LANL 2015's labelled red-team movement
+(`uv run python -m threatbridge.lanl flows.txt.gz redteam.txt.gz`). Results are in
+[docs/RESULTS.md](docs/RESULTS.md). To try it on a closed case of your own, see
+[docs/PILOT.md](docs/PILOT.md).
+
 ### Dependencies (D24)
 
 Everything installed is pinned, and Dependabot proposes updates weekly:

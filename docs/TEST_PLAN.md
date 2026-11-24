@@ -39,6 +39,7 @@ Contents:
 2. [Test environments](#2-test-environments)
 3. [Tests](#3-tests)
 4. [Where each requirement is tested](#4-where-each-requirement-is-tested)
+5. [Results](#5-results)
 
 ## 1. How to use this plan
 
@@ -422,6 +423,17 @@ audit log and real `.evtx` files, and checks the labels against what was done.
 | 6 | Mark A and DC01's address compromised (*time unknown*). | Under *Attack paths*, a path A → FS01 → DC01 has a line of accounts under it, its last hop `CORP\admin` (WinRM, 5985). An account that differs from the hop before it is in orange. | Accounts per hop; a change of account shown (ATK-13). | |
 | 7 | **Export CSV**. | The flows file has an `accounts` column; the A → FS01 and FS01 → DC01 rows name the accounts of steps 5 and 6. | Accounts in the export (D28). | |
 
+### DATA-01 · LANL 2015: the red team's lateral movement, measured (EVA-2, D35)
+
+**Environment:** a machine with 16 GB of memory and LANL 2015's `flows.txt.gz` and
+`redteam.txt.gz` ([RESULTS.md](RESULTS.md), *LANL 2015*).
+
+| # | Do | Expect | Proves | Result |
+|---|---|---|---|---|
+| 1 | `python -m threatbridge.lanl flows.txt.gz redteam.txt.gz --hours 6 --details` | A line naming the flows read and the red-team logons, a totals table and a row per chain. No error. | The loader reads the real files (EVA-2). | |
+| 2 | Note *Hops seen in flows*; compare *Suspect hops* and *Path hops* with it. | Found hops are counted only among those seen; a hop seen but not found is a miss to look into. | What the analyses find on real lateral movement (D35). | |
+| 3 | Copy the output into [RESULTS.md](RESULTS.md) with the version (`/api/config` `version`), the date and the machine. | | | |
+
 ### SO-01 · SOC actions open the map at the event's IP and time (EXT-1)
 
 **Environment:** ENV-SO. **Starting state:** logged in to SOC; ThreatBridge reachable with the analyst's certificate.
@@ -584,6 +596,8 @@ generated case) and `ui_mtls.mjs` (the container). *Manual* names the tests abov
 | SEC-1, SEC-2 Local mode: Host check, login token (D23) | `test_local.py`; the browser suites log in with the token | |
 | SEC-3, SEC-4 Locked and pinned dependencies (D24) | `test_supply_chain.py` | |
 | SEC-5 Signed releases (D24) | actionlint (CI lint job) | Not yet run on a real tag |
+| EVA-1 Measured on injected chains, with floors | `test_detection.py` (`measure.py` on the synthetic case) | |
+| EVA-2 Measured on public data | `test_lanl.py` (the loader on files written in LANL's format) | DATA-01 |
 | D3 Edge left-click / right-click | `ui_smoke.mjs`, `ui_case.mjs`, `ui_actions.mjs` | XB-01 (other browsers) |
 | D14 Protocols, and the highlight | `test_sources.py` (payload signatures, ports, FTP data connections, both readers), `test_case.py`, `test_backends.py`, `test_query.py` (Zeek's `network.protocol`); `ui_case.mjs`, `ui_actions.mjs`, `ui_smoke.mjs` (drop-down, highlight, saved maps) | VIS-01 step 5; REAL-01 steps 4, 5; REAL-02 steps 2, 4; SO-02 step 8 |
 | D6, D7 Inputs, connection rules; refused connections left out | `test_sources.py`; `test_query.py`, `test_config.py` (Zeek's `REJ` in Elasticsearch) | REAL-01, REAL-02 (against Zeek); SO-02 step 5 |
@@ -602,3 +616,14 @@ generated case) and `ui_mtls.mjs` (the container). *Manual* names the tests abov
 Not built, so nothing to test: ING-S1 (out of scope), ING-S3, GRA-S1, ATK-2 and EXT-2
 (deferred, D5), ATK-S1–S3, INT-S1, FIL-S3, FIL-S4, PRF-S2, EXT-S1, EXT-S3, FTODO-1, FTODO-2
 ([REQUIREMENTS.md](REQUIREMENTS.md)).
+
+## 5. Results
+
+One row per run of a manual test, newest first: the test, the date, ThreatBridge's version
+(`GET /api/config` → `version`), where it ran (the environment and anything particular about
+it), P or F, and for an F what was seen or the issue filed. Measurements go into
+[RESULTS.md](RESULTS.md). A requirement whose notes say *Not yet tried on a real case* is
+covered once a test that exercises it on real evidence is listed here as P.
+
+| Test | Date | Version | Environment | Result | Notes |
+|---|---|---|---|---|---|
