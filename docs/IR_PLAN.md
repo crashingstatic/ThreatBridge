@@ -209,12 +209,10 @@ or break when one machine changes address.
 **Tests.** Each log format, from real-format samples written by hand; an address handed from
 one machine to another, warned about; leases that overlap or are renewed.
 
-**Decisions.**
-1. Inputs: Windows DHCP logs, Zeek `dhcp.log` and captures (recommended)? ISC dhcpd leases
-   files too?
-2. Scope: names and warnings only (recommended), or split a host on the map into one per
-   machine? Splitting changes how hosts, marks and filters are keyed throughout; it would be a
-   project of its own.
+**Decided 2026-11-24.**
+1. Inputs: Windows DHCP server audit logs, Zeek `dhcp.log`, DHCP in the captures, and ISC
+   dhcpd leases files.
+2. Scope: names and warnings only; hosts stay keyed by address.
 
 ## 4. Show which account made each hop
 
@@ -240,13 +238,11 @@ enough is a legal question; get a patent attorney's view before release.
 **Tests.** Events written by hand in the input format chosen, matched and not matched (wrong
 time, wrong port, unknown computer); an account change flagged along a path.
 
-**Decisions.**
-1. Input: (a) raw `.evtx` files through the `evtx` library (MIT licence, fast, wheels for
-   Linux, macOS and Windows), plus JSON lines of the same events (recommended); (b) the
-   pure-Python `python-evtx` (Apache 2.0, slower); (c) JSON exports only, no new dependency.
-2. Events: the four above, plus 4625 failures (recommended)?
-3. Time tolerance between an event and its flow: 2 minutes by default (recommended)?
-4. A filter term for accounts (`user == "alice"`): now, or later? Recommended: later.
+**Decided 2026-11-24.**
+1. Input: raw `.evtx` files through the `evtx` library, plus JSON lines of the same events.
+2. Events: 4624, 4648, 4768 and 4769; not 4625.
+3. Time tolerance between an event and its flow: 2 minutes by default, a setting.
+4. A filter term for accounts: not asked; later.
 
 ## 9. Deliverables
 
@@ -351,8 +347,8 @@ From the review, each reproduced in a browser:
 | 12. Pin and sign | decided | done (D24, SEC-3 to SEC-5) | done | done | green |
 | 6. Formats | decided | done (D6, ING-6 to ING-8) | done | done | green |
 | 2. How they got in | decided | done (D25, D26, ATK-10 to ATK-12) | done | done | |
-| 5. Machines behind addresses | | | | | |
-| 4. Accounts on hops | | | | | |
+| 5. Machines behind addresses | decided | | | | |
+| 4. Accounts on hops | decided | | | | |
 | 9. Deliverables | | | | | |
 | 14. Usability | | | | | |
 | 13. Measure it | | | | | |

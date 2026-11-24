@@ -53,7 +53,8 @@ Local mode serves plain HTTP, so it guards itself (D23):
   browser. To let colleagues connect, listen on another address (`--host 0.0.0.0`) and put the
   name they use in `TB_ALLOWED_HOSTS`; they still need the token.
 
-- **Inputs.** Packet captures in pcap (tcpdump) or pcapng (Wireshark) format, and nfcapd files.
+- **Inputs.** Packet captures in pcap (tcpdump) or pcapng (Wireshark) format, nfcapd files, and DHCP logs.
+  - DHCP logs say which machine (MAC address, host name) held which address when: Windows DHCP server audit logs (`DhcpSrvLog-*.log`, written in the server's local time: set `TB_DHCP_TIMEZONE`), ISC dhcpd leases files, and Zeek's `dhcp.log` (tab-separated or JSON). DHCP messages in the captures count too. They are recognised by their content, whatever their names.
   - Supported link types: Ethernet, Linux `any` (SLL/SLL2), raw IP and loopback, with µs or ns timestamps.
   - pcapng: every interface is read, each with its own link type and timestamp resolution. Packets of an interface with another link type (Wi-Fi, say) are left out with a warning. Simple packet blocks carry no timestamp, so they are left out with a warning too. A damaged file is read up to the damage.
   - Directories are searched recursively; other files are skipped. A file named more than once (directly, through its directory, or through a symlink) is read once.
@@ -265,6 +266,7 @@ Deployment on a live Security Onion install has **not been tested**. These point
 | `TB_HOST` | `127.0.0.1` | listening address of `python -m threatbridge` (gunicorn binds all) |
 | `TB_BEACON_SCORE` / `TB_BEACON_MIN` | `0.8` / `10` | a source, destination, port and protocol whose flows score at least this (0 to 1) over at least this many flows is a beacon |
 | `TB_LONG_CONNECTION` | `1h` | a flow lasting this long or more is long |
+| `TB_DHCP_TIMEZONE` | `UTC` | the time zone Windows DHCP server audit logs are written in (their server's local time), an IANA name such as `America/Chicago` |
 | `TB_INTERNAL_NETS` | `10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,169.254.0.0/16,fc00::/7,fe80::/10` | the client's own networks: inside hosts, as *Who talked to* lists them |
 | `TB_ALLOWED_HOSTS` | – | `python -m threatbridge`: names the `Host` header may carry besides `localhost`, `127.0.0.1`, `[::1]` and the listening address |
 | `TB_TOKEN` | – (new at each start) | `python -m threatbridge`: the login token, at least 20 characters |

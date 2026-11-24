@@ -43,6 +43,7 @@ from .graph import build_graph, count_between
 from .progress import Progress, counted
 from .query import (ValidationError, es_details_body, es_dns_body, es_flows_body, es_protocols_body,
                     es_scan_body, es_top_body, fmt_time, parse_time, parse_window, soc_pcap_url)
+from .sources import dhcp
 from .store import FlowStore, NotAStore
 
 log = logging.getLogger(__name__)
@@ -456,7 +457,7 @@ class CaseBackend:
 
     GRAPHS_KEPT = 4   # filtered graphs kept for reuse (D17)
 
-    def __init__(self, cfg, flows=None, dns=None, progress=None):
+    def __init__(self, cfg, flows=None, dns=None, progress=None, leases=None):
         self.cfg, self.flags = cfg, filters.flag_limits(cfg)
         self._tmp = None
         self._graphs, self._graphs_lock = OrderedDict(), threading.Lock()
@@ -470,7 +471,7 @@ class CaseBackend:
         with _build_lock(cfg.case_db):
             if flows is not None:   # given directly (tests, scripts)
                 self.dns = dns or {}
-                self._write(flows, [])
+                self._write(flows, [], dhcp.holdings(leases or []))
                 self.graph = build_graph((f.src, f.dst, f.start) for f in flows)
             else:
                 self._load(cfg.case_paths, cfg.read_workers or os.cpu_count() or 1)
@@ -487,19 +488,20 @@ class CaseBackend:
             log.info("reusing %s: the evidence files are unchanged", self.store.path)
             self.dns = self.store.dns()
         else:
-            self.dns = {}
+            self.dns, observations = {}, []
+            tz = dhcp.timezone_named(self.cfg.dhcp_timezone)
             total = sum(size for _, size, _ in evidence)
             with self.progress.stage(f"Reading {len(evidence)} evidence file(s)", total) as stage:
-                flows = sources.read(found, self.dns, workers, stage)
-            self._write(flows, evidence)
+                flows = sources.read(found, self.dns, workers, stage, observations, tz)
+            self._write(flows, evidence, dhcp.holdings(dhcp.named(observations)))
             del flows
         n = self.store.stats()[0]
         with self.progress.stage("Building the graph", n) as stage:
             self.graph = build_graph(counted(self.store.pairs(), stage))
 
-    def _write(self, flows, evidence):
+    def _write(self, flows, evidence, leases=()):
         try:
-            self.store.write(flows, self.dns, evidence, self.progress)
+            self.store.write(flows, self.dns, evidence, self.progress, leases)
         except NotAStore as e:
             raise sources.SourceError(str(e))
         except sqlite3.Error as e:

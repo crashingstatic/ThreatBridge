@@ -99,6 +99,9 @@ class Config:
     beacon_min: int = 10
     long_connection: str = "1h"
 
+    # The time zone Windows DHCP server audit logs are written in (their server's), an IANA name.
+    dhcp_timezone: str = "UTC"
+
     # The client's own networks: "inside" hosts, e.g. those listed as having talked to an
     # outside address. Default: the private, shared and link-local ranges.
     internal_nets: list = field(default_factory=lambda: list(INTERNAL_NETS))

@@ -13,7 +13,7 @@ from .filters import in_network
 from .model import Flow
 from .progress import QUIET, counted
 
-VERSION = "9"   # changes when flows are read or scored differently, so older stores are rebuilt
+VERSION = "10"  # changes when flows are read or scored differently, so older stores are rebuilt
 _SCHEMA = """
 CREATE TABLE flow (src TEXT, dst TEXT, sport INTEGER, dport INTEGER, proto TEXT,
                    start_ts REAL, end_ts REAL, packets INTEGER, bytes INTEGER, source TEXT,
@@ -21,6 +21,7 @@ CREATE TABLE flow (src TEXT, dst TEXT, sport INTEGER, dport INTEGER, proto TEXT,
 CREATE TABLE dns (name TEXT, ip TEXT, first_ts REAL, last_ts REAL);
 CREATE TABLE beacon (src TEXT, dst TEXT, dport INTEGER, proto TEXT, connections INTEGER, first_ts REAL,
                      last_ts REAL, interval REAL, jitter REAL, size_jitter REAL, score REAL);
+CREATE TABLE lease (ip TEXT, mac TEXT, name TEXT, from_ts REAL, until_ts REAL, sources TEXT);
 CREATE TABLE evidence (path TEXT, size INTEGER, mtime_ns INTEGER);
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
 """
@@ -28,7 +29,7 @@ _INDEXES = """
 CREATE INDEX flow_pair ON flow (src, dst, start_ts);
 """
 _BEACON_INDEX = "CREATE INDEX beacon_group ON beacon (src, dst, dport, proto);"
-_TABLES = {"flow", "dns", "beacon", "evidence", "meta"}
+_TABLES = {"flow", "dns", "beacon", "lease", "evidence", "meta"}
 _FAR = 1e18  # seconds
 _DROP = "".join(f"DROP TABLE IF EXISTS {t};" for t in sorted(_TABLES))
 _COLUMNS = "f.src, f.dst, f.sport, f.dport, f.proto, f.start_ts, f.end_ts, f.packets, f.bytes, f.source, f.service"
@@ -91,9 +92,10 @@ class FlowStore:
 
     # ---- building ---------------------------------------------------------------------
 
-    def write(self, flows, dns, evidence, progress=None):
-        """Replace the contents with `flows`, the passive DNS map and the evidence manifest
-        [(path, size, mtime_ns)]. `progress` (see progress.py) shows how far it has got."""
+    def write(self, flows, dns, evidence, progress=None, leases=()):
+        """Replace the contents with `flows`, the passive DNS map, the DHCP holdings
+        (dhcp.holdings) and the evidence manifest [(path, size, mtime_ns)]. `progress` (see
+        progress.py) shows how far it has got."""
         progress = progress or QUIET
         db = self._db()
         try:
@@ -114,6 +116,9 @@ class FlowStore:
             db.executemany("INSERT INTO dns VALUES (?,?,?,?)",
                            ((name, ip, t[0], t[1]) for name, seen in dns.items()
                             for ip, t in seen.items()))
+            db.executemany("INSERT INTO lease VALUES (?,?,?,?,?,?)",
+                           ((ip, mac, name, start, until, json.dumps(sources))
+                            for ip, mac, name, start, until, sources in leases))
             db.executemany("INSERT INTO evidence VALUES (?,?,?)", evidence)
         with progress.stage("Indexing the flows"):
             db.executescript(_INDEXES)
@@ -164,6 +169,11 @@ class FlowStore:
                  f"FROM flow AS f WHERE f.end_ts - f.start_ts >= ? AND f.start_ts BETWEEN ? AND ? AND ({sql}) "
                  "GROUP BY f.src, f.dst ORDER BY max(f.end_ts - f.start_ts) DESC, f.src, f.dst LIMIT ?")
         return self._db().execute(query, (seconds, max(lo, -_FAR), min(hi, _FAR), *params, limit)).fetchall()
+
+    def leases(self):
+        """The DHCP holdings: [(ip, mac, name, from, until or None, [sources])], by address and time."""
+        return [(ip, mac, name, start, until, json.loads(sources)) for ip, mac, name, start, until, sources
+                in self._db().execute("SELECT * FROM lease ORDER BY ip, from_ts")]
 
     def dns(self):
         out = {}

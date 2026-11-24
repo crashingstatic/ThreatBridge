@@ -237,3 +237,20 @@ def write_bulk_pcap(path, n, seed=7):
             usec = i * 10_000
             fh.write(struct.pack("<IIII", t0 + usec // 1_000_000, usec % 1_000_000,
                                  len(frame), len(frame)) + frame)
+
+
+# ---- DHCP messages, written byte by byte ---------------------------------------------------
+
+def dhcp_message(msgtype, mac, yiaddr="0.0.0.0", ciaddr="0.0.0.0", lease=None, hostname=None, op=None):
+    """A DHCP message (a UDP payload): BOOTP header, magic cookie, options. msgtype: 1 DISCOVER,
+    3 REQUEST, 5 ACK, 7 RELEASE; mac as "aa:bb:cc:dd:ee:ff"."""
+    op = op or (2 if msgtype in (2, 5, 6) else 1)
+    chaddr = bytes.fromhex(mac.replace(":", "")).ljust(16, b"\0")
+    head = struct.pack("!BBBBIHH4s4s4s4s16s64s128s", op, 1, 6, 0, 0x3903F326, 0, 0, socket.inet_aton(ciaddr),
+                       socket.inet_aton(yiaddr), bytes(4), bytes(4), chaddr, bytes(64), bytes(128))
+    opts = bytes([53, 1, msgtype])
+    if lease is not None:
+        opts += bytes([51, 4]) + struct.pack("!I", lease)
+    if hostname:
+        opts += bytes([12, len(hostname)]) + hostname.encode()
+    return head + b"\x63\x82\x53\x63" + opts + b"\xff"

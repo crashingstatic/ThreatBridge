@@ -614,8 +614,8 @@ def test_evidence_is_read_by_one_worker_per_cpu_unless_set(tmp_path, monkeypatch
     d.mkdir()
     write_pcap(d / "cap.pcap", [(T, tcp("10.0.0.5", H, 50000, 445, SYN))])
     real_read, used = sources.read, []
-    monkeypatch.setattr(sources, "read", lambda found, dns, workers, stage: used.append(workers) or
-                        real_read(found, dns, workers, stage))
+    monkeypatch.setattr(sources, "read", lambda found, dns, workers, stage, *more: used.append(workers) or
+                        real_read(found, dns, workers, stage, *more))
     monkeypatch.setattr(os, "cpu_count", lambda: 6)
     CaseBackend(Config(backend="case", case_paths=[str(d)]))
     CaseBackend(Config(backend="case", case_paths=[str(d)], read_workers=2))

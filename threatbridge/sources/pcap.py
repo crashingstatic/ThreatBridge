@@ -9,6 +9,7 @@ import dpkt
 from .. import protocols
 from ..model import SourceError, icmp_flags, idle_timeout, oriented, proto_name, refused, settle
 from ..progress import counted
+from . import dhcp as dhcp_logs
 from . import pcapng
 from .workers import in_order
 
@@ -338,7 +339,7 @@ def record_dns(payload, ts, dns):
 REPORT_EVERY = 4096   # packets between progress reports
 
 
-def _decoded(path, dns, counts, report=None, notes=None):
+def _decoded(path, dns, counts, report=None, notes=None, dhcp=None):
     """The IP packets of one capture as (ts, IP version, IP protocol, src, dst, sport, dport,
     IP-layer bytes, TCP flags, protocol code), with the addresses as packed bytes. DNS answers
     over UDP go into `dns` unless it is None. A data connection an FTP control message
@@ -378,6 +379,8 @@ def _decoded(path, dns, counts, report=None, notes=None):
             elif isinstance(t, dpkt.udp.UDP):
                 sport, dport, flags = t.sport, t.dport, 0
                 code = protocols.from_payload(False, sport, dport, t.data)
+                if dhcp is not None and {sport, dport} == {67, 68}:
+                    dhcp_logs.record_message(t.data, ts, dhcp, path)
                 if sport == 53 and dns is not None:
                     record_dns(t.data, ts, dns)
             elif ip.p in (dpkt.ip.IP_PROTO_TCP, dpkt.ip.IP_PROTO_UDP):
@@ -450,15 +453,16 @@ def _logged(path, counts):
 _PACKED = struct.Struct("<dBB16s16sHHIBB")
 
 
-def _decode_file(path, want_dns):
-    """In a worker process: one capture's packets, packed, with its DNS answers, the FTP data
-    connections announced in it, and counts."""
+def _decode_file(path, want_dns, want_dhcp=False):
+    """In a worker process: one capture's packets, packed, with its DNS answers, its DHCP
+    observations, the FTP data connections announced in it, and counts."""
     dns = {} if want_dns else None
+    dhcp = [] if want_dhcp else None
     counts, notes = _Counts(), {}
     packed = bytearray()
-    for packet in _decoded(path, dns, counts, notes=notes):
+    for packet in _decoded(path, dns, counts, notes=notes, dhcp=dhcp):
         packed += _PACKED.pack(*packet)
-    return packed, dns, counts, notes
+    return packed, dns, counts, notes, dhcp
 
 
 def _merge_dns(dns, more):
@@ -473,14 +477,15 @@ def _merge_dns(dns, more):
                 known[ip] = [first, last]
 
 
-def read_pcaps(paths, dns=None, workers=1, stage=None):
+def read_pcaps(paths, dns=None, workers=1, stage=None, dhcp=None):
     """Flows from tcpdump captures. Files are read in capture order, so a connection that
     spans rotated files (tcpdump -C / -G) comes out as one flow. If `dns` is a dict, DNS
     answers seen over UDP are added to it (see record_dns).
 
     With several files and workers, that many worker processes decode files at once; the
     connections are still followed packet by packet in capture order, so the flows are the
-    same. `stage` (see progress.py) is told the bytes read."""
+    same. `stage` (see progress.py) is told the bytes read. If `dhcp` is a list, the DHCP
+    messages seen add observations to it (dhcp.py)."""
     stage = stage or (lambda amount=0, note=None: None)
     tracker, hosts = FlowTracker(), _Hosts()
     files = sorted(paths, key=_first_timestamp)
@@ -491,15 +496,17 @@ def read_pcaps(paths, dns=None, workers=1, stage=None):
             note = f"file {i} of {len(files)}"
             _track(tracker, _decoded(path, dns, counts,
                                      lambda n: stage(n, f"{note}, {packets + counts.packets:,} packets"),
-                                     notes),
+                                     notes, dhcp),
                    path, hosts, notes)
             packets += counts.packets
             _logged(path, counts)
         return tracker.finish()
-    decoded = in_order(_decode_file, files, workers, dns is not None)
-    for i, (path, (packed, file_dns, counts, notes)) in enumerate(decoded, 1):
+    decoded = in_order(_decode_file, files, workers, dns is not None, dhcp is not None)
+    for i, (path, (packed, file_dns, counts, notes, file_dhcp)) in enumerate(decoded, 1):
         if dns is not None:
             _merge_dns(dns, file_dns)
+        if dhcp is not None:
+            dhcp.extend(file_dhcp)
         size, n = os.path.getsize(path), len(packed) // _PACKED.size
         note = f"file {i} of {len(files)}, {packets + counts.packets:,} packets"
         progress = (lambda k: stage(size * k / n, note)) if n else (lambda k: None)
