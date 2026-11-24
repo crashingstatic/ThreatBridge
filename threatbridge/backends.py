@@ -37,7 +37,7 @@ from datetime import datetime, timedelta, timezone
 import requests
 
 from .communityid import community_id
-from . import analysis, filters, protocols, sources
+from . import analysis, filters, hashing, protocols, sources
 from .compromised import flow_key, marked_hosts, reached
 from .graph import build_graph, count_between
 from .progress import Progress, counted
@@ -462,6 +462,7 @@ class CaseBackend:
         self.cfg, self.flags = cfg, filters.flag_limits(cfg)
         self._tmp = None
         self._graphs, self._graphs_lock = OrderedDict(), threading.Lock()
+        self._hashing, self._hashing_lock = None, threading.Lock()
         path = cfg.case_db
         if not path:
             self._tmp = tempfile.TemporaryDirectory(prefix="threatbridge-")
@@ -537,6 +538,14 @@ class CaseBackend:
             raise sources.SourceError(str(e))
         except sqlite3.Error as e:
             raise sources.SourceError(f"{self.store.path}: can't write the case database ({e})")
+
+    def evidence(self):
+        """The evidence files with their SHA-256, hashed in the background on the first ask
+        (hashing.py): ask again until "done"."""
+        with self._hashing_lock:
+            if self._hashing is None or self._hashing.stale():
+                self._hashing = hashing.Hashing(self.store.evidence()).start()
+            return self._hashing.report()
 
     def summary(self):
         return {

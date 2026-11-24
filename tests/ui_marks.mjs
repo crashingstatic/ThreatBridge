@@ -23,6 +23,7 @@ const style = (id, prop) => cyEval(([i, p]) => window.threatbridge.cy.getElement
 const waitStatus = (re) => page.waitForFunction(
   (src) => new RegExp(src).test(document.getElementById("status").textContent), re.source);
 const settled = () => page.waitForFunction(() => !window.threatbridge.settling());
+const status = () => page.textContent("#status");
 const hiddenNote = async () => { await settled(); return page.textContent("#hidden-note"); };
 const hidden = () => cyEval(() => window.threatbridge.cy.elements(".mark-hidden").map((e) => e.id()).sort());
 const edgeIds = () => cyEval(() => window.threatbridge.cy.edges().map((e) => e.id()).sort());
@@ -215,6 +216,66 @@ try {
     [B, F, "ssh", "", "suspect"]]);                                   // no Windows events for these hosts
   assert.ok(flowRows.every((c) => /^1:[A-Za-z0-9+/]{27}=$/.test(c[10])), "each flow's Community ID");
   await waitStatus(/^Exported 1 marked host\(s\) and 4 marked or suspect flow\(s\)$/);
+
+  // The report (D31): an HTML file, the same in Markdown, and the map as an image, with the
+  // evidence files' SHA-256. What it shows from evidence and analysts stays text: a note with
+  // markup is neither drawn nor run, and Markdown escapes it.
+  const NOTE = '<img src=x onerror="window.pwned=1"> | *x* [y](z)';
+  await page.request.post(`${BASE}/api/compromised`, { headers: { "X-ThreatBridge": "1" }, data: { ip: B, note: NOTE } });
+  const reportFiles = [];
+  const take = (d) => reportFiles.push(d);
+  page.on("download", take);
+  await page.click("#report");
+  await waitStatus(/^Saved the report: /);
+  for (let i = 0; i < 100 && reportFiles.length < 3; i++) await page.waitForTimeout(50);
+  page.off("download", take);
+  const report = Object.fromEntries(reportFiles.map((d) => [d.suggestedFilename().replace(`threatbridge-${A}-`, ""), d]));
+  assert.deepEqual(Object.keys(report).sort(), ["map.png", "report.html", "report.md"]);
+  assert.equal(await status(), `Saved the report: threatbridge-${A}-report.html, threatbridge-${A}-report.md and ` +
+                               `threatbridge-${A}-map.png`);
+  const png = await readFile(await report["map.png"].path());
+  assert.equal(png.subarray(1, 4).toString(), "PNG");
+  const html = await readFile(await report["report.html"].path(), "utf8");
+  assert.ok(html.startsWith("<!doctype html>"));
+  const view = await ctx.newPage();
+  await view.setContent(html);
+  const read = await view.evaluate(() => ({
+    title: document.title,
+    csp: document.querySelector('meta[http-equiv="Content-Security-Policy"]').content,
+    styled: getComputedStyle(document.querySelector("th")).borderTopStyle,
+    h2: [...document.querySelectorAll("h2")].map((h) => h.textContent),
+    images: [...document.images].map((i) => i.src.slice(0, 22)),
+    pwned: window.pwned === 1,
+    tables: [...document.querySelectorAll("h2")].reduce((o, h) => {
+      let t = h.nextElementSibling;
+      while (t && t.tagName !== "TABLE" && t.tagName !== "H2") t = t.nextElementSibling;
+      o[h.textContent] = t && t.tagName === "TABLE" ? [...t.rows].map((r) => [...r.cells].map((c) => c.textContent)) : null;
+      return o;
+    }, {}),
+  }));
+  await view.close();
+  assert.equal(read.title, `ThreatBridge report: ${A}`);
+  assert.equal(read.csp, "default-src 'none'; img-src data:; style-src 'unsafe-inline'");
+  for (const title of ["Case", "Evidence files", "Map", "Marked hosts", "Marked and suspect flows", "Attack paths",
+                       "Filters and excludes", "Settings"]) assert.ok(read.h2.includes(title), title);
+  assert.equal(read.styled, "solid", "its own style applies");
+  assert.deepEqual(read.images, ["data:image/png;base64,"]);
+  assert.ok(!read.pwned, "a note's markup doesn't run");
+  assert.deepEqual(read.tables["Marked hosts"], [["Host", "Time", "Note", "Marked", "Marked flows"], [B, "—", NOTE, "direct", "1"]]);
+  const files = read.tables["Evidence files"];
+  assert.deepEqual(files[0], ["File", "Bytes", "Modified (UTC)", "SHA-256", "Since the case was built"]);
+  assert.deepEqual(files.slice(1).map((r) => r[0].split("/").pop()).sort(), ["Security.jsonl", "chain.pcap", "dhcpd.leases"]);
+  assert.ok(files.slice(1).every((r) => /^[0-9a-f]{64}$/.test(r[3]) && r[4] === "unchanged"), JSON.stringify(files));
+  assert.equal(read.tables["Marked and suspect flows"].length, 5);                 // the header and 4 flows
+  assert.deepEqual(read.tables.Settings.filter((r) => r[0].startsWith("TB_DHCP") || r[0].startsWith("TB_LOGON")),
+                   [["TB_DHCP_TIMEZONE", "UTC"], ["TB_LOGON_TOLERANCE", "2m"]]);
+  const mdText = await readFile(await report["report.md"].path(), "utf8");
+  assert.ok(mdText.startsWith(`# ThreatBridge report: ${A}\n`));
+  assert.ok(mdText.includes(`\n## Marked hosts\n\n| Host | Time | Note | Marked | Marked flows |\n|---|---|---|---|---|\n` +
+                            `| ${A === B ? "" : B} | — | \\<img src=x onerror="window.pwned=1"\\> \\| \\*x\\* \\[y\\](z) | direct | 1 |\n`),
+            mdText);
+  assert.ok(mdText.includes(`![The map](threatbridge-${A}-map.png)`));
+  await page.request.post(`${BASE}/api/compromised`, { headers: { "X-ThreatBridge": "1" }, data: { ip: B, note: '=1+1, "x"' } });
 
   // Another analyst's marks appear within seconds, and what they hide (ATK-8).
   const other = await ctx.newPage();

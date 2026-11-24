@@ -14,6 +14,9 @@ what a schema can't say.
 
 ## Changes
 
+- **Evidence and version (D31).** `GET /api/evidence` lists the case's evidence files with their
+  SHA-256, hashed in the background on the first ask; `GET /api/config` has `version`, the
+  tool's own. Additions, so `api_version` stays 1.
 - **Accounts on flows (D28).** `GET`/`POST /api/accounts` lists the accounts that made a
   connection's flows. In the case backend each flow of `/api/flows` has `accounts`, each hop of a
   path `accounts`, each connection of a threat line `accounts` (with Windows events), and each
@@ -110,6 +113,7 @@ Mapping connections:
 | `/api/resolve` | GET | Check an IP and settle the anchor time a map starts from |
 | `/api/neighbors` | GET, POST | One hop: who connected to a host, or who it connected to, before or after the anchor |
 | `/api/accounts` | GET, POST | The accounts that made a connection's flows, from Windows Security events (case backend) |
+| `/api/evidence` | GET | The case's evidence files with their SHA-256, hashed in the background: ask until done (case backend) |
 | `/api/machines` | GET, POST | Which machine held an address: every one (GET), or the one at each host's time (POST) (case backend) |
 | `/api/flagged` | GET, POST | Beacons and long connections (case backend) |
 | `/api/contacts` | GET, POST | The inside hosts that talked to an address, a network or a domain name (case backend) |

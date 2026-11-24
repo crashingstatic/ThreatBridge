@@ -199,6 +199,10 @@ class FlowStore:
     def logon_count(self):
         return self._db().execute("SELECT count(*) FROM logon").fetchone()[0]
 
+    def evidence(self):
+        """The evidence manifest the case was built from: [(path, size, mtime_ns)], by path."""
+        return self._db().execute("SELECT path, size, mtime_ns FROM evidence ORDER BY path").fetchall()
+
     def leases(self):
         """The DHCP holdings: [(ip, mac, name, from, until or None, [sources])], by address and time."""
         return [(ip, mac, name, start, until, json.loads(sources)) for ip, mac, name, start, until, sources

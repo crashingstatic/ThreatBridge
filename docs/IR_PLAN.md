@@ -367,6 +367,6 @@ From the review, each reproduced in a browser:
 | 2. How they got in | decided | done (D25, D26, ATK-10 to ATK-12) | done | done | green |
 | 5. Machines behind addresses | decided | done (D27, ING-9, ING-10) | done | done | green |
 | 4. Accounts on hops | decided | done (D28, ING-11, ATK-13) | done | done | green |
-| 9. Deliverables | decided | | | | |
+| 9. Deliverables | decided | done (D29 to D31, INT-10, INT-11, ATK-14) | done | done | |
 | 14. Usability | decided | | | | |
 | 13. Measure it | | | | | |

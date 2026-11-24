@@ -76,3 +76,9 @@ def test_release_version_is_plain():
 def test_the_lock_file_matches_pyproject():
     r = subprocess.run(["uv", "lock", "--check"], cwd=ROOT, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
+
+
+def test_the_package_version_is_the_projects():
+    """The version /api/config and the report give is the one a release is tagged with."""
+    from threatbridge import __version__
+    assert __version__ == tomllib.loads(read("pyproject.toml"))["project"]["version"]

@@ -178,6 +178,7 @@ def test_every_operation_answers_as_documented(tmp_path):
     assert case.get(f"/api/accounts?src={A}&dst={X}&from={t0}&to={t1}").status_code == 200
     assert case.post("/api/accounts", json={"src": A, "dst": X, "from": t0}, headers=WRITE).status_code == 200
     assert case.get(f"/api/machines?ip={A}&range_from={t0}").status_code == 200
+    assert case.get("/api/evidence").status_code == 200
     assert case.post("/api/machines", json={"hosts": [{"ip": A, "time": t0}, {"ip": X}], "range_to": t1},
                      headers=WRITE).status_code == 200
     assert case.get(f"/api/flagged?limit=5&range_from={t0}&filter=long").status_code == 200

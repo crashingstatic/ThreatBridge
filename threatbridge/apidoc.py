@@ -148,6 +148,7 @@ class Directions(Shape):
 class Config(Shape):
     """What a client needs to know about this server (D20)."""
     api_version: int = Field(description="the API version this server speaks")
+    version: str = Field(description="ThreatBridge's own version, as released")
     limits: Limits
     filter: FilterVocabulary
     default_window: str = Field(description="a query's window when it gives none (TB_WINDOW)")
@@ -660,6 +661,25 @@ class MachinesView(Shape):
     hosts: list[HostMachine]
 
 
+class EvidenceFile(Shape):
+    path: str = Field(description="as the case was built from it, absolute")
+    size: int = Field(description="bytes, now (as built if missing)")
+    modified: Time = Field(description="its modification time, now (as built if missing)")
+    sha256: Optional[str] = Field(description="hex; null until hashed, or if missing")
+    state: Literal["unchanged", "changed", "missing"] = Field(description=(
+        "since the case was built: changed means the digest is of what the file holds now, not of what was "
+        "read; missing means gone or unreadable"))
+
+
+class Evidence(Shape):
+    """The case's evidence files with their SHA-256 (D31)."""
+    done: bool = Field(description="every file hashed; until then, ask again")
+    hashed: int = Field(description="bytes hashed so far")
+    total: int = Field(description="bytes to hash")
+    files: list[EvidenceFile] = Field(description="by path; DHCP logs, Windows event logs and TB_HOSTS_FILE included")
+    settings: dict[str, str] = Field(description="the settings the case was built with that change what it holds")
+
+
 class MapToSave(Shape):
     name: str = Field(description="1 to limits.map_name printable characters")
     map: dict[str, Any] = Field(description="up to limits.map_bytes, kept as it is; the map saves a MapDocument")
@@ -947,6 +967,10 @@ ENDPOINTS = {
         "The accounts that made a connection's flows (D28)", Accounts, AccountsQuery, errors=(400, 501), description=(
             "From Windows Security events 4624, 4648, 4768 and 4769 matched to the flows src -> dst that started "
             "in [from, to]. Case backend only.")),
+    "api_evidence": Endpoint(
+        "The case's evidence files with their SHA-256 (D31)", Evidence, errors=(501,), description=(
+            "Hashing starts on the first ask and runs in the background; ask again (about once a second) "
+            "until done. The digests are kept until a file changes. Case backend only.")),
     "api_machines_of": Endpoint(
         "Every machine that held an address (D27)", MachinesOf, MachinesQuery, errors=(400, 501), description=(
             "From the case's DHCP logs and the DHCP messages in its captures. Case backend only.")),

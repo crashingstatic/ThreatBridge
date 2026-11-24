@@ -554,6 +554,7 @@ generated case) and `ui_mtls.mjs` (the container). *Manual* names the tests abov
 | INT-8 Mark and unmark flows | `ui_marks.mjs`, `ui_actions.mjs` (the single-flow menu) | VIS-03 step 3 |
 | INT-9 Confirmation before replacing the shared marks | `ui_marks.mjs` (Cancel, then OK) | XB-01 step 7b |
 | INT-10 Places kept as the map grows or is re-queried; *Tidy* | `ui_actions.mjs` (a dragged host stays, the new host next to its parent, clear of the others; *Tidy*; a saved host without a place), `ui_marks.mjs` (every host its own place after a re-query) | |
+| INT-11 Report | `test_hashing.py` (digests, progress, changed and missing files, settings, `/api/evidence`); `test_supply_chain.py` (the version); `ui_marks.mjs` (three files; sections, evidence digests, settings; a note with markup stays text in HTML and is escaped in Markdown; the report's own style and policy) | How it prints: by hand |
 | INT-S2 Save and restore sessions | `test_sessions.py`; `ui_actions.mjs` (shared and as a file; an opened map's own marks), `ui_marks.mjs` (filters, marks and queries saved; version 1 maps; Share), `ui_smoke.mjs` (the URL) | XB-01 (dialogs and files in other browsers), SO-07 (kept across a redeploy) |
 | INT-S3 Export (JSON maps, CSV) | `test_marks.py` (`/api/export`, its limit); `ui_marks.mjs` (two CSV files, quoting, no formulas); `ui_actions.mjs` (map files) | XB-01 step 7b |
 | FIL-1 IP exclude list | `test_api.py`, `test_query.py`; `ui_smoke.mjs`, `ui_actions.mjs` | SO-02 |

@@ -964,6 +964,33 @@
     }
    }
   },
+  "/api/evidence": {
+   "get": {
+    "summary": "The case's evidence files with their SHA-256 (D31)",
+    "description": "Hashing starts on the first ask and runs in the background; ask again (about once a second) until done. The digests are kept until a file changes. Case backend only.",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Evidence"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/E401"
+     },
+     "421": {
+      "$ref": "#/components/responses/E421"
+     },
+     "501": {
+      "$ref": "#/components/responses/E501"
+     }
+    }
+   }
+  },
   "/api/filter": {
    "get": {
     "summary": "Check one filter expression",
@@ -2870,6 +2897,10 @@
       "description": "the API version this server speaks",
       "type": "integer"
      },
+     "version": {
+      "description": "ThreatBridge's own version, as released",
+      "type": "string"
+     },
      "limits": {
       "$ref": "#/components/schemas/Limits"
      },
@@ -2997,6 +3028,7 @@
     },
     "required": [
      "api_version",
+     "version",
      "limits",
      "filter",
      "default_window",
@@ -3441,6 +3473,92 @@
     },
     "required": [
      "error"
+    ],
+    "type": "object"
+   },
+   "Evidence": {
+    "additionalProperties": false,
+    "description": "The case's evidence files with their SHA-256 (D31).",
+    "properties": {
+     "done": {
+      "description": "every file hashed; until then, ask again",
+      "type": "boolean"
+     },
+     "hashed": {
+      "description": "bytes hashed so far",
+      "type": "integer"
+     },
+     "total": {
+      "description": "bytes to hash",
+      "type": "integer"
+     },
+     "files": {
+      "description": "by path; DHCP logs, Windows event logs and TB_HOSTS_FILE included",
+      "items": {
+       "$ref": "#/components/schemas/EvidenceFile"
+      },
+      "type": "array"
+     },
+     "settings": {
+      "additionalProperties": {
+       "type": "string"
+      },
+      "description": "the settings the case was built with that change what it holds",
+      "type": "object"
+     }
+    },
+    "required": [
+     "done",
+     "hashed",
+     "total",
+     "files",
+     "settings"
+    ],
+    "type": "object"
+   },
+   "EvidenceFile": {
+    "additionalProperties": false,
+    "properties": {
+     "path": {
+      "description": "as the case was built from it, absolute",
+      "type": "string"
+     },
+     "size": {
+      "description": "bytes, now (as built if missing)",
+      "type": "integer"
+     },
+     "modified": {
+      "description": "its modification time, now (as built if missing)",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+      "type": "string"
+     },
+     "sha256": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "hex; null until hashed, or if missing"
+     },
+     "state": {
+      "description": "since the case was built: changed means the digest is of what the file holds now, not of what was read; missing means gone or unreadable",
+      "enum": [
+       "unchanged",
+       "changed",
+       "missing"
+      ],
+      "type": "string"
+     }
+    },
+    "required": [
+     "path",
+     "size",
+     "modified",
+     "sha256",
+     "state"
     ],
     "type": "object"
    },

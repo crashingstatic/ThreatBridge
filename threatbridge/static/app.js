@@ -19,6 +19,10 @@
   let flowsFor = null;         // connection whose flows the details panel lists
   let lastFlows = null;        // the page of flows listed, to redraw when marks change
   let flagged = { beacons: new Map(), long: new Map() };   // "src->dst" -> its best beacon, its long flows (ATK-12)
+  let shownPaths = null;       // the attack paths listed: /api/paths' pairs (for the report, D31)
+  let shownRoutes = null;      // the paths between two hosts listed: /api/paths' answer
+  let shownLine = null;        // the threat line highlighted: /api/threatline's answer
+  let shownExcludes = [];      // the shared exclude list, as last read
   const FLOW_PAGE = 50;
   const WRITE_HEADERS = { "Content-Type": "application/json", "X-ThreatBridge": "1" };
   const COLORS = { root: "#e5484d", in: "#3e9bff", out: "#f5a524", node: "#9aa7bd",
@@ -435,6 +439,7 @@
 
   function clearHighlight() {
     cy.elements().removeClass("up down line-selected faded");
+    shownLine = null;
   }
 
   function focus(elements) {
@@ -951,6 +956,7 @@
   }
 
   function renderExcludes(r) {
+    shownExcludes = r.entries;
     $("exclude-list").replaceChildren(...r.entries.map((entry) => {
       const resolved = (r.resolved || {})[entry];
       return listEntry(entry, resolved && resolutionText(resolved), "Remove", () => removeExclude(entry));
@@ -997,7 +1003,10 @@
     queries.push(q);
     const conn = flowsFor;                     // the connection's details, open since the click
     const r = await threatLineWith(q, true);
-    if (r) showLineTimeline(r, conn);
+    if (r) {
+      shownLine = r;
+      showLineTimeline(r, conn);
+    }
     return r;
   }
 
@@ -1418,6 +1427,7 @@
     const asked = ++pathsAsked;
     const r = await ask("/api/paths", windowParams());
     if (asked !== pathsAsked) return;
+    shownPaths = r.pairs;
     const paths = r.pairs.flatMap((pair) => pair.paths);
     drawPaths(paths, "attack");
     const ul = $("path-list");
@@ -1481,6 +1491,7 @@
     const r = await ask("/api/paths", params);
     drawPaths(r.paths, "route");
     const ul = $("route-list");
+    shownRoutes = r;
     ul.replaceChildren(...r.paths.map((p) => pathItem(p, "Path")));
     if (!r.paths.length) ul.append(hintItem("No time-consistent path."));
     const summary = r.truncated
@@ -1647,10 +1658,13 @@
     return [columns.join(","), ...rows.map((r) => columns.map((c) => csvCell(r[c])).join(","))].join("\r\n") + "\r\n";
   }
 
+  // What exported files are named after: the map's name, else its IOC host.
+  const fileStem = () => ($("session-name").value.trim() || cy.nodes("[?root]").map((n) => n.id())[0] || "map")
+    .replace(/[^\w.-]+/g, "_");
+
   async function exportCsv() {
     const r = await ask("/api/export", windowParams(), { edges: drawn(cy.edges()) });
-    const name = ($("session-name").value.trim() || cy.nodes("[?root]").map((n) => n.id())[0] || "map")
-      .replace(/[^\w.-]+/g, "_");
+    const name = fileStem();
     saveFile(new Blob([csv(["ip", "time", "note", "marked", "count"], r.hosts)], { type: "text/csv" }),
              `threatbridge-${name}-hosts.csv`);
     saveFile(new Blob([csv(["start", "end", "src", "sport", "dst", "dport", "proto", "protocols", "packets", "bytes",
@@ -1661,6 +1675,191 @@
   }
 
   $("export-csv").addEventListener("click", () => exportCsv().catch(fail));
+
+  // ---- the report (D31): the analysis as a self-contained HTML file, the same in Markdown, and
+  // the map as an image. Built here from what the map holds; the server adds the evidence files'
+  // digests (hashed when asked) and the marked and suspect flows (as Export CSV).
+  const REPORT_CSP = "default-src 'none'; img-src data:; style-src 'unsafe-inline'";
+  const REPORT_STYLE = `body { font: 13px/1.45 system-ui, sans-serif; color: #111; margin: 24px; }
+h1 { font-size: 22px; } h2 { font-size: 17px; margin-top: 28px; border-bottom: 1px solid #ccc; }
+h3 { font-size: 14px; margin: 18px 0 6px; } h4 { font-size: 13px; margin: 12px 0 4px; }
+table { border-collapse: collapse; margin: 6px 0 12px; } th, td { border: 1px solid #bbb; padding: 3px 6px;
+text-align: left; vertical-align: top; } th { background: #eee; } td { overflow-wrap: break-word; }
+td.whole { white-space: nowrap; } td.long { overflow-wrap: anywhere; }
+code { font-size: 12px; } img { max-width: 100%; border: 1px solid #bbb; }
+@media print { body { margin: 0; } table { font-size: 10px; } h2 { break-after: avoid; } tr { break-inside: avoid; } }`;
+  const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+  const sizeText = (n) => (n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB`
+    : `${Math.ceil(n / 1e3)} kB`);
+
+  // The evidence files with their digests, once the server has hashed them all.
+  async function hashedEvidence() {
+    for (;;) {
+      const r = await getJSON("/api/evidence");
+      if (r.done) return r;
+      setStatus(`Hashing the evidence files: ${r.total ? Math.floor((100 * r.hashed) / r.total) : 0}% of ` +
+                `${sizeText(r.total)}…`);
+      await sleep(700);
+    }
+  }
+
+  // The report's sections: [{title, parts: [{text} | {table: {columns, rows}} | {heading} | {image}]}].
+  function reportSections(evidence, exported, image) {
+    const dash = (v) => (v == null || v === "" ? "—" : v);
+    const table = (columns, rows) => ({ table: { columns, rows } });
+    const none = { text: "None." };
+    const c = cfg.case;
+    const sections = [];
+    const caseRows = [["Source", cfg.backend === "case" ? "Evidence files (post-mortem mode)" : "Security Onion"]];
+    if (c) {
+      caseRows.push(["First flow", dash(c.start)], ["Last flow", dash(c.end)], ["Flows", c.flows], ["Hosts", c.hosts],
+                    ["Names in DNS answers", c.dns_names], ["DHCP holdings", c.leases], ["Flows with an account", c.logons]);
+    }
+    sections.push({ title: "Case", parts: [table(["", ""], caseRows)] });
+    if (evidence) {
+      sections.push({ title: "Evidence files", parts: [evidence.files.length
+        ? table(["File", "Bytes", "Modified (UTC)", "SHA-256", "Since the case was built"],
+                evidence.files.map((f) => [f.path, f.size, f.modified, dash(f.sha256), f.state]))
+        : { text: "None: the flows were given directly." }] });
+    }
+    sections.push({ title: "Map", parts: [{ image }, { text: `${cy.nodes().not(".mark-hidden").length} host(s), ` +
+                                                             `${cy.edges().not(".mark-hidden").length} connection(s).` }] });
+    sections.push({ title: "Marked hosts", parts: [exported.hosts.length
+      ? table(["Host", "Time", "Note", "Marked", "Marked flows"],
+              exported.hosts.map((h) => [h.ip, dash(h.time), h.note, h.marked, h.count]))
+      : none] });
+    const flowColumns = ["start", "end", "src", "sport", "dst", "dport", "proto", "protocols", "packets", "bytes",
+                         "community_id", "accounts", "status"];
+    const flowParts = [exported.flows.length
+      ? table(["Start", "End", "Source", "Src port", "Destination", "Dst port", "Proto", "Protocols", "Packets", "Bytes",
+               "Community ID", "Accounts", "Status"],
+              exported.flows.slice().sort((x, y) => x.start.localeCompare(y.start))
+                .map((f) => flowColumns.map((k) => (k === "protocols" ? f[k].map(protocolName).join("/")
+                  : Array.isArray(f[k]) ? f[k].join(", ") : f[k]))))
+      : none];
+    if (exported.truncated) flowParts.push({ text: `The first ${exported.flows.length} only.` });
+    sections.push({ title: "Marked and suspect flows", parts: flowParts });
+    const pathParts = (paths, what) => paths.flatMap((p, i) => {
+      const t = pathTimeline(p, what);
+      return [{ heading: `${i + 1}. ${t.title}` }, table(t.columns, t.rows.map((r) => r.cells))];
+    });
+    const attack = (shownPaths || []).filter((pair) => pair.paths.length);
+    sections.push({ title: "Attack paths", parts: attack.length ? attack.flatMap((pair) => [
+      { text: `${pair.from} → ${pair.to}: ` + (pair.truncated ? `the first ${pair.paths.length} paths` : `${pair.paths.length} path(s)`) },
+      ...pathParts(pair.paths, "Attack path")]) : [none] });
+    if (shownRoutes && shownRoutes.paths.length) {
+      sections.push({ title: "Paths between two hosts", parts: [
+        { text: `${shownRoutes.src} → ${shownRoutes.dst}: ` + (shownRoutes.truncated
+          ? `the first ${shownRoutes.paths.length} paths` : `${shownRoutes.paths.length} path(s)`) },
+        ...pathParts(shownRoutes.paths, "Path")] });
+    }
+    if (shownLine) {
+      const t = lineTimeline(shownLine);
+      sections.push({ title: "Threat line", parts: [{ heading: t.title }, table(t.columns, t.rows.map((r) => r.cells))] });
+    }
+    sections.push({ title: "Filters and excludes", parts: [
+      { heading: "Filters" }, filters.length ? table(["Filter"], filters.map((f) => [f])) : none,
+      { heading: "Shared exclude list" }, shownExcludes.length ? table(["Entry"], shownExcludes.map((e) => [e])) : none] });
+    const toolbar = [["IOC host", $("ip").value.trim()], ["IOC time", iocTime], ["Direction", $("direction").selectedOptions[0]?.text],
+                     ["Window", $("window").value.trim()], ["Range from", $("range-from").value.trim()],
+                     ["Range to", $("range-to").value.trim()], ["Peers", $("order").selectedOptions[0]?.text],
+                     ["N", $("limit").value.trim()]];
+    const server = [["Hop limit (TB_THREAT_HOPS)", cfg.threat_hops], ["Inside networks (TB_INTERNAL_NETS)", (cfg.internal_nets || []).join(", ")],
+                    ["Beacon score (TB_BEACON_SCORE)", cfg.beacon_score], ["Beacon flows (TB_BEACON_MIN)", cfg.beacon_min],
+                    ["Long connection, seconds (TB_LONG_CONNECTION)", cfg.long_connection],
+                    ...Object.entries((evidence && evidence.settings) || {}).map(([k, v]) => [k, v])];
+    sections.push({ title: "Settings", parts: [table(["", ""], [...toolbar, ...server].map(([k, v]) => [k, dash(v)]))] });
+    return sections;
+  }
+
+  function reportHtml(title, generated, sections) {
+    const doc = document.implementation.createHTMLDocument(title);
+    const mk = (tag, props, ...children) => {
+      const node = Object.assign(doc.createElement(tag), props || {});
+      node.append(...children);
+      return node;
+    };
+    const charset = doc.createElement("meta");
+    charset.setAttribute("charset", "utf-8");
+    doc.head.prepend(charset, mk("meta", { httpEquiv: "Content-Security-Policy", content: REPORT_CSP }));
+    doc.body.append(mk("h1", { textContent: title }), mk("p", { textContent: generated }));
+    for (const s of sections) {
+      doc.body.append(mk("h2", { textContent: s.title }));
+      for (const part of s.parts) {
+        if (part.text) doc.body.append(mk("p", { textContent: part.text }));
+        if (part.heading) doc.body.append(mk("h3", { textContent: part.heading }));
+        if (part.image) doc.body.append(mk("img", { src: part.image, alt: "The map" }));
+        if (part.image === "") doc.body.append(mk("p", { textContent: "The map is empty." }));
+        if (part.table) {
+          // A short value without spaces (a time, a port) stays whole; a long one (a path, a digest) wraps anywhere.
+          const cell = (tag, v) => {
+            const text = v == null ? "" : String(v);
+            return mk(tag, { textContent: text, className: /\s/.test(text) ? "" : text.length > 32 ? "long" : "whole" });
+          };
+          const head = part.table.columns.some((col) => col) ? [mk("thead", {}, mk("tr", {}, ...part.table.columns.map((col) => cell("th", col))))] : [];
+          doc.body.append(mk("table", {}, ...head,
+                             mk("tbody", {}, ...part.table.rows.map((r) => mk("tr", {}, ...r.map((v) => cell("td", v)))))));
+        }
+      }
+    }
+    // The style goes in as text: a style element would meet this page's own policy, which refuses
+    // inline styles (the report's own policy allows them).
+    return `<!doctype html>\n${doc.documentElement.outerHTML.replace("</head>", `<style>${REPORT_STYLE}</style></head>`)}\n`;
+  }
+
+  // Markdown: what could change a cell's meaning is escaped; a line break becomes a space.
+  const md = (v) => String(v ?? "").replace(/[\r\n\t]+/g, " ").replace(/[\\`*_[\]<>|&~]/g, "\\$&");
+
+  function reportMarkdown(title, generated, sections, imageFile) {
+    const out = [`# ${md(title)}`, "", md(generated), ""];
+    for (const s of sections) {
+      out.push(`## ${md(s.title)}`, "");
+      for (const part of s.parts) {
+        if (part.text) out.push(md(part.text), "");
+        if (part.heading) out.push(`### ${md(part.heading)}`, "");
+        if (part.image) out.push(`![The map](${imageFile})`, "");
+        if (part.image === "") out.push("The map is empty.", "");
+        if (part.table) {
+          const cols = part.table.columns.map((col) => md(col) || " ");
+          out.push(`| ${cols.join(" | ")} |`, `|${cols.map(() => "---").join("|")}|`,
+                   ...part.table.rows.map((r) => `| ${r.map(md).join(" | ")} |`), "");
+        }
+      }
+    }
+    return out.join("\n");
+  }
+
+  let reporting = false;
+  async function saveReport() {
+    if (reporting) return;
+    reporting = true;
+    $("report").disabled = true;
+    try {
+      const evidence = cfg.backend === "case" ? await hashedEvidence() : null;
+      setStatus("Writing the report…");
+      const exported = await ask("/api/export", windowParams(), { edges: drawn(cy.edges()) });
+      const stem = fileStem();
+      const shown = cy.elements().not(".mark-hidden");
+      const picture = { full: true, scale: 2, maxWidth: 4000, maxHeight: 4000, bg: "#11151c" };
+      const png = shown.nonempty() ? cy.png(Object.assign({ output: "blob" }, picture)) : null;
+      const image = shown.nonempty() ? cy.png(picture) : "";
+      const title = `ThreatBridge report: ${$("session-name").value.trim() || $("ip").value.trim() || "map"}`;
+      const generated = `Generated ${new Date().toISOString()} by ThreatBridge ${cfg.version || "?"}.`;
+      const sections = reportSections(evidence, exported, image);
+      const imageFile = `threatbridge-${stem}-map.png`;
+      saveFile(new Blob([reportHtml(title, generated, sections)], { type: "text/html" }), `threatbridge-${stem}-report.html`);
+      saveFile(new Blob([reportMarkdown(title, generated, sections, imageFile)], { type: "text/markdown" }),
+               `threatbridge-${stem}-report.md`);
+      if (png) saveFile(png, imageFile);
+      setStatus(`Saved the report: threatbridge-${stem}-report.html, threatbridge-${stem}-report.md` +
+                (png ? ` and ${imageFile}` : ""));
+    } finally {
+      reporting = false;
+      $("report").disabled = false;
+    }
+  }
+
+  $("report").addEventListener("click", () => saveReport().catch(fail));
 
   // ---- saved maps: shared on the server, or as a file -----------------------
   // A map document (version 2) keeps the hosts and their positions, the connections, the

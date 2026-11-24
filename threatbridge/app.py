@@ -7,6 +7,7 @@ import sys
 
 from flask import Flask, Response, g, jsonify, request, send_from_directory
 
+from . import __version__
 from . import compromised as compromised_mod
 from . import filters, protocols, sessions as sessions_mod
 from .backends import ES_MAX_RESULTS, BackendError, Scope, make_backend
@@ -259,7 +260,7 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
     @app.get("/api/config")
     def api_config():
         summary = getattr(backend, "summary", None)
-        return jsonify(api_version=API_VERSION, limits=limits, filter=filters.vocabulary(),
+        return jsonify(api_version=API_VERSION, version=__version__, limits=limits, filter=filters.vocabulary(),
                        default_window=cfg.default_window, max_window=cfg.max_window,
                        default_limit=cfg.default_limit, max_limit=cfg.max_limit,
                        directions=DIRECTIONS, orders=ORDERS, backend=cfg.backend,
@@ -351,6 +352,12 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
         start, end = clip(*from_to_args("start of the first flow"), range_arg())
         found = backend.accounts(src, dst, start, end) if start <= end else []
         return jsonify(src=src, dst=dst, start=fmt_time(start), end=fmt_time(end), accounts=found)
+
+    @app.get("/api/evidence")
+    def api_evidence():
+        """The case's evidence files with their SHA-256, for the report (D31)."""
+        require("evidence")
+        return jsonify(backend.evidence())
 
     @app.get("/api/machines")
     def api_machines_of():
