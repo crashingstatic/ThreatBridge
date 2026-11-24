@@ -36,8 +36,20 @@ Data sources: Zeek `conn` records in Security Onion's Elasticsearch (`event.data
 pip install -r requirements.txt
 python -m threatbridge --case /cases/incident-42/      # files or directories, in any mix
 # --db /work/incident-42.db keeps the parsed flows and reuses them while the evidence is unchanged
-# browse to http://127.0.0.1:5055/
+# open the address it prints when ready: http://127.0.0.1:5055/?token=...
 ```
+
+Local mode serves plain HTTP, so it guards itself (D23):
+
+- **Login.** At start-up it prints an address with a new random token. Opening it logs that browser
+  in (a cookie) and drops the token from the address bar. Scripts send the token as
+  `Authorization: Bearer <token>`. `TB_TOKEN` fixes the token instead of a new one at each start;
+  `--no-login` turns login off, with a warning.
+- **Host check.** A request is answered only if its `Host` header names `localhost`, `127.0.0.1`,
+  `[::1]`, the address given with `--host`, or a name in `TB_ALLOWED_HOSTS`. This stops a web page
+  that points its own name at 127.0.0.1 (DNS rebinding) from using the API through the analyst's
+  browser. To let colleagues connect, listen on another address (`--host 0.0.0.0`) and put the
+  name they use in `TB_ALLOWED_HOSTS`; they still need the token.
 
 - **Inputs.** tcpdump captures in classic pcap format, and nfcapd files.
   - Supported pcap link types: Ethernet, Linux `any` (SLL/SLL2), raw IP and loopback, with µs or ns timestamps.
@@ -246,6 +258,8 @@ Deployment on a live Security Onion install has **not been tested**. These point
 | `TB_TLS_CERT` / `TB_TLS_KEY` / `TB_TLS_CLIENT_CA` | `/certs/…` | mTLS (gunicorn) |
 | `TB_PORT` | `5443` (gunicorn) / `5055` (`python -m threatbridge`) | listening port |
 | `TB_HOST` | `127.0.0.1` | listening address of `python -m threatbridge` (gunicorn binds all) |
+| `TB_ALLOWED_HOSTS` | – | `python -m threatbridge`: names the `Host` header may carry besides `localhost`, `127.0.0.1`, `[::1]` and the listening address |
+| `TB_TOKEN` | – (new at each start) | `python -m threatbridge`: the login token, at least 20 characters |
 | `TB_WORKERS` | `2` | gunicorn worker processes; each loads its own copy of a case |
 
 ## Requirements
@@ -258,7 +272,7 @@ The manual tests, for what CI can't check (how the map looks, other browsers and
 ```bash
 pip install -r requirements.txt -r requirements-test.txt
 python -m pytest
-TB_BACKEND=demo python -m threatbridge --port 5055   # fake data, plain HTTP, localhost only
+TB_BACKEND=demo python -m threatbridge --port 5055   # fake data, plain HTTP; open the address it prints
 TB_PERF=1 python -m pytest -s tests/test_perf.py    # PRF-1/2/3: 1.25M flows, a busy week; about a minute
 python -m threatbridge.apidoc                        # after changing the API: regenerate threatbridge/openapi.json
 ```

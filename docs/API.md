@@ -14,6 +14,9 @@ what a schema can't say.
 
 ## Changes
 
+- **Local mode's login and Host check (D23).** `python -m threatbridge` now needs its login token
+  (401 without it) and a `Host` header naming it (421 otherwise). The container, behind mutual
+  TLS, is unchanged. The endpoints and their answers are unchanged, so `api_version` stays 1.
 - **Self-description (D20-D22).** `api_version` in `GET /healthz` and `GET /api/config`;
   `limits` and `filter` (the filter vocabulary) in `GET /api/config`; `GET`/`POST /api/protocols`;
   `GET /api/openapi.json`; the saved-map format (*The map document*, below).
@@ -25,8 +28,13 @@ what a schema can't say.
 
 ## Conventions
 
-- **Authentication** is mutual TLS (see the README): a client needs a certificate signed by the
-  ThreatBridge CA. `python -m threatbridge` serves plain HTTP on 127.0.0.1 for local use only.
+- **Authentication** in the container is mutual TLS (see the README): a client needs a
+  certificate signed by the ThreatBridge CA. `python -m threatbridge` (local mode, plain HTTP)
+  needs the login token it printed at start-up instead: send `Authorization: Bearer <token>`, or
+  open the printed address once in a browser, which sets a cookie (`tb_token_<port>`). Without
+  it the answer is 401. Local mode also answers only requests whose `Host` header names this
+  server (`localhost`, `127.0.0.1`, `[::1]`, the listening address, `TB_ALLOWED_HOSTS`); any
+  other gets 421 (D23).
 - **Fields.** Every answer has exactly the fields its schema lists, those marked required always.
 - **Times** in answers are ISO-8601 UTC with milliseconds, e.g. `2024-05-01T12:00:00.000Z`. Times
   you send may also carry an offset (`+02:00`, converted to UTC), no zone (taken as UTC), or be
@@ -53,9 +61,11 @@ what a schema can't say.
   | Status | When |
   |---|---|
   | 400 | A parameter or the body is invalid; the message says which |
+  | 401 | Local mode: no valid login token |
   | 403 | A write without the `X-ThreatBridge` header |
   | 404 | No such saved map |
   | 409 | A map is already saved under that name |
+  | 421 | Local mode: the `Host` header names an address this server doesn't answer to |
   | 500 | A shared file (exclude list, compromised hosts, saved map) is not valid JSON; it is left as it is for someone to fix |
   | 501 | The endpoint needs another backend (threat lines, paths and suspect connections need the case backend; PCAP downloads need Security Onion and a SOC API client) |
   | 502 | Elasticsearch or SOC failed or answered unexpectedly |

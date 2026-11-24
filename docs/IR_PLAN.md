@@ -57,22 +57,20 @@ analyst's browser, and so could anyone else logged in to the same machine.
 
 **Plan.**
 - Refuse any request whose `Host` header names neither the address being served nor
-  `localhost`, `127.0.0.1`, `[::1]` or a name in a new `TB_ALLOWED_HOSTS` setting (400, JSON).
+  `localhost`, `127.0.0.1`, `[::1]` or a name in a new `TB_ALLOWED_HOSTS` setting (421
+  Misdirected Request, JSON).
 - Login (after the owner's choice below): at start-up, print a URL with a random one-time token.
   Opening it sets a cookie (`HttpOnly`, `SameSite=Strict`) and redirects to the map without the
   token. Every other request needs the cookie, or the token in an `Authorization: Bearer`
   header (for scripts). Compared in constant time.
 - The container behind mutual TLS is unchanged.
 
-**Tests.** A foreign Host gets 400 on reads and writes; the real one works; no cookie gets 401;
+**Tests.** A foreign Host gets 421 on reads and writes; the real one works; no cookie gets 401;
 the token URL sets the cookie; a wrong token is refused; the mutual TLS checks in CI still pass;
 the browser suites log in through the token URL.
 
-**Decisions.**
-1. Login method: (a) token in the start-up URL, then a cookie (recommended; what Jupyter does);
-   (b) a password from a setting; (c) both.
-2. Can login be switched off (for scripts on a machine nobody else uses)? Recommended: yes,
-   with `--no-login`, which prints a warning.
+**Decided 2026-11-24.** Token in the start-up URL, then a cookie. `--no-login` switches it
+off, with a warning.
 
 ## 12. Pin dependencies and sign releases
 
@@ -80,27 +78,27 @@ the browser suites log in through the token URL.
 hashes. IR teams will install this inside client networks.
 
 **Plan.**
-- A lock file, `requirements.lock`, with exact versions and hashes of every package and its
-  dependencies, generated with pip-tools (`pip-compile --generate-hashes`). The container and CI
-  install with `--require-hashes`. `requirements.txt` keeps its ranges for people installing
-  into their own environment.
+- Python packages are managed with uv. `pyproject.toml` lists the dependencies (as ranges)
+  and the test dependencies; `uv.lock` holds the exact versions and hashes of every package.
+  The container and CI install from the lock file (`uv sync --frozen`).
+- `requirements.txt` and `requirements-test.txt` are exported from the lock file
+  (`uv export`), with hashes, for people who use pip and for `pip-audit`. A test fails if they
+  differ from what the lock file exports.
 - The base image pinned by digest in the `Dockerfile`.
 - GitHub Actions pinned to commit hashes instead of tags.
 - Dependabot opens pull requests to update the lock file, the image digest and the Actions.
-- Releases (after the owner's choice below): on a version tag, a workflow builds the container
-  image, pushes it to GitHub Container Registry, signs it with Sigstore (keyless, through
-  GitHub's identity, so there is no key to keep), and attaches a software bill of materials and
-  a build provenance attestation. The README says how to verify a release.
+- Releases: on a version tag, a workflow builds the source archives (`.tar.gz` and `.zip`),
+  signs them with Sigstore (keyless, through GitHub's identity, so there is no key to keep),
+  records a build provenance attestation, and attaches the archives, their signatures and a
+  list of the locked dependencies to the GitHub release. No container image is published (CI
+  still builds one to test it). The README says how to verify a release.
 
-**Tests.** CI installs from the lock file; a test fails if `requirements.txt` and the lock file
-disagree; the release workflow is checked with `actionlint`. Publishing itself can only be
-tried on a real tag.
+**Tests.** CI installs from the lock file; a test fails if the exported requirements files
+and the lock file disagree; the workflows are checked with `actionlint`. Publishing itself can
+only be tried on a real tag.
 
-**Decisions.**
-1. What to publish: (a) a signed container image (recommended); (b) signed source archives
-   only; (c) both, plus a Python package on PyPI.
-2. Lock file for the container and CI only, with ranges kept in `requirements.txt`
-   (recommended), or exact pins in `requirements.txt` itself?
+**Decided 2026-11-24.** Signed source archives only. A lock file for the container and CI,
+with uv managing Python packages.
 
 ## 6. Read more formats
 
@@ -133,13 +131,8 @@ string).
   exported, without the pairing of one-way halves. If it doesn't, the README says so and the
   item stops there.
 
-**Decisions.**
-1. Community ID: (a) computed when shown, in the flow list, the CSV export and the report
-   (recommended; no rebuild of existing cases); (b) also stored, so filters can match it (every
-   case is rebuilt once).
-2. For pcapng, are packets from all interfaces read? Recommended: yes, as one capture, which is
-   what a multi-interface capture means. (The other option, one interface chosen by the analyst,
-   adds a setting nobody has asked for.)
+**Decided 2026-11-24.** Community ID is computed when shown (flow list, CSV export, report),
+not stored. pcapng packets from all interfaces are read as one capture.
 
 ## 2. Show how they got in
 
@@ -349,9 +342,9 @@ From the review, each reproduced in a browser:
 
 | Item | Decisions | Requirement | Tests | Code | CI |
 |---|---|---|---|---|---|
-| 11. Login and Host check | asked | | | | |
-| 12. Pin and sign | asked | | | | |
-| 6. Formats | asked | | | | |
+| 11. Login and Host check | decided | done (D23, SEC-1, SEC-2) | done | done | |
+| 12. Pin and sign | decided | | | | |
+| 6. Formats | decided | | | | |
 | 2. How they got in | | | | | |
 | 5. Machines behind addresses | | | | | |
 | 4. Accounts on hops | | | | | |

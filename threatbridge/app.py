@@ -2,6 +2,8 @@
 import argparse
 import logging
 import os
+import secrets
+import sys
 
 from flask import Flask, Response, g, jsonify, request, send_from_directory
 
@@ -13,6 +15,7 @@ from .config import Config
 from .domains import DomainResolver
 from .excludes import ExcludeStore
 from .jsonstore import StoreError
+from .local import MIN_TOKEN, LocalAccess, install as install_local
 from .model import SourceError
 from .query import (DIRECTIONS, ORDERS, ValidationError, clip, fmt_time, parse_direction,
                     parse_es_id, parse_exclude, parse_ip, parse_order, parse_time, parse_window,
@@ -59,8 +62,10 @@ class NotSupported(Exception):
 
 
 def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver=None, soc=None,
-               sessions=None):
-    # Authentication is mutual TLS, enforced by gunicorn (see gunicorn.conf.py).
+               sessions=None, local=None):
+    # Authentication is mutual TLS, enforced by gunicorn (see gunicorn.conf.py); in local mode
+    # (python -m threatbridge, plain HTTP), `local` (a LocalAccess) checks the Host and the
+    # login token instead (D23).
     cfg = cfg or Config.from_env()
     backend = backend or make_backend(cfg)
     excludes = excludes or ExcludeStore(cfg.exclude_file)
@@ -187,6 +192,8 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
                                "load PCAP/NetFlow files with --case")
 
     app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/static")
+    if local is not None:
+        install_local(app, local)     # first: before any other check
 
     @app.before_request
     def _csrf():
@@ -499,6 +506,9 @@ def main():
     p.add_argument("--db", metavar="FILE",
                    help="keep the case's flows in this SQLite file and reuse it next time "
                         "while the evidence is unchanged (default: temporary)")
+    p.add_argument("--no-login", action="store_true",
+                   help="serve without the login token (anyone who can reach the port can read "
+                        "and change the shared lists)")
     a = p.parse_args()
     logging.basicConfig(level=logging.INFO)
     cfg = Config.from_env()
@@ -508,8 +518,21 @@ def main():
         cfg.backend, cfg.case_paths = "case", a.case
     if a.db:
         cfg.case_db = a.db
+    token = None
+    if not a.no_login:
+        if cfg.token and len(cfg.token) < MIN_TOKEN:
+            p.exit(2, f"error: TB_TOKEN must be at least {MIN_TOKEN} characters\n")
+        token = cfg.token or secrets.token_urlsafe(32)
+    local = LocalAccess.serving(a.host, a.port, cfg.allowed_hosts, token)
     try:
-        app = create_app(cfg)
+        app = create_app(cfg, local=local)
     except SourceError as e:
         p.exit(2, f"error: {e}\n")
+    if a.host.strip() not in ("127.0.0.1", "localhost", "::1", "[::1]"):
+        log.warning("listening on %s over plain HTTP: other machines can reach it. The names they use must "
+                    "be in TB_ALLOWED_HOSTS.", a.host)
+    if token is None:
+        log.warning("login is off (--no-login): anyone who can reach port %d can read and change the "
+                    "shared lists", a.port)
+    print(f"\nThreatBridge is ready. Open {local.url(a.host, a.port)}\n", file=sys.stderr, flush=True)
     app.run(host=a.host, port=a.port)

@@ -1,6 +1,6 @@
 # Requirements and status
 
-Status last updated 2026-10-28. **Done**, **Partial**, **Missing**, **Unverified**,
+Status last updated 2026-11-24. **Done**, **Partial**, **Missing**, **Unverified**,
 **TODO** (deferred by decision), **Out of scope** (by decision).
 
 ## Decisions
@@ -29,6 +29,14 @@ Status last updated 2026-10-28. **Done**, **Partial**, **Missing**, **Unverified
 | D20 | The API describes itself for scripts, MCP servers and data tools (EXT-S5). `GET /api/config` and `GET /healthz` carry `api_version`, an integer (1 now) that goes up only when something is removed or changes meaning; additions (endpoints, parameters, response fields) leave it as it is and are listed in API.md's *Changes*. The OpenAPI document's `info.version` is the same number. `GET /api/config` also has `limits` (every other bound a request is held to; the existing `max_*` fields stay where they are) and `filter`, the filter vocabulary: each field with its type, comparisons and whether it takes a range, the operators, the protocol names and the grammar, all taken from the parser itself. `GET /api/protocols` counts the flows of each protocol in a time range (and filters): a case's whole span by default, Security Onion's last `TB_MAX_WINDOW`. |
 | D21 | The API is described in OpenAPI 3.1 (EXT-S4), generated from the code: the request and response shapes are pydantic models in `threatbridge/apidoc.py`, with each field's description, and the paths and methods are the Flask app's routes. `python -m threatbridge.apidoc` writes `threatbridge/openapi.json`, which is committed and served at `GET /api/openapi.json`. A route without a description there, or a description without a route, stops it. pydantic is needed only to generate and test the document, not to run the service. Every response schema lists every field (no others allowed). Tests check that the committed file is exactly what the generator writes, that it is valid OpenAPI, that every response the API tests get matches its schema, and that every example in it matches its schema. API.md keeps what a schema can't say: the conventions (authentication, times, windows, the time range, filters, queries as POST, writes, errors), the version and its changes, the filter grammar, what marks and suspect connections mean, the map document in prose, and an index of the endpoints, one line each, which a test holds to the document's operations. Parameters and fields are described only in the document. |
 | D22 | The saved-map format (map document version 2, D19) is a stable interface (EXT-S6): a JSON Schema in the OpenAPI document (`MapDocument`, generated like the rest) and a section of API.md; changes are listed in API.md's *Changes*. The server keeps a map as it is sent: it is not checked against the schema, as the map itself reads only what it understands. |
+| D23 | Local mode (`python -m threatbridge`, plain HTTP) guards itself, as the container's mutual TLS does not apply. (1) Host check: a request is answered only if its `Host` header names `localhost`, `127.0.0.1`, `[::1]`, the listening address (unless it means every interface) or a name in `TB_ALLOWED_HOSTS`; otherwise 421, before any other check. This stops DNS rebinding. (2) Login: at start-up a new random token (or `TB_TOKEN`, at least 20 characters) is printed in an address; opening it sets a cookie named after the port (`HttpOnly`, `SameSite=Lax`) and redirects to the same address without the token. Every request then needs the cookie or `Authorization: Bearer <token>`, compared in constant time; otherwise 401 (the map's page explains what to open). `--no-login` turns login off, with a warning; the Host check stays. |
+
+## Security
+
+| ID | Requirement | Status | Notes |
+|---|---|---|---|
+| SEC-1 | SHALL refuse, in local mode, requests whose `Host` header doesn't name the server | Done | D23. 421. |
+| SEC-2 | SHALL require, in local mode, the login token printed at start-up, unless started with `--no-login` | Done | D23. Cookie from the printed address, or a bearer header. Browser suites log in with it in CI. |
 
 ## Data ingestion
 

@@ -2,7 +2,8 @@
 // positions of graph elements, and JavaScript coverage when JS_COVERAGE is set:
 //   JS_COVERAGE=DIR node tests/ui_case.mjs ...   writes DIR/<test>.json (V8 block coverage)
 //   node tests/js_coverage.mjs DIR                lists the parts of app.js no test ran
-// Set CHROMIUM_PATH to use a preinstalled browser.
+// Set CHROMIUM_PATH to use a preinstalled browser, and TB_TOKEN to the server's login token
+// (local mode, D23).
 import { mkdirSync, writeFileSync } from "node:fs";
 import { chromium } from "playwright";
 
@@ -11,10 +12,16 @@ const COVERAGE_DIR = process.env.JS_COVERAGE;
 // A page in a new browser. `errors` collects page exceptions and console errors, except
 // console messages matching `expected`. `at(selector, kind)` gives the screen position (and
 // id) of a node's centre, or of an edge's midpoint with kind "edge".
-export async function launch({ context = {}, expected = null } = {}) {
+export async function launch({ context = {}, expected = null, base = null } = {}) {
   const browser = await chromium.launch(
     process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {});
   const ctx = await browser.newContext({ viewport: { width: 1400, height: 850 }, ...context });
+  // Local mode's login (D23): with TB_TOKEN set (as the CI servers are started), the cookie that
+  // opening the printed address would set for the server at `base`.
+  if (process.env.TB_TOKEN && base) {
+    const url = new URL(base);
+    await ctx.addCookies([{ name: `tb_token_${url.port}`, value: process.env.TB_TOKEN, url: url.origin }]);
+  }
   const page = await ctx.newPage();
   if (COVERAGE_DIR) await page.coverage.startJSCoverage({ resetOnNavigation: false });
   const errors = [];

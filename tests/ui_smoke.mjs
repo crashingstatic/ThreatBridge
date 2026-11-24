@@ -13,7 +13,7 @@ const IOC = "10.0.0.5", IOC_TIME = "2024-05-01T12:00:00Z";
 
 // The error answers this test provokes on purpose (HTTP 502) are expected.
 const { browser, ctx, page, errors, at } = await launch(
-  { context: { permissions: ["clipboard-read", "clipboard-write"] }, expected: /status of 502/ });
+  { base: BASE, context: { permissions: ["clipboard-read", "clipboard-write"] }, expected: /status of 502/ });
 await ctx.route(`${SOC}/**`, (r) => r.fulfill({ body: "SOC stub" }));
 const menuItems = () => page.$$eval("#menu li", (l) => l.map((x) => x.textContent));
 const status = () => page.textContent("#status");
@@ -44,6 +44,19 @@ const popupQuery = async (click) => {
 };
 
 try {
+  // Local mode's login (D23): a browser without the cookie gets the login page; the address
+  // printed at start-up logs it in and leaves the token out of the address bar.
+  if (process.env.TB_TOKEN) {
+    const fresh = await browser.newContext();
+    const other = await fresh.newPage();
+    assert.equal((await other.goto(BASE)).status(), 401);
+    assert.equal(await other.textContent("h1"), "Login needed");
+    await other.goto(`${BASE}/?ip=${IOC}&token=${encodeURIComponent(process.env.TB_TOKEN)}`);
+    assert.equal(other.url(), `${BASE}/?ip=${IOC}`);
+    await other.waitForFunction(() => window.threatbridge && window.threatbridge.cy.nodes().length > 0);
+    await fresh.close();
+  }
+
   // 0. Opened without a map: the toolbar's defaults come from the server, and the threat-line
   //    and path sections are hidden (they need case files). Map with no host says so.
   await page.route("**/api/config", async (route) => {

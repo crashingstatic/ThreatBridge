@@ -7,7 +7,7 @@ import { finish, launch } from "./ui_helpers.mjs";
 
 const BASE = process.env.TB_URL || "http://127.0.0.1:5056";
 const SHOTS = process.argv[2];
-const { browser, page, errors, at } = await launch();
+const { browser, page, errors, at } = await launch({ base: BASE });
 
 const cyEval = (fn, arg) => page.evaluate(fn, arg);
 const classes = (id) => cyEval((i) => window.threatbridge.cy.getElementById(i).classes(), id);

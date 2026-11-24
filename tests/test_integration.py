@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 from dataclasses import fields
+import urllib.error
 import urllib.request
 
 import pytest
@@ -120,27 +121,35 @@ def test_serving_a_case_read_by_worker_processes(tmp_path):
     for i in range(3):
         write_pcap(d / f"cap{i}.pcap", [(T + i, tcp("10.0.0.5", f"10.0.0.{9 + i}", 50000, 445, SYN)),
                                         (T + i + 0.001, tcp(f"10.0.0.{9 + i}", "10.0.0.5", 445, 50000, SYN | ACK))])
-    port = free_port()
-    env = dict(os.environ, TB_READ_WORKERS="3", TB_LIVE_DNS="false",
+    port, token = free_port(), "integration-login-token-0123456789"
+    env = dict(os.environ, TB_READ_WORKERS="3", TB_LIVE_DNS="false", TB_TOKEN=token,
                TB_EXCLUDE_FILE=str(tmp_path / "ex.json"), TB_COMPROMISED_FILE=str(tmp_path / "c.json"))
+    url = f"http://127.0.0.1:{port}/api/config"
     proc = subprocess.Popen([sys.executable, "-m", "threatbridge", "--case", str(d), "--port", str(port)],
                             cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     try:
         deadline = time.monotonic() + 60
         while True:
             try:
-                with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/config", timeout=1) as r:
+                request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+                with urllib.request.urlopen(request, timeout=1) as r:
                     case = json.load(r)["case"]
                 break
+            except urllib.error.HTTPError:
+                raise
             except OSError:
                 assert proc.poll() is None and time.monotonic() < deadline, "server did not start"
                 time.sleep(0.2)
         assert (case["flows"], case["hosts"]) == (3, 4)
+        with pytest.raises(urllib.error.HTTPError) as e:              # local mode's login (D23)
+            urllib.request.urlopen(url, timeout=5)
+        assert e.value.code == 401
     finally:
         proc.terminate()
         output = proc.communicate(timeout=30)[0]
     assert "Reading 3 evidence file(s): done" in output
     assert output.count("Running on") == 1, output
+    assert f"Open http://127.0.0.1:{port}/?token={token}" in output
 
 
 # ---- shipped configuration ----------------------------------------------------------------

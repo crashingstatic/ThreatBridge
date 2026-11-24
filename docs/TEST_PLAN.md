@@ -72,7 +72,7 @@ export W=$(mktemp -d)
 TB_BACKEND=demo TB_SOC_URL=https://so.example \
 TB_EXCLUDE_FILE=$W/exclude.json TB_COMPROMISED_FILE=$W/compromised.json TB_SESSIONS_DIR=$W/sessions \
 python -m threatbridge --port 5055
-# browse to http://127.0.0.1:5055/
+# open the address it prints (http://127.0.0.1:5055/?token=...) once; the browser stays logged in until the server restarts
 ```
 
 ### ENV-CASE: the generated attack-chain case
@@ -83,7 +83,7 @@ python tests/make_case.py $W/case
 TB_LIVE_DNS=false TB_MAX_PATHS=11 \
 TB_EXCLUDE_FILE=$W/exclude.json TB_COMPROMISED_FILE=$W/compromised.json TB_SESSIONS_DIR=$W/sessions \
 python -m threatbridge --case $W/case --port 5056
-# browse to http://127.0.0.1:5056/
+# open the address it prints (http://127.0.0.1:5056/?token=...) once; the browser stays logged in until the server restarts
 ```
 
 The capture holds an attack chain on 2024-05-01:
@@ -178,7 +178,7 @@ docker run --rm -v $W:/w -w /w zeek/zeek zeek -C -r real.pcap     # writes conn.
 zc() { docker run --rm -i -v $W:/w -w /w zeek/zeek zeek-cut "$@"; }   # zeek-cut, e.g. zc ts < $W/conn.log
 TB_LIVE_DNS=false TB_EXCLUDE_FILE=$W/exclude.json TB_COMPROMISED_FILE=$W/compromised.json TB_SESSIONS_DIR=$W/sessions \
 python -m threatbridge --case $W/real.pcap --port 5056
-# browse to http://127.0.0.1:5056/
+# open the address it prints (http://127.0.0.1:5056/?token=...) once; the browser stays logged in until the server restarts
 ```
 
 ### ENV-SO: a Security Onion 2.4 deployment

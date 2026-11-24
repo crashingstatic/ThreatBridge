@@ -809,14 +809,18 @@ ENDPOINTS = {
 
 ERRORS = {
     400: "a parameter or the body is invalid; the message says which",
+    401: "local mode: the request carries no valid login token (cookie or Authorization: Bearer)",
     403: "a write without the X-ThreatBridge header",
     404: "no such saved map",
     409: "a map is already saved under that name",
     500: "a shared file (exclude list, marks, saved map) is not valid JSON; it is left for someone to fix",
     501: ("this needs another backend (threat lines, paths and suspect connections: the case backend; PCAP "
           "downloads: Security Onion with a SOC API client)"),
+    421: "local mode: the Host header names an address this server doesn't answer to (TB_ALLOWED_HOSTS)",
     502: "Elasticsearch or SOC failed or answered unexpectedly",
 }
+
+LOCAL_ERRORS = {401, 421}   # local mode's login and Host check (D23) answer any request
 
 WRITE = {"name": "X-ThreatBridge", "in": "header", "required": True, "schema": {"const": "1"},
          "description": "required on every write: browsers can't add it to a cross-site request"}
@@ -896,7 +900,7 @@ def _operation(method, e, body, refs):
         op["requestBody"] = {"required": True, "content": {"application/json": {"schema": refs[body]}}}
     elif e.query:
         op["parameters"] = _parameters(e.query)
-    errors = sorted(set(e.errors) | ({403} if method != "GET" else set()))
+    errors = sorted(set(e.errors) | LOCAL_ERRORS | ({403} if method != "GET" else set()))
     op["responses"] = {"200": {"description": "OK", "content": _content(e.ok, refs)},
                        **{str(s): {"$ref": f"#/components/responses/E{s}"} for s in errors}}
     return op
@@ -922,12 +926,17 @@ def build(routes):
             "The HTTP API of ThreatBridge's map. docs/API.md has the conventions (times, windows, the time "
             "range, filters, queries as POST, writes, errors), the filter grammar and what marks mean. Every "
             "response here lists every field it has.")},
-        "security": [{"mutualTLS": []}],
+        "security": [{"mutualTLS": []}, {"localToken": []}, {"localCookie": []}],
         "paths": paths,
         "components": {
-            "securitySchemes": {"mutualTLS": {"type": "mutualTLS", "description": (
-                "a client certificate signed by the ThreatBridge CA (python -m threatbridge serves plain HTTP "
-                "locally)")}},
+            "securitySchemes": {
+                "mutualTLS": {"type": "mutualTLS", "description": (
+                    "the container: a client certificate signed by the ThreatBridge CA")},
+                "localToken": {"type": "http", "scheme": "bearer", "description": (
+                    "local mode (python -m threatbridge, plain HTTP): the login token it printed at start-up")},
+                "localCookie": {"type": "apiKey", "in": "cookie", "name": "tb_token_5055", "description": (
+                    "local mode: the cookie that opening the printed address sets, named after the port "
+                    "(tb_token_<port>)")}},
             "parameters": {"write": WRITE},
             "responses": {f"E{s}": {"description": d, "content": error} for s, d in ERRORS.items()},
             "schemas": schemas,

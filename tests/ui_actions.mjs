@@ -14,7 +14,7 @@ import { checkpoint, finish, keepMap, launch } from "./ui_helpers.mjs";
 const BASE = process.env.TB_URL || "http://127.0.0.1:5056";
 const SHOTS = process.argv[2];
 // The errors this test provokes on purpose (HTTP 400, 409 and 502, an aborted request) are expected.
-const { browser, ctx, page, errors, at } = await launch({ expected: /status of (400|409|502)|ERR_FAILED/ });
+const { browser, ctx, page, errors, at } = await launch({ base: BASE, expected: /status of (400|409|502)|ERR_FAILED/ });
 
 const cyEval = (fn, arg) => page.evaluate(fn, arg);
 const ids = () => cyEval(() => window.threatbridge.cy.nodes().map((n) => n.id()).sort());

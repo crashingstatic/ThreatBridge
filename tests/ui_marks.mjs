@@ -11,7 +11,7 @@ import { finish, keepMap, launch } from "./ui_helpers.mjs";
 const BASE = process.env.TB_URL || "http://127.0.0.1:5056";
 const SHOTS = process.argv[2];
 // The invalid filter this test types is answered with HTTP 400, on purpose.
-const { browser, ctx, page, errors, at } = await launch({ expected: /status of 400/ });
+const { browser, ctx, page, errors, at } = await launch({ base: BASE, expected: /status of 400/ });
 
 const E = "10.9.0.1", A = "10.9.0.2", X = "10.9.0.3", B = "10.9.0.4", C = "10.9.0.5", F = "10.9.0.6", Y = "10.9.0.7";
 const R1 = "10.9.1.1", R2 = "10.9.1.2";

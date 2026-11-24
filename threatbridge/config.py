@@ -88,6 +88,12 @@ class Config:
     threat_max_hosts: int = 300
     max_paths: int = 500
 
+    # Local mode (python -m threatbridge, plain HTTP; D23): names the Host header may carry
+    # besides the loopback names and the listening address, and a fixed login token instead of
+    # a new random one at each start (scripts).
+    allowed_hosts: list = field(default_factory=list)
+    token: str = None
+
     @classmethod
     def from_env(cls):
         """The settings from their variables (env_name), each unset one at its default. An empty
