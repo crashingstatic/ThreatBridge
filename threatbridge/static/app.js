@@ -231,36 +231,126 @@
     setTimeout(() => URL.revokeObjectURL(a.href), 60000);
   }
 
-  // ---- placing hosts (D29): hosts on the map keep their places, wherever the analyst moved
-  // them; hosts new to it go in free space next to the host they came from. Tidy lays the
-  // whole map out again.
+  // ---- placing hosts (D29). A new host goes in free space next to the host it came from;
+  // then Fit, automatic, evens out the distances between hosts (hosts the analyst dragged stay
+  // where they were put) and brings the whole map into view. Tidy, asked for, lays the whole
+  // map out again.
   const PLACE_RING = 110;    // between the rings of places around a host (model units)
   const PLACE_GAP = 80;      // the least distance from a new host to any other
   const PLACE_RINGS = 8;
   const PLACE_CLEAR = 20;    // the least distance between a host and a connection from its parent
+  const SPACING = PLACE_RING;  // the distance Fit keeps between hosts (model units)
   const isPlaced = (n) => n.scratch("_placed") === true;
   const setPlaced = (nodes) => nodes.forEach((n) => { n.scratch("_placed", true); });
+  const isPinned = (n) => n.scratch("_pinned") === true;          // dragged by the analyst
+  cy.on("dragfree", "node", (e) => { e.target.scratch("_pinned", true); });
+  // Fit: the whole map in view, at the map's size now (Cytoscape notices a resized window only
+  // a little later).
+  const fitView = () => { cy.resize(); cy.fit(cy.elements().not(".mark-hidden"), 40); };
 
-  // Tree by hop distance from the IOC host (top row), each host's peers placed under it.
-  // What the marks hide is left out (and keeps its place).
+  // Tidy (toolbar, the map's menu): the whole map laid out again. Hosts placed by hand move
+  // too, so it asks first when there are any (D37).
   function tidy() {
-    const shown = cy.elements().not(".mark-hidden");
-    const root = shown.nodes("[?root]");
-    // More hosts, more room between them (D34): labels of a big map overlap less.
-    const spacing = 1.1 * Math.min(3, Math.max(1, Math.sqrt(shown.nodes().length / 25)));
-    shown.layout({
-      name: "breadthfirst", circle: false, directed: false, roots: root.length ? root : undefined,
-      animate: false, fit: true, padding: 40, spacingFactor: spacing, avoidOverlap: true,
-    }).run();
-    setPlaced(shown.nodes());
+    const pinned = cy.nodes().filter(isPinned).length;
+    if (pinned && !window.confirm(`Lay out the whole map again? The ${pinned} host${pinned === 1 ? "" : "s"} ` +
+                                  "you placed by hand will move too.")) return;
+    layoutTree();
   }
 
-  // After the map changed: place its new hosts, or lay it all out when none was placed yet.
+  // A tree by hop distance from the IOC host (top row), each host's peers under it, spread so
+  // the nearest hosts are SPACING apart, and the view fitted to it. What the marks hide is
+  // left out (and keeps its place).
+  function layoutTree() {
+    const shown = cy.elements().not(".mark-hidden");
+    const root = shown.nodes("[?root]");
+    shown.layout({
+      name: "breadthfirst", circle: false, directed: false, roots: root.length ? root : undefined,
+      animate: false, fit: false, spacingFactor: 1, avoidOverlap: true,
+      // A fixed box the map's shape, not the part in view: the same map, the same tree.
+      boundingBox: { x1: 0, y1: 0, w: Math.max(cy.width(), 1), h: Math.max(cy.height(), 1) },
+    }).run();
+    const nodes = shown.nodes();
+    const pts = nodes.map((n) => n.position());
+    let nearest = Infinity;
+    for (let i = 0; i < pts.length; i++) {
+      for (let j = i + 1; j < pts.length; j++) nearest = Math.min(nearest, Math.hypot(pts[i].x - pts[j].x, pts[i].y - pts[j].y));
+    }
+    if (Number.isFinite(nearest) && nearest > 1e-6) {
+      const scale = SPACING / nearest;
+      const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length, cyy = pts.reduce((s, p) => s + p.y, 0) / pts.length;
+      cy.batch(() => nodes.forEach((n, i) => n.position({ x: cx + (pts[i].x - cx) * scale, y: cyy + (pts[i].y - cyy) * scale })));
+    }
+    nodes.forEach((n) => { n.scratch("_placed", true); n.scratch("_pinned", false); });
+    fitView();
+  }
+
+  // Fit's spacing: hosts closer than SPACING push apart, and connected hosts further than 1.5
+  // SPACING pull together, a little each round, until little moves. Hosts the analyst dragged
+  // stay put; the others make room around them.
+  function settle(rounds = 80) {
+    const nodes = cy.nodes().not(".mark-hidden");
+    if (nodes.length < 2) return;
+    const at = new Map(nodes.map((n, i) => [n.id(), i]));
+    const x = nodes.map((n) => n.position("x")), y = nodes.map((n) => n.position("y"));
+    const fixed = nodes.map(isPinned);
+    const links = cy.edges().not(".mark-hidden").map((e) => [at.get(e.source().id()), at.get(e.target().id())])
+      .filter(([a, b]) => a !== undefined && b !== undefined && a !== b);
+    const share = (i, j) => (fixed[i] ? 0 : fixed[j] ? 1 : 0.5);   // how much of a push i takes
+    for (let r = 0; r < rounds; r++) {
+      const dx = new Float64Array(x.length), dy = new Float64Array(x.length);
+      const cells = new Map();
+      x.forEach((_, i) => {
+        const k = `${Math.floor(x[i] / SPACING)},${Math.floor(y[i] / SPACING)}`;
+        if (!cells.has(k)) cells.set(k, []);
+        cells.get(k).push(i);
+      });
+      x.forEach((_, i) => {
+        const cxi = Math.floor(x[i] / SPACING), cyi = Math.floor(y[i] / SPACING);
+        for (let a = cxi - 1; a <= cxi + 1; a++) {
+          for (let b = cyi - 1; b <= cyi + 1; b++) {
+            for (const j of cells.get(`${a},${b}`) || []) {
+              if (j <= i) continue;
+              let ux = x[j] - x[i], uy = y[j] - y[i];
+              const d = Math.hypot(ux, uy);
+              if (d >= SPACING) continue;
+              if (d < 1e-6) { ux = Math.cos(i + j); uy = Math.sin(i + j); } else { ux /= d; uy /= d; }
+              const push = SPACING - d;
+              dx[i] -= ux * push * share(i, j); dy[i] -= uy * push * share(i, j);
+              dx[j] += ux * push * share(j, i); dy[j] += uy * push * share(j, i);
+            }
+          }
+        }
+      });
+      for (const [i, j] of links) {
+        const ux = x[j] - x[i], uy = y[j] - y[i], d = Math.hypot(ux, uy);
+        if (d <= 1.5 * SPACING) continue;
+        const pull = (d - 1.5 * SPACING) * 0.2 / d;
+        dx[i] += ux * pull * share(i, j) * 2; dy[i] += uy * pull * share(i, j) * 2;
+        dx[j] -= ux * pull * share(j, i) * 2; dy[j] -= uy * pull * share(j, i) * 2;
+      }
+      let moved = 0;
+      x.forEach((_, i) => {
+        if (fixed[i]) return;
+        const step = Math.hypot(dx[i], dy[i]), cap = Math.min(1, (SPACING / 2) / (step || 1)) * 0.5;
+        x[i] += dx[i] * cap; y[i] += dy[i] * cap;
+        moved = Math.max(moved, step * cap);
+      });
+      if (moved < 0.5) break;
+    }
+    cy.batch(() => nodes.forEach((n, i) => { if (!fixed[i]) n.position({ x: x[i], y: y[i] }); }));
+  }
+
+  // After the map changed: a new map laid out as a tree; new hosts placed; then Fit.
   function relayout() {
     const fresh = cy.nodes().filter((n) => !isPlaced(n));
     if (fresh.nonempty()) {
-      if (fresh.length === cy.nodes().length) tidy();
-      placeNew(cy.nodes().filter((n) => !isPlaced(n)));
+      if (fresh.length === cy.nodes().length) layoutTree();
+      const rest = cy.nodes().filter((n) => !isPlaced(n));
+      if (rest.nonempty()) {
+        placeNew(rest);
+        settle();
+        fitView();
+      }
     }
     markFlags();
     refreshMachines().catch(() => {});
@@ -277,8 +367,7 @@
   // connected to (the one fewest hops from the IOC host), first on the side away from that
   // host's own connections; hosts connected to none go to the right of the map. A place is
   // free if no host is near it, and neither its connection to the parent nor the parent's
-  // other connections pass near a host. Nothing else moves, and the view stays where it is: the
-  // map is laid out again or fitted only when the analyst asks (Tidy, Fit; D29).
+  // other connections pass near a host. Fit (settle, fitView) follows.
   function placeNew(fresh) {
     if (fresh.empty()) return;
     const cell = (v) => Math.floor(v / PLACE_GAP);
@@ -532,17 +621,19 @@
     return msg;
   }
 
-  // Map: a fresh map, with the shared marks again (D19) and the filters still applied. A map
-  // worked on beyond its first expansion (or opened from a file or the saved maps) goes only
-  // once the analyst says so (D32).
+  // Whether the map on screen may go: yes unless it was worked on beyond its first expansion
+  // (or opened from a file or the saved maps) and the analyst says no (D32).
+  function mayDiscard(then) {
+    const hosts = cy.nodes().length;
+    return !(hosts && (queries.length > 1 || localMap)) ||
+      window.confirm(`Discard this map (${hosts} host${hosts === 1 ? "" : "s"}) and ${then}?`);
+  }
+
+  // Map: a fresh map, with the shared marks again (D19) and the filters still applied.
   async function start() {
     const ip = $("ip").value.trim();
     if (!ip) { setStatus("Enter an IP address", true); return; }
-    const hosts = cy.nodes().length;
-    if (hosts && (queries.length > 1 || localMap) &&
-        !window.confirm(`Discard this map (${hosts} host${hosts === 1 ? "" : "s"}) and start a new one from ${ip}?`)) {
-      return;
-    }
+    if (!mayDiscard(`start a new one from ${ip}`)) return;
     cy.elements().remove();
     queries = [];
     if (localMap) leaveLocal();
@@ -591,6 +682,7 @@
     const log = queries.slice();
     const keep = cy.nodes().filter((n) => compromised.has(n.id())).map((n) => [n.id(), n.data("anchor")]);
     const places = new Map(cy.nodes().filter(isPlaced).map((n) => [n.id(), Object.assign({}, n.position())]));
+    const pinned = new Set(cy.nodes().filter(isPinned).map((n) => n.id()));
     cy.elements().remove();
     setStatus(`Re-running ${log.length} quer${log.length === 1 ? "y" : "ies"} with ${filters.length} filter(s)…`);
     let skipped = 0;
@@ -608,10 +700,12 @@
     }
     for (const [ip, pos] of places) {                 // the hosts still on the map keep their places
       const n = cy.getElementById(ip);
-      if (n.nonempty()) { n.position(pos); setPlaced(n); }
+      if (n.nonempty()) { n.position(pos); setPlaced(n); n.scratch("_pinned", pinned.has(ip)); }
     }
     markEdges();
     relayout();
+    settle();
+    fitView();
     await refreshPaths(true);
     await loadFlagged();
     await refreshHiding();
@@ -776,7 +870,7 @@
     const key = flowOf(conn, f);
     if (key) {
       const marked = markedFlows.has(flowKey(key));
-      span.append(button(marked ? "Unmark" : "Mark compromised", () => (marked ? unmarkFlow(key) : markFlow(key)),
+      span.append(button(marked ? "Unmark" : "Mark compromised", () => (marked ? confirmUnmarkFlow(key) : markFlow(key)),
                          { className: "mark" }));
     }
     if (f.id && cfg.soc_pivots !== false) {
@@ -879,7 +973,7 @@
     const r = await ask("/api/flows", params, kept ? { within: kept.within } : null);
     const key = r.flows.length ? flowOf(conn, r.flows[0]) : null;
     if (!key) throw new Error(`No flow of ${conn.src} → ${conn.dst} to mark`);
-    return markedFlows.has(flowKey(key)) ? unmarkFlow(key) : markFlow(key);
+    return markedFlows.has(flowKey(key)) ? confirmUnmarkFlow(key) : markFlow(key);
   }
 
   cy.on("cxttap", "node", (evt) => hostMenu(evt.target, evt.originalEvent.clientX, evt.originalEvent.clientY));
@@ -955,11 +1049,13 @@
                         "from the map?")) return;
     queries.push({ op: "remove", ip: n.id() });
     n.remove();
+    settle();
+    fitView();
   }
 
   function compromiseItems(n) {
     if (compromised.has(n.id())) {
-      return [{ label: "Unmark compromised", action: () => unmarkCompromised(n.id()) }];
+      return [{ label: "Unmark compromised", action: () => confirmUnmark(n.id()) }];
     }
     const items = [];
     if (n.data("anchor")) {
@@ -979,17 +1075,16 @@
     if (cfg.analysis) showThreatLine(evt.target).catch((e) => fail(e));
   });
   cy.on("tap", (evt) => { if (evt.target === cy) { hideMenu(); clearHighlight(); } });
-  // The map's own menu (right-click its background): lay it out again, or fit it to the view.
-  const fit = () => cy.fit(cy.elements().not(".mark-hidden"), 40);
+  // The map's own menu (right-click its background): lay it out again, or bring it back into
+  // view after zooming or panning by hand.
   function mapMenu(x, y, fromKeyboard) {
-    showMenu(x, y, [{ label: "Tidy", action: tidy }, { label: "Fit", action: fit }], fromKeyboard);
+    showMenu(x, y, [{ label: "Tidy", action: tidy }, { label: "Fit", action: fitView }], fromKeyboard);
   }
   cy.on("cxttap", (evt) => { if (evt.target === cy) mapMenu(evt.originalEvent.clientX, evt.originalEvent.clientY); });
   document.addEventListener("click", (e) => { if (!menu.contains(e.target)) hideMenu(); });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") hideMenu(); });
 
   $("go").addEventListener("click", start);
-  $("fit").addEventListener("click", fit);
   $("tidy").addEventListener("click", tidy);
   // Clear resets the protocol preview, nothing else (D18).
   $("clear").addEventListener("click", () => { protocolSelect.value = ""; refreshProtocols(); });
@@ -1070,7 +1165,11 @@
   }
 
   // Excluded for everyone: the hosts it stands for leave the map, and the paths are found again.
+  // Changes to the shared exclude list ask first (D37): they change every analyst's map, and
+  // what an entry hid doesn't come back to a map by itself.
   async function addExclude(entry) {
+    if (!window.confirm(`Add ${entry} to the shared exclude list? It goes from every analyst's map, and threat ` +
+                        "lines and paths won't cross it.")) return false;
     const r = await write("/api/excludes", "POST", { entry });
     renderExcludes(r);
     const added = r.entry;   // canonical form, e.g. lower-cased domain
@@ -1084,9 +1183,11 @@
       ? `Excluded ${added} (${hosts.length} address(es)) for everyone`
       : `Excluded ${added} for everyone; re-expand hosts to apply CIDRs`);
     refreshPaths(true).catch(fail);   // in the background: the map stays usable meanwhile
+    return true;
   }
 
   async function removeExclude(entry) {
+    if (!window.confirm(`Remove ${entry} from the shared exclude list, for every analyst?`)) return;
     const r = await write("/api/excludes", "DELETE", { entry });
     renderExcludes(r);
     setStatus(`Removed ${entry} from exclude list`);
@@ -1097,7 +1198,7 @@
     e.preventDefault();
     const v = $("exclude-input").value.trim();
     if (!v) return;
-    addExclude(v).then(() => clearForm(["exclude-input"], [v])).catch((err) => fail(err));
+    addExclude(v).then((done) => done && clearForm(["exclude-input"], [v])).catch((err) => fail(err));
   });
 
   // ---- threat line through a clicked edge (PCAP/NetFlow cases) --------------
@@ -1219,7 +1320,7 @@
                        "Remove", () => confirmUnmark(h.ip));
     }));
     $("marked-flow-list").replaceChildren(...marks.flows.map((f) => listEntry(
-      `${f.src} → ${f.dst} @ ${f.start}`, `${f.proto} ${f.sport} → ${f.dport}`, "Remove", () => unmarkFlow(f))));
+      `${f.src} → ${f.dst} @ ${f.start}`, `${f.proto} ${f.sport} → ${f.dport}`, "Remove", () => confirmUnmarkFlow(f))));
   }
 
   // A change to the marks: written to the shared list, or, with an opened map, to its own.
@@ -1232,18 +1333,29 @@
     }
   }
 
+  // Marking a host marked already keeps its note, and asks before changing its time (D37): the
+  // mark may be another analyst's.
   async function markCompromised(ip, time) {
+    const before = marks.hosts.find((h) => h.ip === ip);
+    const instant = (t) => (t ? Date.parse(t) : null);
+    if (before && instant(before.time) !== instant(time) &&
+        !window.confirm(`${ip} is marked compromised ${before.time ? `at ${before.time}` : "(time unknown)"} ` +
+                        `${localMap ? "in this map" : "for everyone"}. Change it to ${time || "time unknown"}?`)) {
+      return false;
+    }
     let local = null;
     if (localMap) {      // checked and written as the server would (an IP, a time to the ms)
       const params = new URLSearchParams({ ip });
       if (time) params.set("ts", time);
       const r = await getJSON(`/api/resolve?${params}`);
-      local = { ip: r.ip, time: time ? r.anchor : null, note: "" };
+      local = { ip: r.ip, time: time ? r.anchor : null, note: before ? before.note : "" };
     }
+    // No note sent: the server keeps the one it has, which may be newer than this page's copy.
     await changeMarks(() => write("/api/compromised", "POST", { ip, time }),
                       () => { marks.hosts = marks.hosts.filter((h) => h.ip !== local.ip).concat([local]); });
     refreshDetails(ip);
     setStatus(`Marked ${ip} compromised${time ? " at " + time : " (time unknown)"}`);
+    return true;
   }
 
   // The side panel's Remove: asks first, naming the marked flows that go with the host (D32).
@@ -1264,10 +1376,18 @@
   }
 
   async function markFlow(key) {
-    await changeMarks(() => write("/api/compromised/flows", "POST", key), () => {
-      marks.flows = marks.flows.filter((f) => flowKey(f) !== flowKey(key)).concat([Object.assign({ note: "" }, key)]);
+    const before = marks.flows.find((f) => flowKey(f) === flowKey(key));
+    const { note: _, ...flow } = key;                 // no note: a flow marked already keeps its own
+    await changeMarks(() => write("/api/compromised/flows", "POST", flow), () => {
+      marks.flows = marks.flows.filter((f) => flowKey(f) !== flowKey(key))
+        .concat([Object.assign({}, flow, { note: before ? before.note : "" })]);
     });
     setStatus(`Marked the flow ${key.src} → ${key.dst} at ${key.start} compromised`);
+  }
+
+  async function confirmUnmarkFlow(key) {
+    if (!window.confirm(`Unmark the flow ${key.src} → ${key.dst} at ${key.start} ${localMap ? "in this map" : "for everyone"}?`)) return;
+    await unmarkFlow(key);
   }
 
   async function unmarkFlow(key) {
@@ -1281,7 +1401,7 @@
     e.preventDefault();
     const ip = $("compromised-ip").value.trim(), time = $("compromised-time").value.trim();
     if (!ip) return;
-    markCompromised(ip, time).then(() => clearForm(["compromised-ip", "compromised-time"], [ip, time]))
+    markCompromised(ip, time).then((done) => done && clearForm(["compromised-ip", "compromised-time"], [ip, time]))
       .catch((err) => fail(err));
   });
 
@@ -1804,6 +1924,7 @@ td.whole { white-space: nowrap; } td.long { overflow-wrap: anywhere; }
 code { font-size: 12px; } img { max-width: 100%; border: 1px solid #bbb; }
 @media print { body { margin: 0; } table { font-size: 10px; } h2 { break-after: avoid; } tr { break-inside: avoid; } }`;
   const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+  const LONG_TASK = 300;     // seconds: a task projected to take longer asks first (D37)
   const sizeText = (n) => (n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB`
     : `${Math.ceil(n / 1e3)} kB`);
 
@@ -1813,7 +1934,7 @@ code { font-size: 12px; } img { max-width: 100%; border: 1px solid #bbb; }
       const r = await getJSON("/api/evidence");
       if (r.done) return r;
       setStatus(`Hashing the evidence files: ${r.total ? Math.floor((100 * r.hashed) / r.total) : 0}% of ` +
-                `${sizeText(r.total)}…`);
+                `${sizeText(r.total)}${r.left != null ? `, about ${duration(r.left)} left` : ""}…`);
       await sleep(700);
     }
   }
@@ -1950,6 +2071,15 @@ code { font-size: 12px; } img { max-width: 100%; border: 1px solid #bbb; }
     reporting = true;
     $("report").disabled = true;
     try {
+      if (cfg.backend === "case") {
+        const guess = await getJSON("/api/evidence/estimate");
+        if (guess.seconds > LONG_TASK && !window.confirm(
+          `Hashing the evidence files (${sizeText(guess.total)}) for the report will take about ` +
+          `${duration(guess.seconds)}. Continue?`)) {
+          setStatus("No report saved");
+          return;
+        }
+      }
       const evidence = cfg.backend === "case" ? await hashedEvidence() : null;
       setStatus("Writing the report…");
       const exported = await ask("/api/export", windowParams(), { edges: drawn(cy.edges()) });
@@ -2005,7 +2135,7 @@ code { font-size: 12px; } img { max-width: 100%; border: 1px solid #bbb; }
       version: MAP_VERSION, iocTime,
       settings: Object.fromEntries(SETTINGS.map((id) => [id, $(id).value])),
       nodes: cy.nodes().map((n) => Object.assign({ id: n.id(), position: n.position(), classes: kept(n) },
-                                                 pick(n.data(), NODE_FIELDS))),
+                                                 pick(n.data(), NODE_FIELDS), isPinned(n) ? { pinned: true } : {})),
       edges: cy.edges().map((e) => Object.assign({ source: e.data("source"), target: e.data("target"),
                                                    direction: e.data("direction"), count: e.data("full").count,
                                                    ports: e.data("full").ports, protocols: e.data("full").protocols,
@@ -2095,6 +2225,7 @@ code { font-size: 12px; } img { max-width: 100%; border: 1px solid #bbb; }
     if (Number.isFinite(p.x) && Number.isFinite(p.y)) {
       node.position({ x: p.x, y: p.y });
       setPlaced(node);
+      node.scratch("_pinned", n.pinned === true);     // dragged by the analyst: Fit leaves it there
     }
     highlight(node, n.classes);
   }
@@ -2169,6 +2300,7 @@ code { font-size: 12px; } img { max-width: 100%; border: 1px solid #bbb; }
   }
 
   async function openSession(name) {
+    if (!mayDiscard(`open "${name}"`)) return;
     const r = await getJSON(`/api/sessions?${new URLSearchParams({ name })}`);
     $("session-name").value = r.name;
     await openMap(r.map, `"${r.name}" (saved ${r.saved})`);
@@ -2199,7 +2331,7 @@ code { font-size: 12px; } img { max-width: 100%; border: 1px solid #bbb; }
   $("session-file").addEventListener("change", async (e) => {
     const file = e.target.files[0];
     e.target.value = "";
-    if (!file) return;
+    if (!file || !mayDiscard(`open ${file.name}`)) return;
     let doc = null;
     try { doc = JSON.parse(await file.text()); } catch (_) { /* reported below */ }
     openMap(doc, file.name).catch(fail);

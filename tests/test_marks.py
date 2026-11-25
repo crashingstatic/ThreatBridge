@@ -95,6 +95,26 @@ def test_marked_flows_are_told_apart_by_all_but_the_note(tmp_path):
     assert len(store.unmark_flow(same_ms)["flows"]) == 1
 
 
+def test_marking_again_without_a_note_keeps_the_note(tmp_path, client):
+    """Marking a host or flow again with no note keeps the note it had, which another analyst
+    may have written since this page last looked (D37); a note given, even "", replaces it."""
+    store = CompromisedStore(str(tmp_path / "c2.json"))
+    store.mark(A, None, "EDR")
+    view = store.mark(A, "2024-05-01T12:30:00Z")
+    assert view["marked"] == [{"ip": A, "time": "2024-05-01T12:30:00.000Z", "note": "EDR"}]
+    assert store.mark(A, None, "")["marked"][0]["note"] == ""
+    store.mark_flow(key(STORY[0], "phish"))
+    bare = {k: v for k, v in key(STORY[0]).items() if k != "note"}
+    assert store.mark_flow(bare)["flows"] == [key(STORY[0], "phish")]
+    assert store.mark_flow(dict(bare, note=None))["flows"] == [key(STORY[0], "phish")]
+    assert store.mark_flow(key(STORY[0], ""))["flows"] == [key(STORY[0])]
+    assert store.mark(B)["marked"][-1]["note"] == ""                # new: no note
+    # The same over the API.
+    client.post("/api/compromised", json={"ip": B, "note": "EDR"}, headers=WRITE)
+    r = client.post("/api/compromised", json={"ip": B, "time": "2024-05-01T12:10:00Z"}, headers=WRITE).get_json()
+    assert r["marked"] == [{"ip": B, "time": "2024-05-01T12:10:00.000Z", "note": "EDR"}]
+
+
 @pytest.mark.parametrize("body,error", [
     ([], "a flow is an object"),
     ({"dst": B, "start": "2024-05-01T12:00:00Z", "sport": 1, "dport": 2, "proto": "tcp"}, "invalid IP address"),

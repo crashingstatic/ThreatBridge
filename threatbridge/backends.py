@@ -40,7 +40,7 @@ from .communityid import community_id
 from . import analysis, filters, hashing, protocols, sources
 from .compromised import flow_key, marked_hosts, reached
 from .graph import build_graph, count_between
-from .progress import Progress, counted
+from .progress import Progress, _duration, counted
 from .query import (ValidationError, es_details_body, es_dns_body, es_flows_body, es_protocols_body,
                     es_scan_body, es_top_body, fmt_time, parse_time, parse_window, soc_pcap_url)
 from .sources import dhcp, logons
@@ -53,6 +53,18 @@ ES_MAX_RESULTS = 10000
 # Times reach the browser rounded down to the millisecond (fmt_time) and come back that way,
 # so case queries allow this much either side.
 TIME_SLACK = 0.001
+
+# A task projected to take longer than LONG_TASK seconds asks first, saying how long (owner,
+# 2026-11-25; D37). Building a case is projected from its first CHECK_AFTER seconds of reading:
+# the whole build takes up to BUILD_FACTOR times its reading (measured: 1.7 for a capture, 1.3
+# for a Zeek conn log).
+LONG_TASK = 300.0
+CHECK_AFTER = 10.0
+BUILD_FACTOR = 1.7
+
+
+class Stopped(sources.SourceError):
+    """The analyst chose not to wait for a long task."""
 
 
 class BackendError(RuntimeError):
@@ -458,8 +470,11 @@ class CaseBackend:
 
     GRAPHS_KEPT = 4   # filtered graphs kept for reuse (D17)
 
-    def __init__(self, cfg, flows=None, dns=None, progress=None, leases=None, events=None):
+    def __init__(self, cfg, flows=None, dns=None, progress=None, leases=None, events=None, confirm=None):
+        """`confirm(seconds)`, if given, is asked whether to go on when building the case is
+        projected to take more than LONG_TASK seconds more; without it, a warning says so."""
         self.cfg, self.flags = cfg, filters.flag_limits(cfg)
+        self.confirm = confirm
         self._tmp = None
         self._graphs, self._graphs_lock = OrderedDict(), threading.Lock()
         self._hashing, self._hashing_lock = None, threading.Lock()
@@ -523,13 +538,37 @@ class CaseBackend:
             tz = dhcp.timezone_named(self.cfg.dhcp_timezone)
             total = sum(size for _, size, _ in files)
             with self.progress.stage(f"Reading {len(files)} evidence file(s)", total) as stage:
-                flows = sources.read(found, self.dns, workers, stage, observations, tz, claims)
+                flows = sources.read(found, self.dns, workers, self._projected(stage, total), observations, tz, claims)
             held = dhcp.holdings(dhcp.named(observations))
             self._write(flows, evidence, held, self._labeller(claims, held))
             del flows
         n = self.store.stats()[0]
         with self.progress.stage("Building the graph", n) as stage:
             self.graph = build_graph(counted(self.store.pairs(), stage))
+
+    def _projected(self, stage, total, clock=time.monotonic):
+        """`stage`, telling it what is read, and once CHECK_AFTER seconds have gone by, asking
+        (self.confirm) whether to go on if the whole build is projected to take more than
+        LONG_TASK seconds; Stopped if not."""
+        start, state = clock(), {"done": 0, "asked": False}
+
+        def check(amount=0, note=None):
+            stage(amount, note)
+            state["done"] += amount
+            elapsed = clock() - start
+            if state["asked"] or not total or not state["done"] or elapsed < CHECK_AFTER:
+                return
+            state["asked"] = True
+            projected = elapsed * total / state["done"] * BUILD_FACTOR
+            if projected <= LONG_TASK:
+                return
+            left = projected - elapsed
+            if hasattr(stage, "clear"):
+                stage.clear()                       # the progress line, before a question or warning
+            if self.confirm is not None and not self.confirm(left):
+                raise Stopped(f"building the case would have taken about {_duration(left)} more")
+            log.warning("building the case will take about %s more", _duration(left))
+        return check
 
     def _write(self, flows, evidence, leases=(), labeller=None):
         try:
@@ -538,6 +577,18 @@ class CaseBackend:
             raise sources.SourceError(str(e))
         except sqlite3.Error as e:
             raise sources.SourceError(f"{self.store.path}: can't write the case database ({e})")
+
+    def evidence_estimate(self):
+        """How long hashing the evidence files would take now: {"total": bytes, "seconds"},
+        0 when their digests are known and the files unchanged (hashing.estimate)."""
+        with self._hashing_lock:
+            current = self._hashing
+        if current is not None and not current.stale():
+            report = current.report()
+            if report["done"]:
+                return {"total": report["total"], "seconds": 0.0}
+            return {"total": report["total"], "seconds": report["left"] or 0.0}
+        return hashing.estimate(self.store.evidence())
 
     def evidence(self):
         """The evidence files with their SHA-256, hashed in the background on the first ask

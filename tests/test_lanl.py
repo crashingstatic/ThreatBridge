@@ -76,3 +76,25 @@ def test_measured_within_the_tolerance(tmp_path, capsys):
     assert out.startswith("LANL 2015: 7 flows from time -3500 to 3700 ")     # not the line at 9000
     assert "4 red-team logons" in out
     assert "| 3 | 3/4 | 3/4 |" in out and "| C1 to C3 |" in out
+
+
+def test_a_long_read_asks_first(tmp_path):
+    """Reading on to the slice asked for is projected from how far into the data the lines are
+    after 10 seconds; over 5 minutes in all, it asks first (D37)."""
+    import pytest
+    from threatbridge.backends import Stopped
+    f, _ = files(tmp_path)
+
+    def clock():                      # 6 s per look: 12 s in by the third line
+        clock.now += 6
+        return clock.now
+    clock.now = 0
+    asked = []
+    with pytest.raises(Stopped):
+        lanl.flows(f, 0, 100_000, confirm=lambda s: asked.append(s) or False, clock=clock)
+    assert len(asked) == 1 and asked[0] > 300
+    clock.now = 0
+    assert len(lanl.flows(f, 0, 100_000, confirm=lambda s: True, clock=clock)) == 8
+    fast = iter(range(100))                     # a second per look: done within 10 s, no question
+    assert len(lanl.flows(f, 0, 500, confirm=lambda s: asked.append(s) or False, clock=lambda: next(fast))) == 7
+    assert len(asked) == 1

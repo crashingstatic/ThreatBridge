@@ -29,6 +29,13 @@ export async function launch({ context = {}, expected = null, base = null } = {}
     if (m.type() === "error" && !(expected && expected.test(m.text()))) errors.push(m.text());
   });
   page.on("pageerror", (e) => errors.push(String(e)));
+  // Questions (D37: whatever removes or overwrites what an undo couldn't bring back asks first):
+  // each is answered yes, unless the test queued its own answer for the next one (answer()).
+  const answers = [];
+  page.on("dialog", (d) => { const fn = answers.shift(); Promise.resolve(fn ? fn(d) : d.accept()).catch(() => {}); });
+  page.answersQuestions = true;
+  const answer = (fn) => answers.push(fn);
+  const unused = () => answers.splice(0).length;            // answers no question took, dropped
   // Marks may hide part of the map and lay it out again: positions are read once that settles.
   const at = async (selector, kind) => {
     await page.waitForFunction(() => !(window.threatbridge && window.threatbridge.settling &&
@@ -44,7 +51,7 @@ export async function launch({ context = {}, expected = null, base = null } = {}
     const box = document.getElementById("cy").getBoundingClientRect();
     return { x: p.x + box.left, y: p.y + box.top, id: el.id() };
   }, [selector, kind]);
-  return { browser, ctx, page, errors, at };
+  return { browser, ctx, page, errors, at, answer, unused };
 }
 
 async function saveCoverage(page, name) {
@@ -56,8 +63,10 @@ async function saveCoverage(page, name) {
 
 // Before loading the page again: coverage of the page loaded so far is lost on navigation,
 // so save it under `name` and start afresh.
-// Do `action`, saying yes to any confirmation it asks (D32: discarding a worked map, unmarking a host).
+// Do `action`, saying yes to any question it asks: on a page from launch(), which does so
+// already, just the action; on another page (a second analyst's), with a listener for it.
 export async function accepting(page, action) {
+  if (page.answersQuestions) return action();
   const yes = (d) => d.accept().catch(() => {});
   page.on("dialog", yes);
   try {

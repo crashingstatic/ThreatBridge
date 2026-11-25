@@ -377,6 +377,21 @@ report (a PDF), and its flows are Zeek logs, which the case backend doesn't read
    views; it doesn't (it changes only this map, until the map is saved), but the question is
    kept as asked. *Add to shared exclude list* is the action that does change everyone's view.
 
+Later the same day:
+
+5. **Ask before anything an undo won't fix**, above all what teammates work with (D37, INT-15):
+   the shared exclude list (adding and removing), unmarking a host or flow, a mark's time,
+   replacing the shared marks, saving over or deleting a saved map, *Remove from map*,
+   discarding a worked map, *Tidy* over hosts placed by hand. Marking again keeps the note, on
+   the server, so a teammate's newer note isn't lost to the page's older copy.
+6. **Ask before a task projected over 5 minutes, with the time it will take** (D37, PRF-4):
+   building a case (projected after 10 s of reading; terminal, `--yes`), hashing the evidence
+   for the report (estimated from a 64 MiB sample), the LANL loader.
+7. **Fit is automatic**: hosts even out, about 110 units apart, after every change, and the
+   view takes in the whole map; a host the analyst dragged stays put (saved with the map).
+   **Tidy** (toolbar, map's menu) redraws the whole map (D29, D34, INT-10). This replaces 3's
+   "nothing else moves"; *Fit* stays in the map's menu, without its toolbar button.
+
 ---
 
 ## Status
@@ -394,3 +409,4 @@ report (a PDF), and its flows are Zeek logs, which the case backend doesn't read
 | 13. Measure it | decided | done (D35, EVA-1, EVA-2) | done | done | green |
 | Follow-up 1. Zeek logs | given | done (D36, ING-12) | done | done | green |
 | Follow-ups 2 to 4. Map | given | done (D29, D32 to D34, GRA-5, INT-10, INT-13) | done | done | green |
+| Follow-ups 5 to 7. Asking first, long tasks, Fit | given | done (D29, D34, D37, INT-9, INT-10, INT-13, INT-15, PRF-4, GRA-5) | done | done | pending |

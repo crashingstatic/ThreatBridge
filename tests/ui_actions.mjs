@@ -15,7 +15,7 @@ import { accepting, checkpoint, clickMap, finish, keepMap, launch } from "./ui_h
 const BASE = process.env.TB_URL || "http://127.0.0.1:5056";
 const SHOTS = process.argv[2];
 // The errors this test provokes on purpose (HTTP 400, 409 and 502, an aborted request) are expected.
-const { browser, ctx, page, errors, at } = await launch({ base: BASE, expected: /status of (400|409|502)|ERR_FAILED/ });
+const { browser, ctx, page, errors, at, answer, unused } = await launch({ base: BASE, expected: /status of (400|409|502)|ERR_FAILED/ });
 
 const cyEval = (fn, arg) => page.evaluate(fn, arg);
 const ids = () => cyEval(() => window.threatbridge.cy.nodes().map((n) => n.id()).sort());
@@ -99,6 +99,15 @@ try {
   await page.fill("#exclude-input", "not valid!");
   await page.press("#exclude-input", "Enter");
   await waitStatus(/invalid IP, CIDR or domain name/);
+  // Adding to the shared list asks first (D37): Cancel adds nothing and keeps what was typed.
+  let excludeAsked = null;
+  answer((d) => { excludeAsked = d.message(); return d.dismiss(); });
+  await page.fill("#exclude-input", "192.0.2.29");
+  await page.press("#exclude-input", "Enter");
+  assert.equal(excludeAsked, "Add 192.0.2.29 to the shared exclude list? It goes from every analyst's map, and threat " +
+                             "lines and paths won't cross it.");
+  assert.equal(await page.inputValue("#exclude-input"), "192.0.2.29");
+  assert.equal(await page.locator("#exclude-list li").count(), 0);
   await page.fill("#exclude-input", "");
 
   // 2b. Writes to a shared list go one at a time, and what the analyst types while one is
@@ -150,7 +159,7 @@ try {
   // The tree: the IOC host on top, each hop a row further down.
   const y = (ip) => cyEval((i) => window.threatbridge.cy.getElementById(i).position("y"), ip);
   const [y9, y5, y77, y66] = [await y("10.0.0.9"), await y("10.0.0.5"), await y("10.0.0.77"), await y("203.0.113.66")];
-  assert.ok(y9 < y5 && y5 === y77 && y77 < y66, JSON.stringify([y9, y5, y77, y66]));
+  assert.ok(y9 < y5 && Math.abs(y5 - y77) < 5 && y77 < y66, JSON.stringify([y9, y5, y77, y66]));   // Fit may nudge
   // The details panel: right-click shows a host's without expanding it.
   await page.waitForFunction(() => window.threatbridge.cy.getElementById("10.0.0.5").data("machine"));
   let q = await at(node("10.0.0.5"));
@@ -234,7 +243,7 @@ try {
   assert.ok(corner.x + corner.width <= viewport.width && corner.y + corner.height <= viewport.height,
             JSON.stringify(corner));
   await page.keyboard.press("Escape");
-  await page.click("#fit");
+  await cyEval(() => window.threatbridge.cy.fit(undefined, 40));       // back as Fit left it
   assert.equal(await page.evaluate(() => document.getElementById("cy").dispatchEvent(
     new MouseEvent("contextmenu", { bubbles: true, cancelable: true }))), false);
 
@@ -246,7 +255,7 @@ try {
   await waitStatus(/^10\.0\.0\.9: showing top 2 of 2 distinct peer/);
   // Remove from map asks first, naming the connections that go with the host; Cancel keeps it.
   let removeAsked = null;
-  page.once("dialog", (d) => { removeAsked = d.message(); d.dismiss(); });
+  answer((d) => { removeAsked = d.message(); d.dismiss(); });
   await menu(node("10.0.0.77"), "Remove from map");
   assert.equal(removeAsked, "Remove 10.0.0.77 and its 1 connection from the map?");
   assert.ok((await ids()).includes("10.0.0.77"));
@@ -254,10 +263,18 @@ try {
   assert.ok(!(await ids()).includes("10.0.0.77"));
   await menu(node("10.0.0.9"), "Remove from map");                  // the IOC host stays
   assert.ok((await ids()).includes("10.0.0.9"));
+  answer((d) => { excludeAsked = d.message(); return d.dismiss(); });
+  await menu(node("203.0.113.66"), "Add to shared exclude list");
+  assert.ok(excludeAsked.startsWith("Add 203.0.113.66 to the shared exclude list?"), excludeAsked);
+  assert.ok((await ids()).includes("203.0.113.66"), "Cancel keeps it on the map");
   await menu(node("203.0.113.66"), "Add to shared exclude list");
   await page.waitForSelector("#exclude-list li >> text=203.0.113.66");
   assert.equal(await status(), "Excluded 203.0.113.66 for everyone; re-expand hosts to apply CIDRs");
   assert.ok(!(await ids()).includes("203.0.113.66"));
+  answer((d) => { excludeAsked = d.message(); return d.dismiss(); });
+  await page.click("#exclude-list li:has-text('203.0.113.66') button");
+  assert.equal(excludeAsked, "Remove 203.0.113.66 from the shared exclude list, for every analyst?");
+  assert.equal(await page.locator("#exclude-list li").count(), 1, "Cancel keeps it");
   await page.click("#exclude-list li:has-text('203.0.113.66') button");
   await waitStatus(/^Removed 203\.0\.113\.66 from exclude list$/);
   await page.waitForSelector("#exclude-list li", { state: "detached" });
@@ -268,6 +285,11 @@ try {
   await page.waitForSelector("#exclude-list li", { state: "detached" });
   await menu(node("10.0.0.5"), "Mark compromised (time unknown)");
   await page.waitForSelector("#compromised-list li >> text=10.0.0.5 @ time unknown");
+  let unmarkAsked = null;
+  answer((d) => { unmarkAsked = d.message(); return d.dismiss(); });
+  await menu(node("10.0.0.5"), "Unmark compromised");
+  assert.equal(unmarkAsked, "Unmark 10.0.0.5 for everyone?");
+  assert.equal(await page.locator("#compromised-list li").count(), 1, "Cancel keeps the mark");
   await menu(node("10.0.0.5"), "Unmark compromised");
   await page.waitForSelector("#compromised-list li", { state: "detached" });
   await waitStatus(/^0 attack path\(s\) between 0 compromised host\(s\)$/);
@@ -303,8 +325,17 @@ try {
   await page.click("#compromised-form button");
   await page.waitForSelector("#path-list li.hint >> text=No time-consistent path between the marked hosts.");
   await waitStatus(/^0 attack path\(s\) between 2 compromised host\(s\)$/);
+  // Marking it again at another time asks first (D37): Cancel keeps the time and the form.
   await page.fill("#compromised-ip", "10.0.2.2");
   await page.fill("#compromised-time", "2024-05-01T13:00:00Z");
+  let timeAsked = null;
+  answer((d) => { timeAsked = d.message(); return d.dismiss(); });
+  await page.click("#compromised-form button");
+  assert.equal(timeAsked, "10.0.2.2 is marked compromised at 2024-05-01T12:00:00.000Z for everyone. " +
+                          "Change it to 2024-05-01T13:00:00Z?");
+  await sleep(200);
+  assert.equal(await page.locator("#compromised-list li >> text=10.0.2.2 @ 2024-05-01T12:00:00.000Z").count(), 1);
+  assert.equal(await page.inputValue("#compromised-time"), "2024-05-01T13:00:00Z");
   await page.click("#compromised-form button");
   await page.waitForSelector("#compromised-list li >> text=10.0.2.2 @ 2024-05-01T13:00:00.000Z");
   assert.equal(await page.inputValue("#compromised-ip"), "");
@@ -532,13 +563,13 @@ try {
   await page.waitForSelector("#session-list .session >> text=incident 42");
   assert.match(await page.textContent("#session-list li small"), /^saved \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
   // The same name again asks first: Cancel keeps the saved one, OK replaces it.
-  let [dialog] = await Promise.all([page.waitForEvent("dialog"), page.click("#session-form button")]);
-  assert.equal(dialog.message(), 'Replace the saved map "incident 42"?');
-  await dialog.dismiss();
+  let replaceAsked = null;
+  answer((d) => { replaceAsked = d.message(); return d.dismiss(); });
+  await page.click("#session-form button");
   await waitStatus(/^a map called 'incident 42' is already saved$/);
+  assert.equal(replaceAsked, 'Replace the saved map "incident 42"?');
   assert.ok(await statusIs("error"));
-  [dialog] = await Promise.all([page.waitForEvent("dialog"), page.click("#session-form button")]);
-  await dialog.accept();
+  await page.click("#session-form button");
   await waitStatus(/^Replaced the map "incident 42" for everyone$/);
   assert.equal(await page.locator("#session-list li").count(), 1);
   assert.deepEqual(await othersSee("#session-list .session"), ["incident 42"]);
@@ -653,7 +684,7 @@ try {
   const names = await page.$$eval("#session-list .session", (l) => l.map((x) => x.firstChild.textContent));
   assert.ok(names.includes(markup), names);
   let asked = null;
-  page.once("dialog", (d) => { asked = d.message(); d.accept(); });
+  answer((d) => { asked = d.message(); d.accept(); });
   await page.locator("#session-list li").nth(names.indexOf(markup)).locator("button").click();
   assert.equal(asked, `Delete the saved map "${markup}" for everyone?`);
   await waitStatus(new RegExp(`^Deleted the saved map "${esc(markup)}"$`));
@@ -678,11 +709,11 @@ try {
   await page.click("#session-form button");
   await waitStatus(/^a map's name is 1 to 100 printable characters$/);
   assert.ok(await statusIs("error"));
-  page.once("dialog", (d) => d.dismiss());
+  answer((d) => d.dismiss());
   await page.click("#session-list li:has-text('incident 42') button");
   await page.waitForTimeout(300);
   assert.equal(await page.locator("#session-list .session").count(), 1, "Cancel keeps it");
-  page.once("dialog", (d) => d.accept());
+  answer((d) => d.accept());
   await page.click("#session-list li:has-text('incident 42') button");
   await waitStatus(/^Deleted the saved map "incident 42"$/);
   await page.waitForSelector("#session-list li.hint");
@@ -719,9 +750,12 @@ try {
     await page.keyboard.press("Escape");
   }
 
-  // 13. Fit brings every host back into view; Clear leaves the map as it is.
+  // 13. Fit, from the map's menu, brings every host back into view after panning away by hand;
+  // Clear leaves the map as it is.
   await cyEval(() => window.threatbridge.cy.pan({ x: -5000, y: -5000 }));
-  await page.click("#fit");
+  const blank = await page.locator("#cy").boundingBox();
+  await page.mouse.click(blank.x + 5, blank.y + 5, { button: "right" });
+  await page.locator("#menu li", { hasText: "Fit" }).click();
   assert.ok(await cyEval(() => {
     const cy = window.threatbridge.cy;
     return cy.nodes().every((n) => {
@@ -733,37 +767,72 @@ try {
   await page.click("#clear");
   assert.deepEqual(await ids(), shownBefore);
 
-  // 13b. Hosts keep their places (D29): one dragged aside stays there when the map grows, and
-  // the new host goes next to the host it came from, on the side away from that host's own
-  // connection, clear of the others. Tidy lays the map out again as a tree.
+  // 13b. Fit is automatic (D29): when the map grows, the new host goes next to the host it came
+  // from, on the side away from that host's own connection; then the hosts even out, every
+  // two of them about the same distance apart, and the view takes in the whole map. A host the
+  // analyst dragged stays where it was put. Tidy, asked for, lays the map out again as a tree,
+  // and asks first when hosts were placed by hand.
   await setStatusText("");                     // the same map as before: wait for the new one
   await map("10.0.0.9", "in");
   await page.waitForFunction(() => window.threatbridge.cy.nodes().length === 3);
+  const SPACING = 110;
   const place = (ip) => cyEval((i) => window.threatbridge.cy.getElementById(i).position(), ip);
   const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  const places = () => cyEval(() => Object.fromEntries(window.threatbridge.cy.nodes().map((n) => [n.id(), n.position()])));
+  const nearest = (all) => {
+    const pts = Object.values(all);
+    let least = Infinity;
+    pts.forEach((a, i) => pts.slice(i + 1).forEach((b) => { least = Math.min(least, dist(a, b)); }));
+    return least;
+  };
+  const allInView = () => cyEval(() => {
+    const cy = window.threatbridge.cy;
+    return cy.nodes().every((n) => {
+      const r = n.renderedPosition();
+      return r.x >= 0 && r.y >= 0 && r.x <= cy.width() && r.y <= cy.height();
+    });
+  });
+  assert.ok(Math.abs(nearest(await places()) - SPACING) < 0.5, "a new map: a tree, the nearest hosts SPACING apart");
   const tidy77 = await place("10.0.0.77");
   const grab = await at(node("10.0.0.77"));
   await page.mouse.move(grab.x, grab.y);
   await page.mouse.down();
   await page.mouse.move(grab.x + 120, grab.y + 60, { steps: 6 });
   await page.mouse.up();
-  const kept = { "10.0.0.9": await place("10.0.0.9"), "10.0.0.5": await place("10.0.0.5"), "10.0.0.77": await place("10.0.0.77") };
-  assert.ok(dist(kept["10.0.0.77"], tidy77) > 20, "dragged aside");
+  const dragged = await place("10.0.0.77");
+  assert.ok(dist(dragged, tidy77) > 20, "dragged aside");
   assert.ok(!(await cyEval(() => window.threatbridge.cy.getElementById("10.0.0.77").data("expandedIn"))), "a drag doesn't expand");
-  const viewNow = () => cyEval(() => ({ zoom: window.threatbridge.cy.zoom(), pan: window.threatbridge.cy.pan() }));
-  const viewBefore = await viewNow();
   await menu(node("10.0.0.5"), "Expand inbound: who connected to it (past)");
   await waitStatus(/^10\.0\.0\.5: showing/);
-  for (const [ip, pos] of Object.entries(kept)) assert.deepEqual(await place(ip), pos, `${ip} kept its place`);
-  assert.deepEqual(await viewNow(), viewBefore, "the view stays where it was");
-  const p66 = await place("203.0.113.66");
-  assert.ok(Math.abs(dist(p66, kept["10.0.0.5"]) - 110) < 0.5, `next to 10.0.0.5: ${JSON.stringify(p66)}`);
-  assert.ok(Object.values(kept).every((pos) => dist(pos, p66) >= 80), "clear of the other hosts");
-  assert.ok(p66.y > kept["10.0.0.5"].y, "below 10.0.0.5, away from 10.0.0.9 above it");
+  const grown = await places();
+  assert.deepEqual(grown["10.0.0.77"], dragged, "the dragged host stays where it was put");
+  const p66 = grown["203.0.113.66"], by5 = grown["10.0.0.5"];
+  assert.ok(nearest(grown) > 0.9 * SPACING, `evened out: ${JSON.stringify(grown)}`);
+  assert.ok(dist(p66, by5) < 1.5 * SPACING + 1, `next to 10.0.0.5: ${JSON.stringify(p66)}`);
+  assert.ok(p66.y > by5.y, "below 10.0.0.5, away from 10.0.0.9 above it");
+  assert.ok(await allInView(), "the view takes in the whole map");
   await shot("placed");
+  // Tidy asks first, as 10.0.0.77 was placed by hand: Cancel leaves the map as it is.
+  let tidyAsked = null;
+  answer((d) => { tidyAsked = d.message(); return d.dismiss(); });
   await page.click("#tidy");
-  const rowsY = await Promise.all(["10.0.0.9", "10.0.0.5", "10.0.0.77", "203.0.113.66"].map(async (ip) => (await place(ip)).y));
+  assert.equal(tidyAsked, "Lay out the whole map again? The 1 host you placed by hand will move too.");
+  assert.deepEqual(await places(), grown);
+  // From the map's menu, and OK: a tree again, in view.
+  const blankAt = await page.locator("#cy").boundingBox();
+  await page.mouse.click(blankAt.x + 5, blankAt.y + 5, { button: "right" });
+  assert.deepEqual(await menuItems(), ["Tidy", "Fit"]);
+  await page.locator("#menu li", { hasText: "Tidy" }).click();
+  const tree = await places();
+  const rowsY = ["10.0.0.9", "10.0.0.5", "10.0.0.77", "203.0.113.66"].map((ip) => tree[ip].y);
   assert.ok(rowsY[0] < rowsY[1] && rowsY[1] === rowsY[2] && rowsY[2] < rowsY[3], `a tree again: ${JSON.stringify(rowsY)}`);
+  assert.ok(Math.abs(nearest(tree) - SPACING) < 0.5, "the nearest hosts SPACING apart");
+  assert.ok(await allInView(), "in view after Tidy");
+  // Nothing placed by hand now: Tidy doesn't ask.
+  answer((d) => d.dismiss());
+  await page.click("#tidy");
+  assert.equal(unused(), 1, "nothing to ask about");
+  assert.deepEqual(await places(), tree);
 
   // 13c. Enter in the Window changes only what is asked next: the map stays. Map asks before
   // discarding a map worked on, and Cancel keeps it. A reload restores the working map as it
@@ -775,16 +844,24 @@ try {
   assert.deepEqual(await ids(), worked);
   await page.fill("#window", "24h");
   let discardAsked = null;
-  page.once("dialog", (d) => { discardAsked = d.message(); d.dismiss(); });
+  answer((d) => { discardAsked = d.message(); d.dismiss(); });
   await page.click("#go");
   assert.equal(discardAsked, "Discard this map (4 hosts) and start a new one from 10.0.0.9?");
   assert.deepEqual(await ids(), worked);
   const placesNow = () => cyEval(() => Object.fromEntries(window.threatbridge.cy.nodes().map((n) => [n.id(), n.position()])));
+  const pinnedNow = () => cyEval(() => window.threatbridge.cy.nodes().filter((n) => n.scratch("_pinned")).map((n) => n.id()));
+  const hold = await at(node("10.0.0.5"));                     // dragged: it stays where it was put (D29)
+  await page.mouse.move(hold.x, hold.y);
+  await page.mouse.down();
+  await page.mouse.move(hold.x - 40, hold.y + 30, { steps: 4 });
+  await page.mouse.up();
+  assert.deepEqual(await pinnedNow(), ["10.0.0.5"]);
   const beforeReload = await placesNow();
   await sleep(400);                                // the working map is kept 300 ms after the last change
   await page.reload();
   await waitStatus(/^Restored the map: 4 host\(s\), 3 connection\(s\)$/);
   assert.deepEqual(await placesNow(), beforeReload);
+  assert.deepEqual(await pinnedNow(), ["10.0.0.5"], "still the one dragged");
   // The bare address starts afresh.
   await page.goto(BASE);
   await page.waitForFunction(() => window.threatbridge && window.threatbridge.cy);

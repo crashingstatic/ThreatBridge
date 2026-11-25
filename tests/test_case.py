@@ -428,7 +428,9 @@ def test_compromised_hosts_crud(chain_client):
     assert r["hosts"] == [{"ip": H, "time": "2024-05-01T12:10:00.000Z", "note": "EDR", "direct": True, "count": 1}]
     assert r["marked"] == [{"ip": H, "time": "2024-05-01T12:10:00.000Z", "note": "EDR"}]
     r = c.post("/api/compromised", json={"ip": H, "time": ""}, headers=WRITE).get_json()
-    assert r["marked"] == [{"ip": H, "time": None, "note": ""}]               # re-mark replaces
+    assert r["marked"] == [{"ip": H, "time": None, "note": "EDR"}]            # re-mark replaces, keeps the note
+    r = c.post("/api/compromised", json={"ip": H, "time": "", "note": ""}, headers=WRITE).get_json()
+    assert r["marked"] == [{"ip": H, "time": None, "note": ""}]               # unless given one
     assert c.post("/api/compromised", json={"ip": "nope"}, headers=WRITE).status_code == 400
     assert c.post("/api/compromised", json={"ip": H, "time": "soon"}, headers=WRITE).status_code == 400
     r = c.delete("/api/compromised", json={"ip": H}, headers=WRITE).get_json()

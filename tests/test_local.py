@@ -154,7 +154,7 @@ def started(monkeypatch):
             monkeypatch.delenv(k)
     seen = {}
 
-    def fake_create_app(cfg, local=None):
+    def fake_create_app(cfg, backend=None, local=None):
         seen["local"] = local
         return FakeApp()
     monkeypatch.setattr(app_mod, "create_app", fake_create_app)

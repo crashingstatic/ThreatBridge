@@ -25,6 +25,7 @@ try {
   const errors = [];
   page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
   page.on("pageerror", (e) => errors.push(String(e)));
+  page.on("dialog", (d) => d.accept());          // changes to the shared lists ask first (D37)
   const opened = await page.goto(`${BASE}/?ip=10.0.0.5&ts=2024-05-01T12:00:00Z&dir=in`);
   assert.equal(opened.status(), 200, "the certificate is accepted");
   await page.waitForFunction(() => window.threatbridge.cy.edges().length > 0);

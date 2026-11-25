@@ -68,9 +68,35 @@ def test_a_case_given_flows_has_no_files(tmp_path):
     cfg = Config(backend="case", live_dns=False, compromised_file=str(tmp_path / "c.json"))
     flows = [Flow("10.0.0.5", "10.0.0.9", 50000, 445, "tcp", T, T + 1, 2, 120, "x", "smb")]
     client = create_app(cfg, CaseBackend(cfg, flows=flows)).test_client()
-    assert until_done(client) == {"done": True, "hashed": 0, "total": 0, "files": [], "settings": {}}
+    assert until_done(client) == {"done": True, "hashed": 0, "total": 0, "left": 0.0, "files": [], "settings": {}}
 
 
 def test_evidence_needs_the_case_backend(tmp_path):
     cfg = Config(backend="demo", live_dns=False, compromised_file=str(tmp_path / "c.json"))
     assert create_app(cfg, DemoBackend(cfg)).test_client().get("/api/evidence").status_code == 501
+
+
+def test_how_long_hashing_would_take(tmp_path):
+    """The report asks first when hashing is projected to take more than 5 minutes (D37): the
+    estimate from reading and hashing a sample of the largest file."""
+    from threatbridge import hashing
+    d = tmp_path / "case"
+    d.mkdir()
+    write_pcap(d / "cap.pcap", [(T + i, tcp("10.0.0.5", "10.0.0.9", 50000 + i, 445, SYN)) for i in range(50)])
+    (d / "dhcpd.leases").write_text("lease 10.0.0.5 {\n  starts 3 2024/05/01 08:00:00;\n"
+                                    "  hardware ethernet 00:11:22:33:44:55;\n}\n")
+    manifest = [(str(d / "cap.pcap"), 0, 0), (str(d / "dhcpd.leases"), 0, 0), ("setting TB_DHCP_TIMEZONE=UTC", 0, 0)]
+    total = os.path.getsize(d / "cap.pcap") + os.path.getsize(d / "dhcpd.leases")
+    ticks = iter([0.0, 2.0])
+    assert hashing.estimate(manifest, sample=64, clock=lambda: next(ticks)) == {"total": total, "seconds": total * 2 / 64}
+    assert hashing.estimate([("setting X=1", 0, 0), (str(d / "gone"), 0, 0)]) == {"total": 0, "seconds": 0.0}
+    cfg = Config(backend="case", case_paths=[str(d)], live_dns=False, compromised_file=str(tmp_path / "c.json"),
+                 exclude_file=str(tmp_path / "ex.json"))
+    client = create_app(cfg, CaseBackend(cfg)).test_client()
+    est = client.get("/api/evidence/estimate").get_json()
+    assert est["total"] == total and est["seconds"] >= 0
+    report = until_done(client)
+    assert report["left"] == 0.0
+    assert client.get("/api/evidence/estimate").get_json() == {"total": total, "seconds": 0.0}    # known
+    demo_cfg = Config(backend="demo", live_dns=False, compromised_file=str(tmp_path / "c2.json"))
+    assert create_app(demo_cfg, DemoBackend(demo_cfg)).test_client().get("/api/evidence/estimate").status_code == 501

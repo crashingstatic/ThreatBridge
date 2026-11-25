@@ -29,9 +29,10 @@ import sys
 import time
 
 from . import measure
-from .backends import CaseBackend
+from .backends import CHECK_AFTER, LONG_TASK, CaseBackend, Stopped
 from .config import Config
 from .model import Flow
+from .progress import _duration, ask_to_wait
 from .query import parse_window
 
 BASE = 1_420_070_400.0 - 1          # time 1 = 2015-01-01T00:00:00Z, a made-up date
@@ -67,11 +68,25 @@ def redteam(path):
     return sorted((int(t), user, src, dst) for t, user, src, dst in _lines(path))
 
 
-def flows(path, lo, hi):
-    """The flows that started in [lo, hi] (LANL seconds), as Flows on the made-up calendar."""
+def flows(path, lo, hi, confirm=None, clock=time.monotonic):
+    """The flows that started in [lo, hi] (LANL seconds), as Flows on the made-up calendar.
+    After CHECK_AFTER seconds, if reading on to `hi` is projected (from how far into the data
+    the lines are) to take more than LONG_TASK seconds in all, `confirm(seconds left)` is asked
+    whether to go on (D37); Stopped if not, a warning without it."""
     out, name = [], os.path.basename(str(path))
+    began, first, asked = clock(), None, False
     for row in _lines(path):
         t = int(row[0])
+        first = t if first is None else first
+        if not asked and clock() - began >= CHECK_AFTER and t > first:
+            asked = True
+            elapsed = clock() - began
+            projected = elapsed * (hi + STOP_AFTER - first) / (t - first)
+            if projected > LONG_TASK:
+                left = projected - elapsed
+                if confirm is not None and not confirm(left):
+                    raise Stopped(f"reading the flows would have taken about {_duration(left)} more")
+                print(f"Reading the flows will take about {_duration(left)} more.", file=sys.stderr)
         if t > hi + STOP_AFTER:
             break
         if t < lo or t > hi or len(row) != 9:
@@ -117,6 +132,7 @@ def main(argv=None):
     p.add_argument("--window", default="24h", help="the Window between hops (default 24h)")
     p.add_argument("--tolerance", type=float, default=120, help="seconds between a logon and its flow (default 120)")
     p.add_argument("--details", action="store_true", help="a row for each chain too")
+    p.add_argument("--yes", action="store_true", help="don't ask before reading that will take more than 5 minutes")
     a = p.parse_args(argv)
     events = redteam(a.redteam)
     if not events:
@@ -124,7 +140,12 @@ def main(argv=None):
     lo, hi = events[0][0] - a.before * 3600, events[0][0] + a.hours * 3600
     events = [e for e in events if e[0] <= hi]
     clock = time.monotonic()
-    found = flows(a.flows, lo, hi)
+    ask = None if a.yes else (lambda seconds: ask_to_wait(seconds, what="Reading the flows"))
+    try:
+        found = flows(a.flows, lo, hi, ask)
+    except Stopped:
+        print("Stopped.", file=sys.stderr)
+        return 1
     read = time.monotonic() - clock
     case = CaseBackend(Config(backend="case"), flows=found)
     window = parse_window(a.window)

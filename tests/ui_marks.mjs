@@ -11,7 +11,7 @@ import { accepting, clickMap, finish, keepMap, launch } from "./ui_helpers.mjs";
 const BASE = process.env.TB_URL || "http://127.0.0.1:5056";
 const SHOTS = process.argv[2];
 // The invalid filter this test types is answered with HTTP 400, on purpose.
-const { browser, ctx, page, errors, at } = await launch({ base: BASE, expected: /status of 400/ });
+const { browser, ctx, page, errors, at, answer, unused } = await launch({ base: BASE, expected: /status of 400/ });
 
 const E = "10.9.0.1", A = "10.9.0.2", X = "10.9.0.3", B = "10.9.0.4", C = "10.9.0.5", F = "10.9.0.6", Y = "10.9.0.7";
 const R1 = "10.9.1.1", R2 = "10.9.1.2";
@@ -71,7 +71,6 @@ try {
   await page.mouse.click(box.x + 5, box.y + 5);
   assert.deepEqual(await edgeIds(), ALL);
   assert.equal(await hiddenNote(), "");
-  await page.click("#fit");                 // the view doesn't follow new hosts by itself (D29)
 
   // Marking B: only the line into it (E -> A -> X -> B) and on from it (B -> F) stay, dashed
   // dark red, outlined light red. X -> C and A -> Y are hidden, and C and Y with them; the
@@ -223,6 +222,15 @@ try {
   // markup is neither drawn nor run, and Markdown escapes it.
   const NOTE = '<img src=x onerror="window.pwned=1"> | *x* [y](z)';
   await page.request.post(`${BASE}/api/compromised`, { headers: { "X-ThreatBridge": "1" }, data: { ip: B, note: NOTE } });
+  // Hashing projected to take more than 5 minutes asks first, with the estimate (D37): Cancel
+  // saves nothing.
+  await page.route("**/api/evidence/estimate", (route) => route.fulfill({ json: { total: 48e9, seconds: 1500 } }));
+  let reportAsked = null;
+  answer((d) => { reportAsked = d.message(); return d.dismiss(); });
+  await page.click("#report");
+  await waitStatus(/^No report saved$/);
+  assert.equal(reportAsked, "Hashing the evidence files (48.0 GB) for the report will take about 25 min. Continue?");
+  await page.unroute("**/api/evidence/estimate");
   const reportFiles = [];
   const take = (d) => reportFiles.push(d);
   page.on("download", take);
@@ -277,6 +285,13 @@ try {
             mdText);
   assert.ok(mdText.includes(`![The map](threatbridge-${A}-map.png)`));
   await page.request.post(`${BASE}/api/compromised`, { headers: { "X-ThreatBridge": "1" }, data: { ip: B, note: '=1+1, "x"' } });
+  // Marking it again, at the same time: no question, and the note stays (D37).
+  answer((d) => d.dismiss());
+  await page.fill("#compromised-ip", B);
+  await Promise.all([page.waitForResponse((r) => r.url().endsWith("/api/compromised") && r.request().method() === "POST"),
+                     page.click("#compromised-form button")]);
+  assert.equal(unused(), 1, "nothing to ask about");
+  assert.deepEqual((await shared()).marked, [{ ip: B, time: null, note: '=1+1, "x"' }]);
 
   // Another analyst's marks appear within seconds, and what they hide (ATK-8).
   const other = await ctx.newPage();
@@ -305,6 +320,13 @@ try {
   assert.deepEqual(saved.map.queries.map((q) => q.op), ["root", "threatline", "routes"]);
   await page.click("#filter-list li button");
   await waitStatus(/^Re-ran 3 of 3 queries with 0 filter\(s\)/);
+  // Opening a saved map over a map worked on asks first (D32): Cancel keeps it.
+  const workedOn = await nodeIds();
+  let openAsked = null;
+  answer((d) => { openAsked = d.message(); return d.dismiss(); });
+  await page.click("#session-list .session >> text=story");
+  assert.match(openAsked, /^Discard this map \(\d+ hosts?\) and open "story"\?$/);
+  assert.deepEqual(await nodeIds(), workedOn);
   await page.click("#session-list .session >> text=story");
   await waitStatus(/^Opened "story" \(saved .*\): /);
   assert.deepEqual(await listed("#filter-list li"), [["NOT DNS", "×"]]);
@@ -316,13 +338,13 @@ try {
   await page.waitForTimeout(6000);                       // other analysts don't see it
   assert.equal(await other.locator(`#compromised-list li >> text=${Y}`).count(), 0);
   let asked = null;
-  page.once("dialog", (d) => { asked = d.message(); d.dismiss(); });
+  answer((d) => { asked = d.message(); d.dismiss(); });
   await page.click("#share-marks");
   await page.waitForTimeout(300);
   assert.equal(asked, "Replace the 1 shared mark(s) with this map's 2? Every analyst's map will show them.");
   assert.ok(await page.locator("#local-marks").isVisible());
   assert.deepEqual((await shared()).hosts.map((h) => h.ip), [B]);
-  page.once("dialog", (d) => d.accept());
+  answer((d) => d.accept());
   await page.click("#share-marks");
   await waitStatus(/^Shared this map's 2 mark\(s\) with every analyst$/);
   assert.ok(await page.locator("#local-marks").isHidden());
@@ -363,6 +385,11 @@ try {
   await menu(edge(A, X), "Mark compromised", "edge");
   await page.waitForSelector(`#marked-flow-list li >> text=${A} → ${X} @ ${T1}`);
   assert.deepEqual((await shared()).flows, []);
+  let flowAsked = null;
+  answer((d) => { flowAsked = d.message(); return d.dismiss(); });
+  await page.click("#marked-flow-list li button");
+  assert.equal(flowAsked, `Unmark the flow ${A} → ${X} at ${T1} in this map?`);
+  assert.equal(await page.locator("#marked-flow-list li").count(), 1, "Cancel keeps it");
   await page.click("#marked-flow-list li button");
   await page.waitForSelector("#marked-flow-list li", { state: "detached" });
   await menu(edge(A, X), "Mark compromised", "edge");
@@ -374,7 +401,7 @@ try {
   // Remove on a marked host asks first, naming the marked flows that go with it (D32); Cancel
   // keeps both.
   let unmarkAsked = null;
-  page.once("dialog", (d) => { unmarkAsked = d.message(); d.dismiss(); });
+  answer((d) => { unmarkAsked = d.message(); d.dismiss(); });
   await page.click(`#compromised-list li:has-text('${X}') button`);
   assert.equal(unmarkAsked, `Unmark ${X} and its 1 marked flow in this map?`);
   assert.equal(await page.locator("#marked-flow-list li").count(), 1);
@@ -405,7 +432,7 @@ try {
   // Clean up for the next test on this server.
   for (const ip of [B, Y]) await accepting(page, () => page.click(`#compromised-list li:has-text('${ip}') button`));
   await page.waitForSelector("#compromised-list li", { state: "detached" });
-  page.once("dialog", (d) => d.accept());
+  answer((d) => d.accept());
   await page.click("#session-list li:has-text('story') button");
   await waitStatus(/^Deleted the saved map "story"$/);
 

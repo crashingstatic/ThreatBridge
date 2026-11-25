@@ -7,11 +7,13 @@ digests are kept until a file changes, when the next ask hashes again.
 import hashlib
 import os
 import threading
+import time
 from datetime import datetime, timezone
 
 from .query import fmt_time
 
 CHUNK = 1 << 20
+SAMPLE = 64 << 20        # bytes read and hashed to estimate how long the rest takes
 SETTING = "setting "     # manifest entries that are settings, not files (CaseBackend._load)
 
 
@@ -28,6 +30,31 @@ def _time(ns):
     return fmt_time(datetime.fromtimestamp(ns / 1e9, timezone.utc))
 
 
+def estimate(manifest, sample=SAMPLE, clock=time.perf_counter):
+    """{"total": bytes, "seconds": how long hashing them would take}, from reading and hashing
+    the first `sample` bytes of the largest file. Files still in the operating system's cache
+    (just read to build the case) read faster than from disk, so the estimate can be low."""
+    files = [(p, _stat(p)) for p, _, _ in manifest if not p.startswith(SETTING)]
+    files = [(p, s[0]) for p, s in files if s]
+    total = sum(size for _, size in files)
+    if not total:
+        return {"total": 0, "seconds": 0.0}
+    path = max(files, key=lambda f: f[1])[0]
+    digest, read, start = hashlib.sha256(), 0, clock()
+    try:
+        with open(path, "rb") as fh:
+            while read < sample:
+                chunk = fh.read(min(CHUNK, sample - read))
+                if not chunk:
+                    break
+                digest.update(chunk)
+                read += len(chunk)
+    except OSError:
+        return {"total": total, "seconds": 0.0}
+    took = clock() - start
+    return {"total": total, "seconds": total * took / read if read else 0.0}
+
+
 class Hashing:
     """The hashing of the files in a case's evidence manifest [(path, size, mtime_ns)]."""
 
@@ -37,6 +64,7 @@ class Hashing:
         self.stats = {p: _stat(p) for p, _, _ in self.files}          # as hashing began
         self.total = sum(s[0] for s in self.stats.values() if s)
         self.hashed, self.digests, self.errors, self.done = 0, {}, {}, False
+        self.started = time.monotonic()
         self.lock = threading.Lock()
         self.thread = threading.Thread(target=self._run, daemon=True, name="evidence-hashing")
 
@@ -71,7 +99,8 @@ class Hashing:
         return done and any(_stat(p) != s for p, s in self.stats.items())
 
     def report(self):
-        """{"done", "hashed": bytes so far, "total": bytes, "files": [...], "settings": {...}}. A
+        """{"done", "hashed": bytes so far, "total": bytes, "left": seconds still to go at the
+        rate so far (None until it can tell), "files": [...], "settings": {...}}. A
         file is "unchanged" since the case was built, "changed" (its digest is of what it holds
         now, not of what was read), or "missing" (gone or unreadable: no digest)."""
         with self.lock:
@@ -85,5 +114,7 @@ class Hashing:
                 files.append({"path": path, "size": now[0] if now else size,
                               "modified": _time(now[1] if now else mtime), "sha256": self.digests.get(path),
                               "state": state})
-            return {"done": self.done, "hashed": min(self.hashed, self.total), "total": self.total,
+            hashed, elapsed = min(self.hashed, self.total), time.monotonic() - self.started
+            left = 0.0 if self.done else (elapsed * (self.total - hashed) / hashed if hashed and elapsed >= 1 else None)
+            return {"done": self.done, "hashed": hashed, "total": self.total, "left": left,
                     "files": files, "settings": self.settings}

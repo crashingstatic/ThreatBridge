@@ -531,7 +531,8 @@ class FlowMark(Shape):
 class HostMarkIn(Shape):
     ip: str
     time: Union[str, float, None] = Field(None, description="ISO-8601 or epoch; blank or null: unknown")
-    note: Optional[str] = Field(None, description="up to limits.note characters")
+    note: Optional[str] = Field(None, description=("up to limits.note characters; left out or null: a host "
+                                                   "marked already keeps its note"))
 
 
 class FlowMarkIn(Shape):
@@ -542,7 +543,8 @@ class FlowMarkIn(Shape):
     sport: int
     dport: int
     proto: str
-    note: Optional[str] = Field(None, description="up to limits.note characters")
+    note: Optional[str] = Field(None, description=("up to limits.note characters; left out or null: a flow "
+                                                   "marked already keeps its note"))
 
 
 class Marks(Shape):
@@ -671,11 +673,20 @@ class EvidenceFile(Shape):
         "read; missing means gone or unreadable"))
 
 
+class EvidenceEstimate(Shape):
+    """How long hashing the evidence files would take (D37)."""
+    total: int = Field(description="bytes to hash")
+    seconds: float = Field(description=(
+        "the estimate, from reading and hashing a sample of the largest file; 0 when the digests are known and "
+        "the files unchanged. Files still in the operating system's cache read faster, so it can be low"))
+
+
 class Evidence(Shape):
     """The case's evidence files with their SHA-256 (D31)."""
     done: bool = Field(description="every file hashed; until then, ask again")
     hashed: int = Field(description="bytes hashed so far")
     total: int = Field(description="bytes to hash")
+    left: Optional[float] = Field(description="seconds still to go at the rate so far; null until it can tell, 0 once done")
     files: list[EvidenceFile] = Field(description="by path; DHCP logs, Windows event logs and TB_HOSTS_FILE included")
     settings: dict[str, str] = Field(description="the settings the case was built with that change what it holds")
 
@@ -699,6 +710,7 @@ class MapNode(Shape):
     """A host, where it was."""
     id: Annotated[str, Field(min_length=1)]
     position: Position = None
+    pinned: bool = Field(None, description="dragged by the analyst: automatic Fit leaves it where it is (D29)")
     classes: list[str] = Field(None, description=(
         "the highlights (up, down, line-selected, faded, attack, route), and other classes, which opening a map ignores"))
     anchor: str = None
@@ -967,6 +979,10 @@ ENDPOINTS = {
         "The accounts that made a connection's flows (D28)", Accounts, AccountsQuery, errors=(400, 501), description=(
             "From Windows Security events 4624, 4648, 4768 and 4769 matched to the flows src -> dst that started "
             "in [from, to]. Case backend only.")),
+    "api_evidence_estimate": Endpoint(
+        "How long hashing the evidence files would take (D37)", EvidenceEstimate, errors=(501,), description=(
+            "Hashing starts with GET /api/evidence; this only estimates it. The map asks before hashing projected "
+            "to take more than 5 minutes. Case backend only.")),
     "api_evidence": Endpoint(
         "The case's evidence files with their SHA-256 (D31)", Evidence, errors=(501,), description=(
             "Hashing starts on the first ask and runs in the background; ask again (about once a second) "
@@ -1042,7 +1058,9 @@ ENDPOINTS = {
     "api_excludes_remove": Endpoint("Remove one", Excludes, body=ExcludeEntry, errors=(400, 500)),
     "api_compromised": Endpoint("The shared marks (D15)", MarksView, errors=(500,)),
     "api_compromised_mark": Endpoint("Mark a host compromised", MarksView, body=HostMarkIn, errors=(400, 500),
-                                     description="Marking a host again replaces its own mark."),
+                                     description=(
+                                         "Marking a host again replaces its own mark; with no note, it keeps the "
+                                         "note it had (D37).")),
     "api_compromised_unmark": Endpoint("Unmark a host, with the marked flows it is an end of", MarksView,
                                        body=HostToUnmark, errors=(400, 500)),
     "api_compromised_replace": Endpoint(
@@ -1050,7 +1068,9 @@ ENDPOINTS = {
             "Any invalid mark is a 400 and nothing changes. The map does it to share an opened map's marks, "
             "after asking.")),
     "api_compromised_mark_flow": Endpoint("Mark a flow compromised", MarksView, body=FlowMarkIn, errors=(400, 500),
-                                          description="Marking it again replaces its note."),
+                                          description=(
+                                              "Marking it again with a note replaces its note; with none, "
+                                              "it keeps the note it had (D37).")),
     "api_compromised_unmark_flow": Endpoint("Unmark a flow", MarksView, body=FlowMarkIn, errors=(400, 500)),
     "api_sessions": Endpoint("The saved maps, or with name the one saved under it", Union[Sessions, SavedMap],
                              SessionsQuery, errors=(400, 404, 500)),

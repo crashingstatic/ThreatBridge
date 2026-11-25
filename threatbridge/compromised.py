@@ -135,19 +135,25 @@ class CompromisedStore:
         with self.store.locked_all() as lists:
             return self._view(lists)
 
-    def _put(self, kind, entry, same):
+    def _put(self, kind, entry, same, keep_note=False):
         """Add `entry` to the list `kind` ("hosts" or "flows"), in place of the one it is the
-        `same` as."""
+        `same` as. With keep_note, the entry keeps the note of the one it replaces: a note
+        another analyst wrote meanwhile isn't lost (D37)."""
         with self.store.locked_all() as lists:
+            replaced = [e for e in lists[kind] if same(e)]
             kept = [e for e in lists[kind] if not same(e)]
             if len(kept) >= MAX_MARKS:
                 raise ValidationError(f"at most {MAX_MARKS} marked {kind}")
+            if keep_note and replaced:
+                entry = dict(entry, note=replaced[-1].get("note", ""))
             lists[kind][:] = kept + [entry]
             return self._view(lists)
 
-    def mark(self, ip, time=None, note=""):
+    def mark(self, ip, time=None, note=None):
+        """Mark a host compromised at `time`; with no note (None), a host marked already keeps
+        its note."""
         entry = parse_host({"ip": ip, "time": time, "note": note})
-        return self._put("hosts", entry, lambda h: self._is(h, entry["ip"]))
+        return self._put("hosts", entry, lambda h: self._is(h, entry["ip"]), keep_note=note is None)
 
     def unmark(self, ip):
         """Remove the host's own mark and every marked flow it is an end of (D15)."""
@@ -158,8 +164,10 @@ class CompromisedStore:
             return self._view(lists)
 
     def mark_flow(self, body):
+        """Mark a flow; with no note in `body`, a flow marked already keeps its note."""
         entry = parse_flow(body)
-        return self._put("flows", entry, lambda f: self._key(f) == flow_key(entry))
+        return self._put("flows", entry, lambda f: self._key(f) == flow_key(entry),
+                         keep_note=body.get("note") is None)
 
     def unmark_flow(self, body):
         key = flow_key(parse_flow(body))

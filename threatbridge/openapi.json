@@ -89,7 +89,7 @@
    },
    "post": {
     "summary": "Mark a host compromised",
-    "description": "Marking a host again replaces its own mark.",
+    "description": "Marking a host again replaces its own mark; with no note, it keeps the note it had (D37).",
     "parameters": [
      {
       "$ref": "#/components/parameters/write"
@@ -228,7 +228,7 @@
    },
    "post": {
     "summary": "Mark a flow compromised",
-    "description": "Marking it again replaces its note.",
+    "description": "Marking it again with a note replaces its note; with none, it keeps the note it had (D37).",
     "parameters": [
      {
       "$ref": "#/components/parameters/write"
@@ -975,6 +975,33 @@
        "application/json": {
         "schema": {
          "$ref": "#/components/schemas/Evidence"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/E401"
+     },
+     "421": {
+      "$ref": "#/components/responses/E421"
+     },
+     "501": {
+      "$ref": "#/components/responses/E501"
+     }
+    }
+   }
+  },
+  "/api/evidence/estimate": {
+   "get": {
+    "summary": "How long hashing the evidence files would take (D37)",
+    "description": "Hashing starts with GET /api/evidence; this only estimates it. The map asks before hashing projected to take more than 5 minutes. Case backend only.",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/EvidenceEstimate"
         }
        }
       }
@@ -3492,6 +3519,17 @@
       "description": "bytes to hash",
       "type": "integer"
      },
+     "left": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "seconds still to go at the rate so far; null until it can tell, 0 once done"
+     },
      "files": {
       "description": "by path; DHCP logs, Windows event logs and TB_HOSTS_FILE included",
       "items": {
@@ -3511,8 +3549,28 @@
      "done",
      "hashed",
      "total",
+     "left",
      "files",
      "settings"
+    ],
+    "type": "object"
+   },
+   "EvidenceEstimate": {
+    "additionalProperties": false,
+    "description": "How long hashing the evidence files would take (D37).",
+    "properties": {
+     "total": {
+      "description": "bytes to hash",
+      "type": "integer"
+     },
+     "seconds": {
+      "description": "the estimate, from reading and hashing a sample of the largest file; 0 when the digests are known and the files unchanged. Files still in the operating system's cache read faster, so it can be low",
+      "type": "number"
+     }
+    },
+    "required": [
+     "total",
+     "seconds"
     ],
     "type": "object"
    },
@@ -4297,7 +4355,7 @@
         "type": "null"
        }
       ],
-      "description": "up to limits.note characters"
+      "description": "up to limits.note characters; left out or null: a flow marked already keeps its note"
      }
     },
     "required": [
@@ -4700,7 +4758,7 @@
         "type": "null"
        }
       ],
-      "description": "up to limits.note characters"
+      "description": "up to limits.note characters; left out or null: a host marked already keeps its note"
      }
     },
     "required": [
@@ -5386,6 +5444,10 @@
      },
      "position": {
       "$ref": "#/components/schemas/Position"
+     },
+     "pinned": {
+      "description": "dragged by the analyst: automatic Fit leaves it where it is (D29)",
+      "type": "boolean"
      },
      "classes": {
       "description": "the highlights (up, down, line-selected, faded, attack, route), and other classes, which opening a map ignores",

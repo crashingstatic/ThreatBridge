@@ -14,6 +14,9 @@ what a schema can't say.
 
 ## Changes
 
+- **Long tasks (D37).** `GET /api/evidence/estimate` says how long hashing the evidence files
+  would take; `GET /api/evidence` has `left`, the seconds still to go. Additions, so
+  `api_version` stays 1.
 - **Evidence and version (D31).** `GET /api/evidence` lists the case's evidence files with their
   SHA-256, hashed in the background on the first ask; `GET /api/config` has `version`, the
   tool's own. Additions, so `api_version` stays 1.
@@ -113,6 +116,7 @@ Mapping connections:
 | `/api/resolve` | GET | Check an IP and settle the anchor time a map starts from |
 | `/api/neighbors` | GET, POST | One hop: who connected to a host, or who it connected to, before or after the anchor |
 | `/api/accounts` | GET, POST | The accounts that made a connection's flows, from Windows Security events (case backend) |
+| `/api/evidence/estimate` | GET | How long hashing the evidence files would take (case backend) |
 | `/api/evidence` | GET | The case's evidence files with their SHA-256, hashed in the background: ask until done (case backend) |
 | `/api/machines` | GET, POST | Which machine held an address: every one (GET), or the one at each host's time (POST) (case backend) |
 | `/api/flagged` | GET, POST | Beacons and long connections (case backend) |
@@ -173,7 +177,8 @@ note, or through a marked flow it is an end of. `hosts` in every answer about ma
 marked host either way: its `count` is its own mark plus its marked flows, and its `time` is when
 it was reached, the earliest known of its own mark's time and those flows' starts. `marked` lists
 the hosts marked themselves. Unmarking a host also unmarks the flows it is an end of; marking a
-host or flow again replaces its mark. `PUT /api/compromised` replaces every mark at once, or
+host or flow again replaces its mark, and keeps its note unless the request gives one (D37: a
+note another analyst wrote since isn't lost to a client's older copy). `PUT /api/compromised` replaces every mark at once, or
 nothing if any is invalid; the map does it to share an opened map's marks, after asking.
 `version` changes whenever the marks do, so a client can poll for other analysts' changes.
 
@@ -190,7 +195,7 @@ marked host, for a CSV export.
 ## The map document
 
 What the map saves (D19, D22), with `POST /api/sessions` and in a file: a stable format,
-`MapDocument` in the OpenAPI document. Version 2 holds the map's hosts where they were, its
+`MapDocument` in the OpenAPI document. Version 2 holds the map's hosts where they were (`pinned`: the analyst dragged it there), its
 connections with their counts as drawn, the highlights, the view, the toolbar and the paths
 form, the filters, the map's own marks, and the queries it was built from, in order, so that it
 can run them again with other filters. Version 1 was saved before filters and marks: it has no

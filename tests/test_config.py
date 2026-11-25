@@ -71,20 +71,41 @@ def test_main(monkeypatch, capsys, no_settings):
         def run(self, host, port):
             seen["run"] = (host, port)
 
-    def fake_create_app(cfg, local=None):
-        seen["cfg"], seen["local"] = cfg, local
+    def fake_create_app(cfg, backend=None, local=None):
+        seen["cfg"], seen["local"], seen["backend"] = cfg, local, backend
         return FakeApp()
+
+    class FakeCase:                       # what main() builds for --case, and whether it may ask
+        def __init__(self, cfg, confirm=None):
+            seen["confirm"] = confirm
     monkeypatch.setattr(app_mod, "create_app", fake_create_app)
+    monkeypatch.setattr(app_mod, "CaseBackend", FakeCase)
     monkeypatch.setattr(sys, "argv", ["threatbridge", "--case", "/c/a", "/c/b", "--db", "/w/x.db",
                                       "--host", "0.0.0.0", "--port", "6000"])
     app_mod.main()
     assert (seen["cfg"].backend, seen["cfg"].case_paths, seen["cfg"].case_db) == ("case", ["/c/a", "/c/b"], "/w/x.db")
     assert seen["run"] == ("0.0.0.0", 6000)
+    assert isinstance(seen["backend"], FakeCase) and seen["confirm"] is app_mod.ask_to_wait
+    monkeypatch.setattr(sys, "argv", ["threatbridge", "--case", "/c", "--yes"])      # never asks
+    app_mod.main()
+    assert seen["confirm"] is None
     monkeypatch.setattr(sys, "argv", ["threatbridge", "--demo"])
     app_mod.main()
     assert seen["cfg"].backend == "demo" and seen["cfg"].case_db is None and seen["run"] == ("127.0.0.1", 5055)
+    assert seen["backend"] is None
 
-    def failing(cfg, local=None):
+    class Declined(FakeCase):             # the analyst said no to a long build
+        def __init__(self, cfg, confirm=None):
+            raise app_mod.Stopped("building the case would have taken about 20 min more")
+    monkeypatch.setattr(app_mod, "CaseBackend", Declined)
+    monkeypatch.setattr(sys, "argv", ["threatbridge", "--case", "/c"])
+    capsys.readouterr()
+    with pytest.raises(SystemExit) as e:
+        app_mod.main()
+    assert e.value.code == 0 and capsys.readouterr().err == "Stopped.\n"
+    monkeypatch.setattr(app_mod, "CaseBackend", FakeCase)
+
+    def failing(cfg, backend=None, local=None):
         raise app_mod.SourceError("no pcap, pcapng, nfcapd or Zeek conn log files found in: /c")
     capsys.readouterr()                                       # what the starts above printed
     monkeypatch.setattr(app_mod, "create_app", failing)

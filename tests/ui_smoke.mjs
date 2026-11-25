@@ -12,7 +12,7 @@ const SOC = "https://so.example";   // must match TB_SOC_URL of the server under
 const IOC = "10.0.0.5", IOC_TIME = "2024-05-01T12:00:00Z";
 
 // The error answers this test provokes on purpose (HTTP 502) are expected.
-const { browser, ctx, page, errors, at } = await launch(
+const { browser, ctx, page, errors, at, answer } = await launch(
   { base: BASE, context: { permissions: ["clipboard-read", "clipboard-write"] }, expected: /status of 502/ });
 await ctx.route(`${SOC}/**`, (r) => r.fulfill({ body: "SOC stub" }));
 const menuItems = () => page.$$eval("#menu li", (l) => l.map((x) => x.textContent));

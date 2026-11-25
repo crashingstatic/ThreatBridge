@@ -123,6 +123,19 @@ def counted(rows, stage, every=50_000):
     stage(n)
 
 
+def ask_to_wait(seconds, stream=None, read=input, interactive=None, what="Building the case"):
+    """Whether to go on with a task that will take `seconds` more (D37): asked on a terminal;
+    without one (a service, a script) the answer is yes, and the caller warns."""
+    interactive = sys.stdin.isatty() if interactive is None else interactive
+    if not interactive:
+        return True
+    stream = stream or sys.stderr
+    stream.write("\n")
+    stream.flush()
+    answer = read(f"{what} will take about {_duration(seconds)} more. Continue? [y/N] ")
+    return answer.strip().lower() in ("y", "yes")
+
+
 def _duration(seconds):
     seconds = round(seconds)
     if seconds < 60:

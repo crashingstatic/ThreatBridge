@@ -10,7 +10,7 @@ from flask import Flask, Response, g, jsonify, request, send_from_directory
 from . import __version__
 from . import compromised as compromised_mod
 from . import filters, protocols, sessions as sessions_mod
-from .backends import ES_MAX_RESULTS, BackendError, Scope, make_backend
+from .backends import ES_MAX_RESULTS, BackendError, CaseBackend, Scope, Stopped, make_backend
 from .communityid import community_id
 from .compromised import CompromisedStore, parse_marks, reached
 from .config import Config
@@ -19,6 +19,7 @@ from .excludes import ExcludeStore
 from .jsonstore import StoreError
 from .local import MIN_TOKEN, LocalAccess, install as install_local
 from .model import SourceError
+from .progress import ask_to_wait
 from .query import (DIRECTIONS, ORDERS, ValidationError, clip, fmt_time, is_domain, parse_direction,
                     parse_es_id, parse_exclude, parse_ip, parse_network, parse_order, parse_time, parse_time_side,
                     parse_window, soc_host_query, soc_pivot_query, soc_url, time_range)
@@ -353,6 +354,12 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
         found = backend.accounts(src, dst, start, end) if start <= end else []
         return jsonify(src=src, dst=dst, start=fmt_time(start), end=fmt_time(end), accounts=found)
 
+    @app.get("/api/evidence/estimate")
+    def api_evidence_estimate():
+        """How long hashing the evidence files would take (D37)."""
+        require("evidence_estimate")
+        return jsonify(backend.evidence_estimate())
+
     @app.get("/api/evidence")
     def api_evidence():
         """The case's evidence files with their SHA-256, for the report (D31)."""
@@ -597,6 +604,8 @@ def main():
     p.add_argument("--db", metavar="FILE",
                    help="keep the case's flows in this SQLite file and reuse it next time "
                         "while the evidence is unchanged (default: temporary)")
+    p.add_argument("--yes", action="store_true",
+                   help="build the case without asking, even when it will take more than 5 minutes")
     p.add_argument("--no-login", action="store_true",
                    help="serve without the login token (anyone who can reach the port can read "
                         "and change the shared lists)")
@@ -616,7 +625,10 @@ def main():
         token = cfg.token or secrets.token_urlsafe(32)
     local = LocalAccess.serving(a.host, a.port, cfg.allowed_hosts, token)
     try:
-        app = create_app(cfg, local=local)
+        backend = CaseBackend(cfg, confirm=None if a.yes else ask_to_wait) if cfg.backend == "case" else None
+        app = create_app(cfg, backend, local=local)
+    except Stopped:
+        p.exit(0, "Stopped.\n")
     except (SourceError, ValidationError) as e:
         p.exit(2, f"error: {e}\n")
     if a.host.strip() not in ("127.0.0.1", "localhost", "::1", "[::1]"):
