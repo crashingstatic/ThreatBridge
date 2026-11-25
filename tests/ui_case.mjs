@@ -119,19 +119,20 @@ try {
   assert.ok(await page.locator("#legend-shared").isVisible());
   // Timestamps in the details never break across lines (D34).
   assert.deepEqual(await page.$$eval("#detail-body dd span.nowrap", (l) => l.map((x) => x.getClientRects().length)), [1, 1, 1, 1]);
-  // The IOC host is a diamond with a white border, not only red. Labels too small to read when
-  // zoomed out are left out, but shown on hover and selection; the IOC host's always (D34).
-  await page.mouse.move(5, 5);                                   // off the host right-clicked above
+  // The IOC host is a diamond with a white border, not only red. Labels are sized with the map:
+  // zoomed out they shrink, and are never hidden (D34).
   const look = (id, props) => cyEval(([i, p]) => p.map((k) => window.threatbridge.cy.getElementById(i).style(k)), [id, props]);
-  assert.deepEqual(await look("10.0.0.9", ["shape", "border-color", "min-zoomed-font-size"]), ["round-diamond", "rgb(216,222,233)", "0px"]);   // white; light grey once expanded
-  assert.deepEqual(await look("10.0.0.5", ["shape", "min-zoomed-font-size"]), ["ellipse", "8px"]);
-  assert.deepEqual(await look("10.0.0.5->10.0.0.9", ["min-zoomed-font-size"]), ["7px"]);
-  const h5 = await at("node#10\\.0\\.0\\.5");
-  await page.mouse.move(h5.x, h5.y, { steps: 4 });
-  await page.waitForFunction(() => window.threatbridge.cy.getElementById("10.0.0.5").hasClass("hover"), null, { timeout: 5000 });
-  assert.deepEqual(await look("10.0.0.5", ["min-zoomed-font-size"]), ["0px"]);
-  await page.mouse.move(5, 5);
-  assert.deepEqual(await look("10.0.0.5", ["min-zoomed-font-size"]), ["8px"]);
+  assert.deepEqual(await look("10.0.0.9", ["shape", "border-color"]), ["round-diamond", "rgb(216,222,233)"]);   // white; light grey once expanded
+  assert.deepEqual(await look("10.0.0.5", ["shape"]), ["ellipse"]);
+  for (const id of ["10.0.0.5", "10.0.0.9", "10.0.0.5->10.0.0.9"]) assert.deepEqual(await look(id, ["min-zoomed-font-size"]), ["0px"]);
+  const labelHeight = () => cyEval(() => window.threatbridge.cy.getElementById("10.0.0.5")
+    .renderedBoundingBox({ includeNodes: false, includeLabels: true }).h);
+  const zoomed = await cyEval(() => window.threatbridge.cy.zoom());
+  const near = await labelHeight();
+  await cyEval((z) => window.threatbridge.cy.zoom(z / 4), zoomed);
+  const far = await labelHeight();
+  assert.ok(far > 0 && Math.abs(far - near / 4) < near * 0.1, `label height ${near} -> ${far}`);
+  await cyEval((z) => window.threatbridge.cy.zoom(z), zoomed);
 
   // Left-click the 10.0.0.5 -> 10.0.0.9 edge: the threat line runs back to the external
   // host and forward to 10.0.0.20, which was not on the map yet.

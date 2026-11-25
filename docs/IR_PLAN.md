@@ -392,5 +392,5 @@ report (a PDF), and its flows are Zeek logs, which the case backend doesn't read
 | 9. Deliverables | decided | done (D29 to D31, INT-10, INT-11, ATK-14) | done | done | green |
 | 14. Usability | decided | done (D32 to D34, INT-12 to INT-14, GRA-5) | done | done | green |
 | 13. Measure it | decided | done (D35, EVA-1, EVA-2) | done | done | green |
-| Follow-up 1. Zeek logs | given | done (D36, ING-12) | done | done | |
-| Follow-ups 2 to 4. Map | given | | | | |
+| Follow-up 1. Zeek logs | given | done (D36, ING-12) | done | done | green |
+| Follow-ups 2 to 4. Map | given | done (D29, D32 to D34, GRA-5, INT-10, INT-13) | done | done | |

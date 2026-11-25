@@ -220,7 +220,9 @@ try {
   await page.mouse.click(cyBox.x + 5, cyBox.y + 5);          // the map's background
   assert.ok(await menuHidden());
   await openMenu("10.0.0.5");
-  await page.mouse.click(cyBox.x + 5, cyBox.y + 5, { button: "right" });
+  await page.mouse.click(cyBox.x + 5, cyBox.y + 5, { button: "right" });   // the map's own menu instead
+  assert.deepEqual(await menuItems(), ["Tidy", "Fit"]);
+  await page.keyboard.press("Escape");
   assert.ok(await menuHidden());
   await cyEval(() => {                                       // the host near the bottom-right corner
     const cy = window.threatbridge.cy, p = cy.getElementById("10.0.0.5").renderedPosition();
@@ -242,7 +244,13 @@ try {
   assert.equal(await border("10.0.0.9"), "3px rgb(255,255,255)");   // both ways
   await menu(node("10.0.0.9"), "Expand inbound");
   await waitStatus(/^10\.0\.0\.9: showing top 2 of 2 distinct peer/);
+  // Remove from map asks first, naming the connections that go with the host; Cancel keeps it.
+  let removeAsked = null;
+  page.once("dialog", (d) => { removeAsked = d.message(); d.dismiss(); });
   await menu(node("10.0.0.77"), "Remove from map");
+  assert.equal(removeAsked, "Remove 10.0.0.77 and its 1 connection from the map?");
+  assert.ok((await ids()).includes("10.0.0.77"));
+  await accepting(page, () => menu(node("10.0.0.77"), "Remove from map"));
   assert.ok(!(await ids()).includes("10.0.0.77"));
   await menu(node("10.0.0.9"), "Remove from map");                  // the IOC host stays
   assert.ok((await ids()).includes("10.0.0.9"));
@@ -506,7 +514,7 @@ try {
   await waitStatus(/^Threat line/);
   const elements = () => cyEval(() => window.threatbridge.cy.elements().map((e) => [
     e.id(), e.isNode() ? e.position() : [e.data("count"), e.data("ports"), e.data("first_seen"), e.data("protocols")],
-    e.data("anchor") ?? null, e.data("root") ?? null, e.classes().filter((c) => c !== "hover").sort()]).sort());
+    e.data("anchor") ?? null, e.data("root") ?? null, e.classes().sort()]).sort());
   const settings = () => page.evaluate(() => ["ip", "ts", "direction", "window", "range-from", "range-to", "order",
     "limit", "route-src", "route-src-time", "route-dst", "route-dst-time"].map((id) => document.getElementById(id).value));
   const view = () => cyEval(() => [window.threatbridge.cy.zoom(), window.threatbridge.cy.pan()]);
@@ -742,9 +750,12 @@ try {
   const kept = { "10.0.0.9": await place("10.0.0.9"), "10.0.0.5": await place("10.0.0.5"), "10.0.0.77": await place("10.0.0.77") };
   assert.ok(dist(kept["10.0.0.77"], tidy77) > 20, "dragged aside");
   assert.ok(!(await cyEval(() => window.threatbridge.cy.getElementById("10.0.0.77").data("expandedIn"))), "a drag doesn't expand");
+  const viewNow = () => cyEval(() => ({ zoom: window.threatbridge.cy.zoom(), pan: window.threatbridge.cy.pan() }));
+  const viewBefore = await viewNow();
   await menu(node("10.0.0.5"), "Expand inbound: who connected to it (past)");
   await waitStatus(/^10\.0\.0\.5: showing/);
   for (const [ip, pos] of Object.entries(kept)) assert.deepEqual(await place(ip), pos, `${ip} kept its place`);
+  assert.deepEqual(await viewNow(), viewBefore, "the view stays where it was");
   const p66 = await place("203.0.113.66");
   assert.ok(Math.abs(dist(p66, kept["10.0.0.5"]) - 110) < 0.5, `next to 10.0.0.5: ${JSON.stringify(p66)}`);
   assert.ok(Object.values(kept).every((pos) => dist(pos, p66) >= 80), "clear of the other hosts");
@@ -830,6 +841,18 @@ try {
   await page.focus("#cy");
   await page.keyboard.press("Enter");                                           // a left click: expand inbound
   await page.waitForFunction(() => window.threatbridge.cy.getElementById("10.0.0.5").data("expandedIn"));
+  // Nothing selected, the context-menu key on the map opens the map's own menu; Fit brings
+  // every host into view (D29: the map moves only when asked).
+  await cyEval(() => { window.threatbridge.cy.$(":selected").unselect(); window.threatbridge.cy.pan({ x: -3000, y: -3000 }); });
+  await page.focus("#cy");
+  await page.keyboard.press("ContextMenu");
+  assert.deepEqual([await menuItems(), await focused()], [["Tidy", "Fit"], "Tidy"]);
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  assert.ok(await cyEval(() => window.threatbridge.cy.nodes().every((n) => {
+    const r = n.renderedPosition(), cy = window.threatbridge.cy;
+    return r.x >= 0 && r.y >= 0 && r.x <= cy.width() && r.y <= cy.height();
+  })), "Fit from the map's menu");
 
   assert.deepEqual(errors, [], "browser console errors");
   console.log("UI actions test passed");

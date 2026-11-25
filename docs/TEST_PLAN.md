@@ -559,7 +559,7 @@ generated case) and `ui_mtls.mjs` (the container). *Manual* names the tests abov
 | GRA-2 Hosts and connections displayed | `ui_smoke.mjs`, `ui_case.mjs`, `ui_actions.mjs` (elements, labels, layout) | VIS-01 |
 | GRA-3 Temporal ordering | `test_case.py`, `test_analysis.py`; `ui_actions.mjs` (time-chained hops, flows paged oldest first) | SO-02 (10,000-flow limit) |
 | GRA-4 Interactive, clickable | `ui_smoke.mjs`, `ui_case.mjs`, `ui_actions.mjs` (clicks, menus, details) | VIS-01, XB-01 (other browsers) |
-| GRA-5 Readable maps | `ui_case.mjs` (the IOC host's shape and border; labels' zoom rule, on hover and off; timestamps on one line), `ui_actions.mjs` (the hover isn't saved with a map) | VIS-01 (how it looks) |
+| GRA-5 Readable maps | `ui_case.mjs` (the IOC host's shape and border; labels never hidden, a label's height shrinking with the zoom; timestamps on one line) | VIS-01 (how it looks) |
 | GRA-S2 Time-range filtering | `test_case.py`, `test_api.py`; `ui_smoke.mjs`, `ui_case.mjs`, `ui_actions.mjs` | |
 | GRA-S3 Connection metadata | `test_sources.py`, `test_backends.py`; `ui_case.mjs`, `ui_actions.mjs` | REAL-01, REAL-02, SO-02 |
 | Bottom N exact (README, *Peer selection*) | `test_backends.py` (the paged scan, the cap), `test_case.py`; `ui_smoke.mjs` (rarest and the cap warning in the status) | SO-02 steps 6, 7 |
@@ -585,10 +585,10 @@ generated case) and `ui_mtls.mjs` (the container). *Manual* names the tests abov
 | INT-7 Marked and suspect connections drawn; hidden count | `ui_marks.mjs` (classes, line styles, colours, legend, status), `ui_case.mjs` | VIS-02 step 2, VIS-03 |
 | INT-8 Mark and unmark flows | `ui_marks.mjs`, `ui_actions.mjs` (the single-flow menu) | VIS-03 step 3 |
 | INT-9 Confirmation before replacing the shared marks | `ui_marks.mjs` (Cancel, then OK) | XB-01 step 7b |
-| INT-10 Places kept as the map grows or is re-queried; *Tidy* | `ui_actions.mjs` (a dragged host stays, the new host next to its parent, clear of the others; *Tidy*; a saved host without a place), `ui_marks.mjs` (every host its own place after a re-query) | |
+| INT-10 Places and view kept as the map grows or is re-queried; *Tidy*, *Fit* | `ui_actions.mjs` (a dragged host stays, the new host next to its parent, clear of the others, the view unmoved; *Tidy*; the map's menu from the mouse and the keyboard, *Fit* from it; a saved host without a place), `ui_marks.mjs` (every host its own place after a re-query) | |
 | INT-11 Report | `test_hashing.py` (digests, progress, changed and missing files, settings, `/api/evidence`); `test_supply_chain.py` (the version); `ui_marks.mjs` (three files; sections, evidence digests, settings; a note with markup stays text in HTML and is escaped in Markdown; the report's own style and policy) | How it prints: by hand |
 | INT-12 Map kept: Enter, asking before discarding, restored on reload | `ui_actions.mjs` (Enter in the Window; Cancel keeps the map; a reload restores places; the bare address starts afresh); every suite says yes to the question where it maps again | |
-| INT-13 Asking before unmarking a host | `ui_marks.mjs` (the question names its marked flow; Cancel keeps both) | |
+| INT-13 Asking before unmarking or removing a host | `ui_marks.mjs` (the question names its marked flow; Cancel keeps both), `ui_actions.mjs` (*Remove from map* names its connections; Cancel keeps the host) | |
 | INT-14 The keyboard | `ui_actions.mjs` (every input named; Open file; Find host; the menu with Shift+F10, the context-menu key, arrows, Home, Escape and Enter; Enter on the map; a saved map opened with Enter), `ui_case.mjs` (a path with Enter) | With a screen reader: by hand |
 | INT-S2 Save and restore sessions | `test_sessions.py`; `ui_actions.mjs` (shared and as a file; an opened map's own marks), `ui_marks.mjs` (filters, marks and queries saved; version 1 maps; Share), `ui_smoke.mjs` (the URL) | XB-01 (dialogs and files in other browsers), SO-07 (kept across a redeploy) |
 | INT-S3 Export (JSON maps, CSV) | `test_marks.py` (`/api/export`, its limit); `ui_marks.mjs` (two CSV files, quoting, no formulas); `ui_actions.mjs` (map files) | XB-01 step 7b |

@@ -71,6 +71,7 @@ try {
   await page.mouse.click(box.x + 5, box.y + 5);
   assert.deepEqual(await edgeIds(), ALL);
   assert.equal(await hiddenNote(), "");
+  await page.click("#fit");                 // the view doesn't follow new hosts by itself (D29)
 
   // Marking B: only the line into it (E -> A -> X -> B) and on from it (B -> F) stay, dashed
   // dark red, outlined light red. X -> C and A -> Y are hidden, and C and Y with them; the
@@ -385,7 +386,7 @@ try {
   // Expansions and removals are re-run too.
   await menu(node(X), "Expand outbound");
   await waitStatus(/^10\.9\.0\.3: showing top 1 of 1 distinct peer/);     // X -> C, SMB
-  await menu(node(X), "Remove from map");
+  await accepting(page, () => menu(node(X), "Remove from map"));
   await page.click("#filter-list li button");
   await waitStatus(/^Re-ran 7 of 7 queries with 0 filter\(s\)/);
   // The expansion brought C back; removing X took its connections (the attack path between the

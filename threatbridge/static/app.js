@@ -34,12 +34,10 @@
     wheelSensitivity: 0.3,
     maxZoom: 1.6,
     style: [
-      // Labels too small to read once zoomed out are left out, and shown again on hover and
-      // selection; the IOC host's and the compromised hosts' always show (D34).
+      // Labels are sized with the map: they shrink as it zooms out, and are never hidden (D34).
       { selector: "node", style: {
           "background-color": COLORS.node, label: "data(id)", color: "#d8dee9",
-          "font-size": 10, "text-valign": "bottom", "text-margin-y": 4, width: 18, height: 18,
-          "min-zoomed-font-size": 8 } },
+          "font-size": 10, "text-valign": "bottom", "text-margin-y": 4, width: 18, height: 18 } },
       // The IOC host: a diamond with a white border, not only its red (D34); an
       // expanded host's border, below, still says how it was expanded.
       // (round-diamond: this Cytoscape misses a click at the centre of a plain diamond.)
@@ -51,7 +49,7 @@
           width: "mapData(logCount, 0, 4, 1, 7)", "curve-style": "bezier",
           "target-arrow-shape": "triangle", "arrow-scale": 0.9, label: "data(label)",
           "font-size": 8, color: "#8a94a6", "text-rotation": "autorotate", "text-background-color": "#11151c",
-          "text-background-opacity": 0.8, "text-background-padding": 1, "min-zoomed-font-size": 7 } },
+          "text-background-opacity": 0.8, "text-background-padding": 1 } },
       { selector: "edge[direction = 'in']", style: { "line-color": COLORS.in, "target-arrow-color": COLORS.in } },
       { selector: "edge[direction = 'out']", style: { "line-color": COLORS.out, "target-arrow-color": COLORS.out } },
       { selector: "node[?compromised]", style: {
@@ -93,14 +91,10 @@
       // Hidden by the marks: restored when they change (D16). Hiding comes before any dimming.
       { selector: ".mark-hidden", style: { display: "none" } },
       { selector: ":selected", style: { "overlay-color": "#fff", "overlay-opacity": 0.15 } },
-      { selector: ".hover, :selected, node[?root], node[?compromised]", style: { "min-zoomed-font-size": 0 } },
     ],
   });
 
   window.threatbridge = { cy }; // handle for debugging / UI tests
-  cy.on("mouseover", "node, edge", (e) => e.target.addClass("hover"));
-  cy.on("mouseout", "node, edge", (e) => e.target.removeClass("hover"));
-  $("cy").addEventListener("mouseleave", () => cy.elements(".hover").removeClass("hover"));   // off the map at once
 
   // Protocols as the server names them (Zeek's service names), as the map shows them (D14).
   const PROTOCOL_ALIASES = { "ftp-data": "ftp", krb_tcp: "krb" };
@@ -283,7 +277,8 @@
   // connected to (the one fewest hops from the IOC host), first on the side away from that
   // host's own connections; hosts connected to none go to the right of the map. A place is
   // free if no host is near it, and neither its connection to the parent nor the parent's
-  // other connections pass near a host. The view follows when a new host lands outside it.
+  // other connections pass near a host. Nothing else moves, and the view stays where it is: the
+  // map is laid out again or fitted only when the analyst asks (Tidy, Fit; D29).
   function placeNew(fresh) {
     if (fresh.empty()) return;
     const cell = (v) => Math.floor(v / PLACE_GAP);
@@ -366,10 +361,6 @@
         added.push(n);
       }
       left = left.filter((n) => !isPlaced(n));
-    }
-    const view = cy.extent();
-    if (added.some((n) => { const q = n.position(); return q.x < view.x1 || q.x > view.x2 || q.y < view.y1 || q.y > view.y2; })) {
-      cy.fit(cy.elements().not(".mark-hidden"), 40);
     }
   }
 
@@ -920,9 +911,14 @@
   document.addEventListener("keydown", (e) => {
     if (!(e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) || typing(e.target) || !menu.hidden) return;
     const chosen = cy.$(":selected").not(".mark-hidden").first();
-    if (chosen.empty()) return;
-    e.preventDefault();
     const box = $("cy").getBoundingClientRect();
+    if (chosen.empty()) {                      // nothing selected: the map's own menu, if it has the focus
+      if (document.activeElement !== $("cy")) return;
+      e.preventDefault();
+      mapMenu(box.left + box.width / 2, box.top + box.height / 2, true);
+      return;
+    }
+    e.preventDefault();
     const p = chosen.isNode() ? chosen.renderedPosition() : chosen.renderedMidpoint();
     (chosen.isNode() ? hostMenu : connectionMenu)(chosen, box.left + p.x, box.top + p.y, true);
   });
@@ -950,8 +946,13 @@
   }
   $("find-host").addEventListener("keydown", (e) => { if (e.key === "Enter") findHost(); });
 
+  // Remove from map asks first (owner, 2026-11-25). It changes only this map: other analysts'
+  // maps, the shared lists and saved maps keep the host.
   function removeHost(n) {
     if (n.data("root")) return;
+    const links = n.connectedEdges().length;
+    if (!window.confirm(`Remove ${n.id()}${links ? ` and its ${links} connection${links === 1 ? "" : "s"}` : ""} ` +
+                        "from the map?")) return;
     queries.push({ op: "remove", ip: n.id() });
     n.remove();
   }
@@ -978,12 +979,17 @@
     if (cfg.analysis) showThreatLine(evt.target).catch((e) => fail(e));
   });
   cy.on("tap", (evt) => { if (evt.target === cy) { hideMenu(); clearHighlight(); } });
-  cy.on("cxttap", (evt) => { if (evt.target === cy) hideMenu(); });
+  // The map's own menu (right-click its background): lay it out again, or fit it to the view.
+  const fit = () => cy.fit(cy.elements().not(".mark-hidden"), 40);
+  function mapMenu(x, y, fromKeyboard) {
+    showMenu(x, y, [{ label: "Tidy", action: tidy }, { label: "Fit", action: fit }], fromKeyboard);
+  }
+  cy.on("cxttap", (evt) => { if (evt.target === cy) mapMenu(evt.originalEvent.clientX, evt.originalEvent.clientY); });
   document.addEventListener("click", (e) => { if (!menu.contains(e.target)) hideMenu(); });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") hideMenu(); });
 
   $("go").addEventListener("click", start);
-  $("fit").addEventListener("click", () => cy.fit(cy.elements().not(".mark-hidden"), 40));
+  $("fit").addEventListener("click", fit);
   $("tidy").addEventListener("click", tidy);
   // Clear resets the protocol preview, nothing else (D18).
   $("clear").addEventListener("click", () => { protocolSelect.value = ""; refreshProtocols(); });
@@ -1992,7 +1998,7 @@ code { font-size: 12px; } img { max-width: 100%; border: 1px solid #bbb; }
     return out;
   }
 
-  const kept = (x) => x.classes().filter((c) => c !== "hover");   // the pointer's place isn't saved
+  const kept = (x) => x.classes();
 
   function mapDocument() {
     return {
