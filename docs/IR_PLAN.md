@@ -409,4 +409,4 @@ Later the same day:
 | 13. Measure it | decided | done (D35, EVA-1, EVA-2) | done | done | green |
 | Follow-up 1. Zeek logs | given | done (D36, ING-12) | done | done | green |
 | Follow-ups 2 to 4. Map | given | done (D29, D32 to D34, GRA-5, INT-10, INT-13) | done | done | green |
-| Follow-ups 5 to 7. Asking first, long tasks, Fit | given | done (D29, D34, D37, INT-9, INT-10, INT-13, INT-15, PRF-4, GRA-5) | done | done | pending |
+| Follow-ups 5 to 7. Asking first, long tasks, Fit | given | done (D29, D34, D37, INT-9, INT-10, INT-13, INT-15, PRF-4, GRA-5) | done | done | green |
