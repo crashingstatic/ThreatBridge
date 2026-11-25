@@ -201,7 +201,7 @@ def create_app(cfg=None, backend=None, excludes=None, compromised=None, resolver
     def require(method):
         if not hasattr(backend, method):
             raise NotSupported(f"not available with the {cfg.backend} backend; "
-                               "load PCAP/NetFlow files with --case")
+                               "load evidence files with --case")
 
     app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/static")
     if local is not None:
@@ -593,7 +593,7 @@ def main():
     p.add_argument("--port", type=int, default=int(os.environ.get("TB_PORT", "5055")))
     p.add_argument("--demo", action="store_true", help="use the fake demo backend")
     p.add_argument("--case", nargs="+", metavar="PATH",
-                   help="post-mortem mode: tcpdump pcap and nfdump nfcapd files or directories")
+                   help="post-mortem mode: evidence files or directories (pcap, pcapng, nfcapd, Zeek, DHCP and Windows event logs)")
     p.add_argument("--db", metavar="FILE",
                    help="keep the case's flows in this SQLite file and reuse it next time "
                         "while the evidence is unchanged (default: temporary)")

@@ -240,6 +240,9 @@ def read_file(path, tz):
     """Observations from one DHCP log file (kind() says which), each with its path."""
     with open(path, "rb") as fh:
         data = fh.read()
+    if data.startswith(b"\x1f\x8b"):                  # Zeek's archived dhcp.log.gz
+        import gzip
+        data = gzip.decompress(data)
     found = kind(data[:SNIFF])
     text = _decode(data)
     readers = {"windows": lambda: read_windows(text, tz), "isc": lambda: read_isc(text), "zeek": lambda: read_zeek(text)}

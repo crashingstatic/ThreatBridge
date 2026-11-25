@@ -366,6 +366,17 @@ on the real data, which the owner downloads. OpTC is not loaded: its ground trut
 report (a PDF), and its flows are Zeek logs, which the case backend doesn't read; a Zeek
 `conn.log` reader and transcribed labels would come first. The pilot kit is `docs/PILOT.md`.
 
+## Follow-ups (owner, 2026-11-25)
+
+1. **Zeek logs MUST be parsed.** conn.log and dns.log as evidence, TSV or JSON, plain or gzip
+   (D36, ING-12).
+2. **Labels shrink when the map zooms out**, instead of being hidden (D34 changed).
+3. **The map is redrawn only when the analyst asks**: *Tidy* (toolbar, or right-click the map's
+   background), *Fit* likewise; new hosts still get a place, and nothing else moves or rescales.
+4. **Remove from map asks first.** The owner's reason was that it affects other analysts'
+   views; it doesn't (it changes only this map, until the map is saved), but the question is
+   kept as asked. *Add to shared exclude list* is the action that does change everyone's view.
+
 ---
 
 ## Status
@@ -381,3 +392,5 @@ report (a PDF), and its flows are Zeek logs, which the case backend doesn't read
 | 9. Deliverables | decided | done (D29 to D31, INT-10, INT-11, ATK-14) | done | done | green |
 | 14. Usability | decided | done (D32 to D34, INT-12 to INT-14, GRA-5) | done | done | green |
 | 13. Measure it | decided | done (D35, EVA-1, EVA-2) | done | done | green |
+| Follow-up 1. Zeek logs | given | done (D36, ING-12) | done | done | |
+| Follow-ups 2 to 4. Map | given | | | | |

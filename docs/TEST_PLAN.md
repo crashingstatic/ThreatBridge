@@ -379,6 +379,24 @@ serving it; page open.
 | 4 | Find connections Zeek named with `dns`, `http`, `ssl`, `ssh` and `smb`, if the capture has them: `zc id.orig_h id.resp_h id.resp_p service < $W/conn.log \| awk -F'\t' '$4 != "-"' \| sort -u \| head -40`. Map each one's responder inbound, left-click the arrow from its originator, and read the protocol at the start of each flow's line. | ThreatBridge names what Zeek names (`TLS` for Zeek's `ssl`), including on ports where the service doesn't usually run. A connection Zeek names nothing for is named by its server's port, or Unknown. | Protocols recognized from real payloads (D14). | |
 | 5 | Find FTP sessions (on the range: active, passive and extended passive downloads from 10.0.5.1): `zc id.orig_h id.orig_p id.resp_h id.resp_p service < $W/conn.log \| awk -F'\t' '$5 ~ /ftp/'`. Map each data connection's responder inbound (for an active transfer the client, which the server connects to), left-click its arrow, and read its flows' protocol. Do the same for the control connection. | Every connection Zeek names `ftp` or `ftp-data` is `FTP`, the passive transfer's (both ports high) included. | FTP data connections are named from the control connection's `PORT`/`PASV`, as Zeek does (ING-5, D14). | |
 
+### REAL-03 · Zeek's own logs of a real capture read as the capture is (ING-12, D36)
+
+CI reads Zeek logs written in Zeek's format by hand, and the reader was checked once on a large
+real log. This test reads Zeek's logs of REAL-01's capture and compares the case with the
+capture's.
+
+**Environment:** ENV-REAL. **Starting state:** REAL-01 done (Zeek has written `conn.log` and
+`dns.log` into `$W`). The logs served on another port, and `http://127.0.0.1:5058/` open:
+`mkdir $W/zeek && cp $W/conn.log $W/dns.log $W/zeek/ && TB_LIVE_DNS=false TB_EXCLUDE_FILE=$W/ex3.json TB_COMPROMISED_FILE=$W/c3.json TB_SESSIONS_DIR=$W/s3 python -m threatbridge --case $W/zeek --port 5058`
+
+| # | Do | Expect | Proves | Result |
+|---|---|---|---|---|
+| 1 | Compare the status line's case summary with REAL-01's (port 5056). | Flows: the count of `zc conn_state < $W/conn.log \| grep -vc REJ`. Hosts and time span close to the capture's. | Every connection Zeek recorded, refused ones left out (D36). | |
+| 2 | Map a busy host of REAL-01 inbound on both pages. | The same peers and counts, within the few connections Zeek and ThreatBridge split differently (REAL-01, *Expect*). | Flows from conn.log as from the capture (ING-12). | |
+| 3 | Left-click one arrow on both pages; compare a flow's line. | The same ports, packets and protocol; bytes may differ by link headers only (REAL-01). | Packets, bytes and services from Zeek's fields (D36). | |
+| 4 | Add REAL-01's domain name to the exclude list here. | It resolves to the same addresses as on port 5056. | DNS answers from dns.log (D36). | |
+| 5 | `gzip $W/zeek/conn.log`, restart this server, and repeat step 1. | The same summary. | gzip-compressed logs (D36). | |
+
 ### REAL-02 · NetFlow from a real exporter is read as Zeek reads the same traffic: connections, orientation, packets (ING-2, D7)
 
 CI exports NetFlow records that the tests make up through a real nfcapd and nfdump, so a real
@@ -526,6 +544,7 @@ generated case) and `ui_mtls.mjs` (the container). *Manual* names the tests abov
 |---|---|---|
 | ING-1 PCAP ingest | `test_sources.py`, `test_case.py`; the case in `ui_case.mjs`, `ui_actions.mjs` | REAL-01 (a real capture) |
 | ING-2 NetFlow ingest | `test_sources.py` (record pairing; a real nfcapd file through nfdump), `test_integration.py` (pcap and NetFlow in one case) | REAL-02 (a real exporter, against Zeek) |
+| ING-12 Zeek logs | `test_zeek.py` (TSV and JSON, dotted and nested keys, gzip, refused and ICMP connections, services, unset fields, dns answers, other Zeek logs skipped, worker processes, a case from Zeek logs) | REAL-03 |
 | ING-3 Directories of pcaps, rotated captures | `test_sources.py` | |
 | ING-4 Addresses, ports, times, protocol | `test_sources.py`, `test_case.py`, `test_backends.py` (Elasticsearch fields, configurable); flow lines in `ui_case.mjs`, `ui_actions.mjs` | REAL-01, REAL-02, SO-02 (field names on a live install) |
 | ING-5 FTP data connections, as Zeek names them | `test_sources.py` (control messages; active, passive and EPSV transfers; a non-FTP greeting, the wrong side, too late, used once; read in worker processes) | REAL-01 step 5, REAL-02 step 4 (a real FTP session against Zeek) |

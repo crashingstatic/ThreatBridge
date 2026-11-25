@@ -88,14 +88,14 @@ def test_directory_walk_and_errors(tmp_path):
     (d / ".hidden.pcap").write_bytes(b"junk")
     assert len(load([str(d)])) == 1
 
-    with pytest.raises(SourceError, match="not a pcap, pcapng, nfcapd, DHCP log or Windows event log"):
+    with pytest.raises(SourceError, match="not a pcap, pcapng, nfcapd, Zeek log, DHCP log or Windows event log"):
         load([str(d / "notes.txt")])
     (d / "x.pcapng").write_bytes(bytes.fromhex("0a0d0d0a") + bytes(28))   # pcapng's magic, then nothing
     with pytest.raises(SourceError, match=r"x\.pcapng: not a readable pcapng file \(damaged at byte 0 "
                                           r"\(unknown byte order\)\)"):
         load([str(d)])
     (tmp_path / "empty").mkdir()
-    with pytest.raises(SourceError, match="no pcap, pcapng or nfcapd"):
+    with pytest.raises(SourceError, match="no pcap, pcapng, nfcapd or Zeek conn log"):
         load([str(tmp_path / "empty")])
     with pytest.raises(SourceError, match="no such file"):
         load([str(tmp_path / "missing")])
@@ -122,7 +122,7 @@ def test_a_duplicate_does_not_stop_the_walk(tmp_path):
 
 def test_files_that_are_not_evidence(tmp_path):
     (tmp_path / "empty").write_bytes(b"")
-    with pytest.raises(SourceError, match="not a pcap, pcapng, nfcapd, DHCP log or Windows event log file"):
+    with pytest.raises(SourceError, match="not a pcap, pcapng, nfcapd, Zeek log, DHCP log or Windows event log file"):
         sources.find([str(tmp_path / "empty")])
     live = tmp_path / "nfcapd.current.4242"
     live.write_bytes(bytes.fromhex("0ca5") + b"\0" * 30)
@@ -135,7 +135,7 @@ def test_a_live_nfcapd_file_in_a_directory_is_skipped(tmp_path):
     d.mkdir()
     (d / "nfcapd.current.4242").write_bytes(bytes.fromhex("0ca5") + b"\0" * 30)
     write_pcap(d / "cap.pcap", handshake())
-    assert sources.find([str(d)]) == {"pcap": [str(d / "cap.pcap")], "nfcapd": [], "dhcp": [], "events": []}
+    assert sources.find([str(d)]) == {"pcap": [str(d / "cap.pcap")], "nfcapd": [], "dhcp": [], "events": [], "zeek": [], "zeek_dns": []}
 
 
 def test_damaged_and_unsupported_captures(tmp_path):
