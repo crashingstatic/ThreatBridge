@@ -1,0 +1,20 @@
+# Updates for everything pinned (D24): Python packages (uv.lock), Playwright (package-lock.json),
+# the base images (Dockerfile digests) and the GitHub Actions (commit hashes).
+version: 2
+updates:
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

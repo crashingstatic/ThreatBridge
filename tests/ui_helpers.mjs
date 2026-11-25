@@ -1,0 +1,100 @@
+// Shared setup for the browser tests: a Chromium page that collects console errors, screen
+// positions of graph elements, and JavaScript coverage when JS_COVERAGE is set:
+//   JS_COVERAGE=DIR node tests/ui_case.mjs ...   writes DIR/<test>.json (V8 block coverage)
+//   node tests/js_coverage.mjs DIR                lists the parts of app.js no test ran
+// Set CHROMIUM_PATH to use a preinstalled browser, and TB_TOKEN to the server's login token
+// (local mode, D23).
+import { mkdirSync, writeFileSync } from "node:fs";
+import { chromium } from "playwright";
+
+const COVERAGE_DIR = process.env.JS_COVERAGE;
+
+// A page in a new browser. `errors` collects page exceptions and console errors, except
+// console messages matching `expected`. `at(selector, kind)` gives the screen position (and
+// id) of a node's centre, or of an edge's midpoint with kind "edge".
+export async function launch({ context = {}, expected = null, base = null } = {}) {
+  const browser = await chromium.launch(
+    process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {});
+  const ctx = await browser.newContext({ viewport: { width: 1400, height: 850 }, ...context });
+  // Local mode's login (D23): with TB_TOKEN set (as the CI servers are started), the cookie that
+  // opening the printed address would set for the server at `base`.
+  if (process.env.TB_TOKEN && base) {
+    const url = new URL(base);
+    await ctx.addCookies([{ name: `tb_token_${url.port}`, value: process.env.TB_TOKEN, url: url.origin }]);
+  }
+  const page = await ctx.newPage();
+  if (COVERAGE_DIR) await page.coverage.startJSCoverage({ resetOnNavigation: false });
+  const errors = [];
+  page.on("console", (m) => {
+    if (m.type() === "error" && !(expected && expected.test(m.text()))) errors.push(m.text());
+  });
+  page.on("pageerror", (e) => errors.push(String(e)));
+  // Questions (D37: whatever removes or overwrites what an undo couldn't bring back asks first):
+  // each is answered yes, unless the test queued its own answer for the next one (answer()).
+  const answers = [];
+  page.on("dialog", (d) => { const fn = answers.shift(); Promise.resolve(fn ? fn(d) : d.accept()).catch(() => {}); });
+  page.answersQuestions = true;
+  const answer = (fn) => answers.push(fn);
+  const unused = () => answers.splice(0).length;            // answers no question took, dropped
+  // Marks may hide part of the map and lay it out again: positions are read once that settles.
+  const at = async (selector, kind) => {
+    await page.waitForFunction(() => !(window.threatbridge && window.threatbridge.settling &&
+                                       window.threatbridge.settling()));
+    return position(selector, kind);
+  };
+  // Cytoscape keeps where the map is on the page, and catches up only 100 ms after the map
+  // moves (as when the status line wraps): a click before then would miss. Catch it up now.
+  const position = (selector, kind) => page.evaluate(([sel, k]) => {
+    window.threatbridge.cy.resize();
+    const el = window.threatbridge.cy.$(sel)[0];
+    const p = k === "edge" ? el.renderedMidpoint() : el.renderedPosition();
+    const box = document.getElementById("cy").getBoundingClientRect();
+    return { x: p.x + box.left, y: p.y + box.top, id: el.id() };
+  }, [selector, kind]);
+  return { browser, ctx, page, errors, at, answer, unused };
+}
+
+async function saveCoverage(page, name) {
+  const entries = await page.coverage.stopJSCoverage();
+  mkdirSync(COVERAGE_DIR, { recursive: true });
+  writeFileSync(`${COVERAGE_DIR}/${name}.json`,
+                JSON.stringify(entries.filter((e) => e.url.endsWith("/static/app.js"))));
+}
+
+// Before loading the page again: coverage of the page loaded so far is lost on navigation,
+// so save it under `name` and start afresh.
+// Do `action`, saying yes to any question it asks: on a page from launch(), which does so
+// already, just the action; on another page (a second analyst's), with a listener for it.
+export async function accepting(page, action) {
+  if (page.answersQuestions) return action();
+  const yes = (d) => d.accept().catch(() => {});
+  page.on("dialog", yes);
+  try {
+    return await action();
+  } finally {
+    page.off("dialog", yes);
+  }
+}
+
+// Click Map, saying yes if it asks before discarding the map.
+export const clickMap = (page) => accepting(page, () => page.click("#go"));
+
+export async function checkpoint(page, name) {
+  if (!COVERAGE_DIR) return;
+  await saveCoverage(page, name);
+  await page.coverage.startJSCoverage({ resetOnNavigation: false });
+}
+
+// With TB_SAVED_MAPS set, keep a map document the map saved: test_openapi.py checks each one
+// against the map document format (D22).
+export function keepMap(name, doc) {
+  if (!process.env.TB_SAVED_MAPS) return;
+  mkdirSync(process.env.TB_SAVED_MAPS, { recursive: true });
+  writeFileSync(`${process.env.TB_SAVED_MAPS}/${name}.json`, JSON.stringify(doc));
+}
+
+// Save what the page ran of app.js (when JS_COVERAGE is set) and close the browser.
+export async function finish(browser, page, name) {
+  if (COVERAGE_DIR) await saveCoverage(page, name);
+  await browser.close();
+}

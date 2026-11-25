@@ -1,0 +1,9 @@
+{
+  "name": "threatbridge-browser-tests",
+  "private": true,
+  "description": "Playwright for the browser tests (tests/ui_*.mjs). Install with: npm ci",
+  "license": "MIT",
+  "devDependencies": {
+    "playwright": "1.65.1"
+  }
+}

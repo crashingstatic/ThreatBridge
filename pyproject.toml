@@ -1,0 +1,39 @@
+# Python packages are managed with uv (D24): `uv sync` installs the locked versions from uv.lock,
+# and `uv lock` updates it after a change here. For pip, export the lock file with hashes:
+#   uv export --frozen --no-default-groups --no-emit-project -o requirements.txt
+[project]
+name = "threatbridge"
+version = "0.1.0"           # a release is tagged v<version> (.github/workflows/release.yml checks)
+description = "Temporal connection maps from network evidence, for finding how an attacker moved"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = [
+    "flask>=3.0,<4",
+    "requests>=2.31,<3",
+    "gunicorn>=22,<24",
+    "dpkt>=1.9.8,<2",
+    "networkx>=3.2,<4",
+    "evtx>=0.15,<1",
+]
+
+[dependency-groups]
+# The tests, and generating the OpenAPI document.
+test = [
+    "pytest>=8,<10",
+    "jsonschema>=4.21,<5",
+    "openapi-spec-validator>=0.7,<0.10",
+    "pydantic>=2.7,<3",
+]
+# The checks CI runs besides the tests.
+lint = [
+    "pyflakes>=3,<5",
+    "bandit>=1.7,<2",
+    "pip-audit>=2.7,<3",
+    "actionlint-py>=1.7,<2",
+]
+
+[tool.uv]
+package = false              # an application, run from the checkout; not built or published
+default-groups = ["test"]
+required-version = ">=0.13"
