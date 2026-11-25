@@ -386,7 +386,8 @@ Later the same day:
    the server, so a teammate's newer note isn't lost to the page's older copy.
 6. **Ask before a task projected over 5 minutes, with the time it will take** (D37, PRF-4):
    building a case (projected after 10 s of reading; terminal, `--yes`), hashing the evidence
-   for the report (estimated from a 64 MiB sample), the LANL loader.
+   for the report (estimated from a 64 MiB sample). Not the LANL loader: it measures the tool
+   and is no part of an analysis.
 7. **Fit is automatic**: hosts even out, about 110 units apart, after every change, and the
    view takes in the whole map; a host the analyst dragged stays put (saved with the map).
    **Tidy** (toolbar, map's menu) redraws the whole map (D29, D34, INT-10). This replaces 3's

@@ -605,7 +605,7 @@ generated case) and `ui_mtls.mjs` (the container). *Manual* names the tests abov
 | PRF-1 1M flows | `test_perf.py` (CI performance job) | |
 | PRF-2 Built within 5 minutes under 100 MB | `test_perf.py` | |
 | PRF-3 Responsive during traversal | `test_perf.py` (server timings, with filters and marks too); `ui_actions.mjs`, `ui_smoke.mjs` (requests in the background, Cancel, answers out of order) | PRF-01 |
-| PRF-4 Asking before a task over 5 minutes | `test_long_tasks.py` (the case build's projection after 10 s, asked in the terminal or not, `Stopped`, `--yes`), `test_lanl.py` (the loader), `test_hashing.py` (the hashing estimate, the time left); `ui_marks.mjs` (the report asks with the size and time, Cancel saves nothing) | TERM-01 (a real terminal); a real slow case |
+| PRF-4 Asking before a task over 5 minutes | `test_long_tasks.py` (the case build's projection after 10 s, asked in the terminal or not, `Stopped`, `--yes`), `test_hashing.py` (the hashing estimate, the time left); `ui_marks.mjs` (the report asks with the size and time, Cancel saves nothing) | TERM-01 (a real terminal); a real slow case |
 | PRF-S1 Parallel reading | `test_sources.py` (the same flows as one at a time), `test_case.py` | |
 | PRF-S3 Progress | `test_progress.py` (a simulated terminal, and the log); `ui_smoke.mjs`, `ui_actions.mjs` (busy indicator, Cancel) | TERM-01 (a real terminal) |
 | EXT-1 Security Onion workflows | `test_integration.py` (SOC actions open the map), `test_query.py` (pivots, configurable); `ui_smoke.mjs` | SO-01, SO-06 |
